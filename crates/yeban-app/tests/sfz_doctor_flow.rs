@@ -7,7 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use yeban_app::sfz_doctor::{
-    DoctorState, doctor_state, format_doctor_readout, mark_declined, quarantine_corrupt_record, run,
+    DoctorState, doctor_state, format_doctor_readout, mark_declined, quarantine_corrupt_record,
+    run, run_with,
 };
 use yeban_app::sound_library::{InstalledLibrary, PACK_MARKER_FILE};
 
@@ -23,6 +24,10 @@ fn dialog_and_host_wire_doctor_callbacks() {
         "sound-library-doctor-button",
         "sound-library-doctor-confirm-button",
         "sound-library-doctor-decline-button",
+        // T-FIX-628：运行中取消 —— 对话框的取消回调与取消钮、正在检查的行 id。
+        "callback doctor-cancel(string);",
+        "sound-library-doctor-cancel-button",
+        "doctor-checking-id",
     ] {
         assert!(DIALOG.contains(needle), "对话框缺少：{needle}");
     }
@@ -31,13 +36,18 @@ fn dialog_and_host_wire_doctor_callbacks() {
         "installed-doctor-needed: root.sound-installed-doctor-needed",
         "doctor-check(id) => { root.sound-library-doctor-check(id); }",
         "doctor-decline(id) => { root.sound-library-doctor-decline(id); }",
+        // T-FIX-628：取消与正在检查的行 id 在 app.slint 的接线。
+        "sound-doctor-checking-id",
+        "doctor-checking-id: root.sound-doctor-checking-id",
+        "doctor-cancel(id) => { root.sound-library-doctor-cancel(id); }",
     ] {
         assert!(APP.contains(needle), "app.slint 缺少：{needle}");
     }
     for needle in [
         "ui.on_sound_library_doctor_check",
         "ui.on_sound_library_doctor_decline",
-        "crate::sfz_doctor::run(",
+        // T-FIX-628：工作线程改走带进度/取消的新入口（旧 `run(` 针已失效，
+        // 新针在下面）；`run` 本体仍在，是无进度、永不取消的包装。
         "crate::sfz_doctor::guard(",
         "DoctorRunStatus::Refused",
         "library_id.as_str(), library_path.as_path()",
@@ -49,6 +59,13 @@ fn dialog_and_host_wire_doctor_callbacks() {
         "record_error.is_some()",
         "quarantine_corrupt_record",
         "DoctorState::Corrupt",
+        // T-FIX-628：取消回调、进度槽、取消标志、新入口。
+        "ui.on_sound_library_doctor_cancel",
+        "set_sound_doctor_checking_id",
+        "crate::sfz_doctor::run_with(",
+        "doctor_progress",
+        "request_doctor_cancel",
+        "DoctorRunStatus::Cancelling",
     ] {
         assert!(HOST.contains(needle), "host 缺少：{needle}");
     }
@@ -366,6 +383,35 @@ fn corrupt_record_is_quarantined_and_reprompts() {
         quarantine_corrupt_record(&lib_dir).is_none(),
         "好记录不应被隔离"
     );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// T-FIX-628：取消记录落盘（outcome "cancelled"）后状态仍是 Needed ——
+/// 下次继续提示、可重跑补完；已做的改动仍在盘上，重跑只补剩余部分。
+#[test]
+fn cancelled_record_still_prompts_and_rerun_completes() {
+    let base = temp_dir("cancelled-record");
+    let lib_dir = make_broken_library(&base);
+    let lib = library("user:ext-lib", lib_dir.clone());
+
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let report = run_with("user:ext-lib", &lib_dir, |_| {}, &cancel).expect("预置取消应返回 Ok");
+    assert!(report.cancelled, "预置取消时报告必须标 cancelled");
+    assert_eq!(doctor_state(&lib), DoctorState::Needed);
+
+    // 重跑（不取消）补完：tune 钳到 -100、修完可装载、状态变 Done。
+    let report = run("user:ext-lib", &lib_dir).expect("重跑应允许体检");
+    assert!(!report.cancelled, "重跑未取消时 cancelled 应为 false");
+    assert!(
+        report
+            .edits
+            .iter()
+            .any(|e| e.opcode == "tune" && e.new == "-100"),
+        "重跑应补完 tune 钳值：{report:?}"
+    );
+    assert!(report.still_failing.is_empty(), "修完不应再有装不上的");
+    assert_eq!(doctor_state(&lib), DoctorState::Done);
 
     let _ = fs::remove_dir_all(&base);
 }

@@ -2196,6 +2196,9 @@ msgstr "Bilan"
 
 msgid "开始检查"
 msgstr "Lancer le bilan"
+msgid "取消检查"
+msgstr "Annuler le bilan"
+
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "Bibliothèque non officielle : vérifier et réparer automatiquement avec SFZ Doctor ?"

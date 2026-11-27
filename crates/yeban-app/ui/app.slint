@@ -695,6 +695,8 @@ export component MainWindow inherits Window {
     in-out property <[string]> sound-installed-sizes: [];
     in-out property <[bool]> sound-installed-deletable: [];
     in-out property <[bool]> sound-installed-doctor-needed: [];
+    // 正在体检的那一件（T-FIX-628：宿主写，空 = 没有体检在跑；该行出「取消检查」钮）。
+    in-out property <string> sound-doctor-checking-id: "";
     in-out property <int> sound-catalog-state: 0;
     in-out property <[string]> sound-pack-ids: [];
     in-out property <[string]> sound-pack-names: [];
@@ -1183,6 +1185,7 @@ export component MainWindow inherits Window {
     callback sound-library-delete(string);
     callback sound-library-doctor-check(string);
     callback sound-library-doctor-decline(string);
+    callback sound-library-doctor-cancel(string);
     callback sound-library-drain-requested();
     // 音源管理：搜索原文变化（宿主按它重播过滤后的平行数组）与「一键全下」
     callback sound-library-filter-changed(string);
@@ -3069,6 +3072,7 @@ export component MainWindow inherits Window {
             installed-sizes: root.sound-installed-sizes;
             installed-deletable: root.sound-installed-deletable;
             installed-doctor-needed: root.sound-installed-doctor-needed;
+            doctor-checking-id: root.sound-doctor-checking-id;
             catalog-state: root.sound-catalog-state;
             pack-ids: root.sound-pack-ids;
             pack-names: root.sound-pack-names;
@@ -3091,6 +3095,7 @@ export component MainWindow inherits Window {
             delete-library(id) => { root.sound-library-delete(id); }
             doctor-check(id) => { root.sound-library-doctor-check(id); }
             doctor-decline(id) => { root.sound-library-doctor-decline(id); }
+            doctor-cancel(id) => { root.sound-library-doctor-cancel(id); }
             filter-changed(text) => { root.sound-library-filter-changed(text); }
             download-all => { root.sound-library-download-all(); }
             use-pack(id) => { root.sound-library-use-pack(id); }

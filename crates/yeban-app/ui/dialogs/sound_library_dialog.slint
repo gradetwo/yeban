@@ -62,6 +62,8 @@ export component SoundLibraryDialog inherits Rectangle {
     in-out property <string> confirm-delete-id: "";
     // ---- SFZ Doctor 确认态（本文件自有：正在确认体检的行 id，空 = 无）----
     in-out property <string> doctor-confirm-id: "";
+    // ---- 正在体检的那一件（宿主写：库 id，空 = 没有体检在跑；该行出「取消检查」钮）----
+    in property <string> doctor-checking-id: "";
     // ---- 搜索原文（本文件自有；过滤由宿主按这份原文重播平行数组）-------------
     in-out property <string> search-text: "";
 
@@ -73,6 +75,8 @@ export component SoundLibraryDialog inherits Rectangle {
     callback doctor-check(string);
     /// 拒绝这一件的体检（宿主落 declined 记录，之后不再提示）。
     callback doctor-decline(string);
+    /// 取消这一件正在跑的 SFZ Doctor 体检（只在下一个检查点停下，见宿主）。
+    callback doctor-cancel(string);
     callback filter-changed(string);
     callback download-all();
     /// 把这一件**装好的**音源用到混音台当前那条轨上（一次点击）。
@@ -489,8 +493,8 @@ export component SoundLibraryDialog inherits Rectangle {
                         }
                     }
 
-                    // SFZ Doctor 钮（非官方未检、且不在任何确认态时；与删除钮同款两步式）
-                    if root.installed-doctor-needed[i] && root.doctor-confirm-id != root.installed-ids[i] && root.confirm-delete-id != root.installed-ids[i] : Rectangle {
+                    // SFZ Doctor 钮（非官方未检、且不在任何确认态、且本行没在跑检查时；与删除钮同款两步式）
+                    if root.installed-doctor-needed[i] && root.doctor-confirm-id != root.installed-ids[i] && root.confirm-delete-id != root.installed-ids[i] && root.doctor-checking-id != root.installed-ids[i] : Rectangle {
                         x: root.list-w - 186px;
                         y: 8px;
                         width: 74px;
@@ -540,6 +544,61 @@ export component SoundLibraryDialog inherits Rectangle {
                             width: parent.width;
                             height: parent.height;
                             clicked => { if (root.focused-row-slot == 100 + i * 10 + 3) { root.focus-first-control(); } root.doctor-confirm-id = root.installed-ids[i]; }
+                        }
+                    }
+
+                    // SFZ Doctor 取消钮（本行正在检查时，替掉「体检」钮、占同一格；
+                    // 单飞：同一时刻只有一行在跑，id 不用加行后缀。点下只置取消
+                    // 标志，工作线程在下一个检查点停下 —— 绝不杀线程、不打断写盘。）
+                    if root.doctor-checking-id == root.installed-ids[i] : Rectangle {
+                        x: root.list-w - 186px;
+                        y: 8px;
+                        width: 74px;
+                        height: 28px;
+                        background: Tokens.bg-void;
+                        border-radius: Tokens.radius-sm;
+                        border-width: row-doctor-cancel-focus.has-focus ? 2px : 1px;
+                        border-color: row-doctor-cancel-focus.has-focus ? Tokens.gold : Tokens.gold-deep;
+                        accessible-role: button;
+                        accessible-id: "sound-library-doctor-cancel-button";
+                        accessible-label: @tr("取消检查");
+                        accessible-action-default => { if (root.focused-row-slot == 100 + i * 10 + 6) { root.focus-first-control(); } root.doctor-cancel(root.installed-ids[i]); }
+
+                        row-doctor-cancel-focus := FocusScope {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            focus-on-click: false;
+                            focus-gained(reason) => { root.focused-row-slot = 100 + i * 10 + 6; }
+                            focus-lost(reason) => { if (root.focused-row-slot == 100 + i * 10 + 6) { root.focused-row-slot = -1; } }
+                            key-pressed(event) => {
+                                if (event.text == Key.Return || event.text == Key.Space) {
+                                    root.doctor-cancel(root.installed-ids[i]);
+                                    accept
+                                } else {
+                                    reject
+                                }
+                            }
+                        }
+
+                        UiText {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            text: @tr("取消检查");
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-xs;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
+
+                        TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            width: parent.width;
+                            height: parent.height;
+                            clicked => { if (root.focused-row-slot == 100 + i * 10 + 6) { root.focus-first-control(); } root.doctor-cancel(root.installed-ids[i]); }
                         }
                     }
 
@@ -1182,8 +1241,8 @@ export component SoundLibraryDialog inherits Rectangle {
     // 出发乱走）。解法不在这里：每个会销毁本钮的动作在翻转前先把焦点挪到搜索
     // 框（静态锚点），见各按钮的 `key-pressed` / `clicked`。
     /// 槽位表（与树序 = Tab 序一致；行按钮的槽位见各行 `focus-gained`）：
-    /// `0` 搜索框 / `100+i*10+{0..5}` 已安装行（删除 / 确认删除 / 取消 /
-    /// 体检 / 开始检查 / 不用了）/ `300` 全部下载 / `301` 重试目录 /
+    /// `0` 搜索框 / `100+i*10+{0..6}` 已安装行（删除 / 确认删除 / 取消 /
+    /// 体检 / 开始检查 / 不用了 / 取消检查）/ `300` 全部下载 / `301` 重试目录 /
     /// `400+i*10+{0,1}` 可下载行（用到当前轨 / 下载）/ `600` 再试一次 /
     /// `700` ✕ 关闭 / `-1` 不在模态内。
     /// 静态锚点（0 / 700）由 `focus-control` 直达；行槽位只能由原生 Tab

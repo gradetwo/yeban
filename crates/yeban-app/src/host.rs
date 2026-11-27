@@ -14139,6 +14139,11 @@ struct SoundLibraryAsyncSlot {
     /// SFZ Doctor 结局 `(库 id, 状态行文本)`；读数在工人线程里由
     /// `sfz_doctor::format_doctor_readout` 换算好（与下载读数同一条纪律）。
     doctor_outcome: Option<(String, Result<String, String>)>,
+    /// 最近一次体检进度读数（T-FIX-628：阶段 + 计数 + 当前文件）。
+    doctor_progress: Option<DoctorTick>,
+    /// 本次体检的取消标志（T-FIX-628：UI 线程置位、工作线程在检查点读；
+    /// `begin_doctor` 建、`finish_doctor` 清）。
+    doctor_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// 已安装扫描的**最新请求代号**。关闭 / 重开 / 安装 / 删除都推进它。
     installed_epoch: u64,
     /// 当前是否还有效的已安装列表请求（关闭面板时置 false）。
@@ -14149,6 +14154,16 @@ struct SoundLibraryAsyncSlot {
     installed_pending: bool,
     /// 最近一次**当前代号**的扫描结局（δ 结果），由 UI 线程排空。
     installed_outcome: Option<(u64, Result<SoundInstalledSnapshot, String>)>,
+}
+
+/// 一次 SFZ Doctor 体检进度采样（T-FIX-628：跨线程槽里的体检进度载体 ——
+/// 一行人话读数，换算在产生数据的地方做一次，与 [`DownloadTick`] 同一条
+/// 纪律。槽是单飞的（`begin_doctor` 挡并发重入），不需要再带库 id 做行匹配；
+/// 百分比已在读数里的计数中，不另带一份。）
+#[derive(Clone, Debug, Default)]
+struct DoctorTick {
+    /// 一行人话读数（`探针回路 2/5 · inst1.sfz`）。
+    readout: String,
 }
 
 /// 一次下载进度采样（跨线程槽里的唯一进度载体）。
@@ -14218,12 +14233,44 @@ impl SoundLibraryAsyncState {
             return false;
         }
         slot.doctor_in_flight = true;
+        // T-FIX-628：本次体检的取消标志（默认未置）；取消回调与工作线程
+        // 共用这一份（`Arc`），UI 线程只置位、绝不直接杀线程。
+        slot.doctor_cancel = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )));
+        slot.doctor_progress = None;
         true
+    }
+
+    /// 本次体检的取消标志句柄（工作线程传给 `sfz_doctor::run_with`）。
+    fn doctor_cancel_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.lock().doctor_cancel.clone()
+    }
+
+    /// 用户点了取消（T-FIX-628：只置标志 —— 工作线程在下一个检查点停下，
+    /// 随即以取消报告交回；⛔ 取消不是失败，已改文件如实进报告）。
+    /// 没有体检在飞 ⇒ 返回 `false`（调用方不改状态行）。
+    fn request_doctor_cancel(&self) -> bool {
+        let slot = self.lock();
+        match &slot.doctor_cancel {
+            Some(flag) => {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 写一格体检进度（**工作线程**调）：阶段百分比 + 一行人话读数。
+    fn set_doctor_progress(&self, tick: DoctorTick) {
+        self.lock().doctor_progress = Some(tick);
     }
 
     fn finish_doctor(&self, library_id: &str, outcome: Result<String, String>) {
         let mut slot = self.lock();
         slot.doctor_in_flight = false;
+        slot.doctor_progress = None;
+        slot.doctor_cancel = None;
         slot.doctor_outcome = Some((library_id.to_owned(), outcome));
     }
 
@@ -14363,6 +14410,9 @@ enum DoctorRunStatus {
     AlreadyChecking,
     /// 正在检查这件库。
     Checking,
+    /// 用户点了取消、正在等下一个检查点停下（T-FIX-628：取消不是失败，
+    /// 状态行先给一句"正在取消"，结局仍由取消报告落状态行）。
+    Cancelling,
     /// 执行层守卫拒绝：官方 / 已检查 / 已跳过（T-FIX-618）。
     Refused(crate::sfz_doctor::DoctorRefusal),
 }
@@ -14429,6 +14479,17 @@ impl DoctorRunStatus {
                 KoKr => format!("SFZ Doctor가 “{library_name}”을(를) 검사하고 있습니다…"),
                 RuRu => format!("SFZ Doctor проверяет «{library_name}»…"),
                 DeDe => format!("SFZ Doctor prüft „{library_name}“…"),
+            },
+            Self::Cancelling => match lang {
+                ZhCn => format!("SFZ Doctor 正在取消《{library_name}》的检查…"),
+                EnUs => format!("Cancelling the SFZ Doctor check for “{library_name}”…"),
+                FrFr => format!("Annulation de la vérification SFZ Doctor de « {library_name} »…"),
+                EsEs => format!("Cancelando la revisión de SFZ Doctor de «{library_name}»…"),
+                PtBr => format!("Cancelando a verificação do SFZ Doctor de «{library_name}»…"),
+                JaJp => format!("SFZ Doctor の《{library_name}》のチェックをキャンセル中…"),
+                KoKr => format!("“{library_name}”의 SFZ Doctor 검사를 취소하는 중…"),
+                RuRu => format!("Отмена проверки SFZ Doctor для «{library_name}»…"),
+                DeDe => format!("SFZ-Doctor-Prüfung für „{library_name}“ wird abgebrochen…"),
             },
             Self::Refused(refusal) => {
                 use crate::sfz_doctor::DoctorState::{Declined, Done, Official};
@@ -14600,7 +14661,7 @@ mod doctor_run_status_tests {
     }
 
     /// 九语全覆盖：每语三处均有文案；非中文语的模板不含中文残片
-    /// （「找不到」「请重试」「已有」「检查中」「正在检查」）；正在检查
+    /// （「找不到」「请重试」「已有」「检查中」「正在检查」「正在取消」）；正在检查
     /// 的渲染必须含库名。
     #[test]
     fn doctor_run_status_all_languages_have_no_chinese_template_residue() {
@@ -14609,6 +14670,8 @@ mod doctor_run_status_tests {
                 DoctorRunStatus::LibraryNotFound,
                 DoctorRunStatus::AlreadyChecking,
                 DoctorRunStatus::Checking,
+                // T-FIX-628：取消中状态行同样逐语看守。
+                DoctorRunStatus::Cancelling,
                 refused(DoctorState::Official),
                 refused(DoctorState::Done),
                 refused(DoctorState::Declined),
@@ -14616,11 +14679,13 @@ mod doctor_run_status_tests {
                 let rendered = status.text_in("ext-lib", lang);
                 if matches!(
                     status,
-                    DoctorRunStatus::Checking | DoctorRunStatus::Refused(_)
+                    DoctorRunStatus::Checking
+                        | DoctorRunStatus::Cancelling
+                        | DoctorRunStatus::Refused(_)
                 ) {
                     assert!(
                         rendered.contains("ext-lib"),
-                        "{lang:?} 检查/拒绝渲染必须含库名，实际：{rendered}"
+                        "{lang:?} 检查/取消/拒绝渲染必须含库名，实际：{rendered}"
                     );
                 }
                 if lang != Language::ZhCn {
@@ -14630,6 +14695,7 @@ mod doctor_run_status_tests {
                         "已有",
                         "检查中",
                         "正在检查",
+                        "正在取消",
                         "拒绝",
                         "官方音源库",
                         "该库已检查过",
@@ -18008,24 +18074,51 @@ fn wire_sound_library_dialog_inner(
                     .into(),
             );
             ui.set_sound_library_status_is_error(false);
+            // T-FIX-628：正在检查的行 id 进界面（该行出「取消检查」钮）；
+            // 取消标志与进度回调随工作线程走。
+            ui.set_sound_doctor_checking_id(library_id.clone());
             let worker_state = state.clone();
             let worker_weak = weak.clone();
+            let cancel_flag = state.doctor_cancel_flag();
             std::thread::spawn(move || {
-                let report =
-                    match crate::sfz_doctor::run(library_id.as_str(), library_path.as_path()) {
-                        Ok(report) => report,
-                        Err(refusal) => {
-                            // 守卫在 begin 之后又被重判一次（TOCTOU）：同样走 Err 通道，
-                            // 把拒绝原因落到状态行，绝不把「没跑」伪装成体检成功。
-                            let readout = DoctorRunStatus::Refused(refusal)
-                                .text_in(&library_name, current_language());
-                            worker_state.finish_doctor(&library_id, Err(readout));
-                            let _ = worker_weak.upgrade_in_event_loop(|ui| {
-                                ui.invoke_sound_library_drain_requested();
-                            });
-                            return;
-                        }
-                    };
+                let cancel = cancel_flag
+                    .as_ref()
+                    .map(std::sync::Arc::clone)
+                    .unwrap_or_else(|| {
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+                    });
+                let progress_state = worker_state.clone();
+                let progress_weak = worker_weak.clone();
+                let progress_library_name = library_name.clone();
+                let report = match crate::sfz_doctor::run_with(
+                    library_id.as_str(),
+                    library_path.as_path(),
+                    |tick| {
+                        let readout = crate::sfz_doctor::format_doctor_progress_in(
+                            &progress_library_name,
+                            tick,
+                            current_language(),
+                        );
+                        progress_state.set_doctor_progress(DoctorTick { readout });
+                        let _ = progress_weak.upgrade_in_event_loop(|ui| {
+                            ui.invoke_sound_library_drain_requested();
+                        });
+                    },
+                    cancel.as_ref(),
+                ) {
+                    Ok(report) => report,
+                    Err(refusal) => {
+                        // 守卫在 begin 之后又被重判一次（TOCTOU）：同样走 Err 通道，
+                        // 把拒绝原因落到状态行，绝不把「没跑」伪装成体检成功。
+                        let readout = DoctorRunStatus::Refused(refusal)
+                            .text_in(&library_name, current_language());
+                        worker_state.finish_doctor(&library_id, Err(readout));
+                        let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                            ui.invoke_sound_library_drain_requested();
+                        });
+                        return;
+                    }
+                };
                 let readout = crate::sfz_doctor::format_doctor_readout(&library_name, &report);
                 // T-FIX-306：体检本身跑完了，但记录没存住 ⇒ 下次启动仍会提示。
                 // 读数尾巴已经带了这句警告，这里走 Err 通道，让排空处把它当错误
@@ -18040,6 +18133,35 @@ fn wire_sound_library_dialog_inner(
                     ui.invoke_sound_library_drain_requested();
                 });
             });
+        });
+    }
+
+    // ---- SFZ Doctor：取消正在跑的体检（T-FIX-628）-------------------------
+    //
+    // 只置取消标志 —— 工作线程在下一个检查点停下，随即以取消报告交回；
+    // 绝不杀线程、绝不在一次写盘中途打断。按钮只在体检进行中出现
+    // （`doctor-checking-id` 指向的那一行），没有体检在飞时按了也无事发生。
+    {
+        let weak = ui.as_weak();
+        let state = state.clone();
+        let last_installed = last_installed.clone();
+        ui.on_sound_library_doctor_cancel(move |library_id| {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            if !state.request_doctor_cancel() {
+                return;
+            }
+            let library_name = cached_installed_library(&last_installed, library_id.as_str())
+                .map(|(name, _)| name)
+                .unwrap_or_default();
+            ui.set_sound_library_status(
+                DoctorRunStatus::Cancelling
+                    .text_in(&library_name, current_language())
+                    .into(),
+            );
+            ui.set_sound_library_status_is_error(false);
         });
     }
 
@@ -18100,13 +18222,21 @@ fn wire_sound_library_dialog_inner(
                 debug_assert!(false, "MainWindow 在回调执行期间被销毁");
                 return;
             };
-            let (catalog_outcome, progress, download_outcome, doctor_outcome, installed_outcome) = {
+            let (
+                catalog_outcome,
+                progress,
+                download_outcome,
+                doctor_outcome,
+                doctor_progress,
+                installed_outcome,
+            ) = {
                 let mut slot = state.lock();
                 (
                     slot.catalog_outcome.take(),
                     slot.progress.take(),
                     slot.download_outcome.take(),
                     slot.doctor_outcome.take(),
+                    slot.doctor_progress.take(),
                     slot.installed_outcome.take(),
                 )
             };
@@ -18160,10 +18290,26 @@ fn wire_sound_library_dialog_inner(
                     rescue_after_pack_installed(&ui, &pack_id);
                 }
             }
-            if let Some((_library_id, outcome)) = doctor_outcome {
-                // 体检结局：一行读数进状态行（修不了的在读数里如实报），然后
-                // 重扫 —— 记录落盘成功时那一行的「体检」钮应当消失；记录没存住
-                // 时结局走 Err 通道（红字警告），那一行继续提示体检（T-FIX-306）。
+            if let Some(tick) = doctor_progress {
+                // 体检进度读数落在**状态行**（与下载读数同一条纪律）：
+                // 阶段 + 已处理/总数 + 当前文件。取消按钮仍在那一行，
+                // 进度本身不抢按钮位。
+                ui.set_sound_library_status(tick.readout.into());
+                ui.set_sound_library_status_is_error(false);
+            }
+            if let Some((library_id, outcome)) = doctor_outcome {
+                // 体检结束 ⇒ 取消钮撤掉（`doctor-checking-id` 清空），结局读数
+                // 进状态行（修不了的在读数里如实报），然后重扫 —— 记录落盘
+                // 成功时那一行的「体检」钮应当消失；记录没存住时结局走 Err
+                // 通道（红字警告），那一行继续提示体检（T-FIX-306）。
+                // T-FIX-628：取消结局同样走这里 —— 取消报告的读数（已取消 +
+                // 已做计数）进状态行，记录是 outcome "cancelled"，那一行
+                // 继续提示体检、可重跑补完。
+                // 只清"还是这一件"的 checking-id：排空与新一轮开始之间有
+                // 窗口，新体检若已把 id 写成另一件，绝不能把它清掉。
+                if ui.get_sound_doctor_checking_id().as_str() == library_id.as_str() {
+                    ui.set_sound_doctor_checking_id("".into());
+                }
                 match outcome {
                     Ok(text) => {
                         ui.set_sound_library_status(text.into());

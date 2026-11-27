@@ -2196,6 +2196,9 @@ msgstr "チェック"
 
 msgid "开始检查"
 msgstr "チェック開始"
+msgid "取消检查"
+msgstr "チェックをキャンセル"
+
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "非公式ライブラリ：SFZ Doctorでチェックして自動修復しますか？"

@@ -3610,6 +3610,14 @@ impl ElementRegistry {
             "不用了（拒绝 SFZ 体检，不再提示）",
             false,
         );
+        // T-FIX-628：取消正在跑的体检（单飞：同一时刻只有一行在跑）。
+        registry.add(
+            "sound-library-doctor-cancel-button",
+            ElementKind::Button,
+            "dialogs/sound_library_dialog.slint",
+            "取消正在跑的 SFZ 体检（只在体检进行中出现）",
+            false,
+        );
         registry.add(
             "sound-library-download-button",
             ElementKind::Button,

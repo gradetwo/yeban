@@ -2196,6 +2196,9 @@ msgstr "점검"
 
 msgid "开始检查"
 msgstr "점검 시작"
+msgid "取消检查"
+msgstr "검사 취소"
+
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "비공식 라이브러리: SFZ Doctor로 점검하고 자동 복구할까요?"

@@ -2196,6 +2196,9 @@ msgstr "Verificação"
 
 msgid "开始检查"
 msgstr "Iniciar verificação"
+msgid "取消检查"
+msgstr "Cancelar a verificação"
+
 
 msgid "非官方音源：用 SFZ Doctor 检查并自动修复？"
 msgstr "Biblioteca não oficial: verificar e reparar automaticamente com o SFZ Doctor?"

@@ -75,13 +75,13 @@ fn doctor_state_at(id: &str, location: &Path) -> DoctorState {
         return DoctorState::Official;
     }
     match read_record(location) {
-        RecordRead::Ok(record) => {
-            if record.get("outcome").and_then(|v| v.as_str()) == Some("declined") {
-                DoctorState::Declined
-            } else {
-                DoctorState::Done
-            }
-        }
+        RecordRead::Ok(record) => match record.get("outcome").and_then(|v| v.as_str()) {
+            Some("declined") => DoctorState::Declined,
+            // T-FIX-628：上次取消的记录（outcome "cancelled"）不是"已检查" ——
+            // 仍是 Needed，下次继续提示、可重跑补完（记录里的计数只作审计）。
+            Some("cancelled") => DoctorState::Needed,
+            _ => DoctorState::Done,
+        },
         RecordRead::Missing => DoctorState::Needed,
         RecordRead::Corrupt => DoctorState::Corrupt,
     }
@@ -174,6 +174,78 @@ pub struct DoctorReport {
     /// 体检记录落盘失败时的错误（`None` = 记录已写好）。体检本身可能全绿，
     /// 但记录没存住 ⇒ 下次启动仍会提示，调用方必须把这条报出来（T-FIX-306）。
     pub record_error: Option<String>,
+    /// 本次体检是否被取消（T-FIX-628）。取消时报告只含取消前已做的改动，
+    /// 记录落的是 outcome "cancelled"（不是 "checked"），状态仍是 Needed。
+    pub cancelled: bool,
+}
+
+/// 体检进行到的阶段（T-FIX-628：进度回调按此顺序推进）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoctorPhase {
+    /// 第一趟：采样路径大小写（建符号链接）。
+    CaseLinks,
+    /// 第二趟：已知钳值（全树 .sfz/.txt）。
+    KnownClamps,
+    /// 第三趟：引擎探针回路（逐件装载验证）。
+    Probe,
+}
+
+/// 一次进度采样（T-FIX-628：检查点发出；取消只在检查点生效）。
+#[derive(Clone, Debug)]
+pub struct DoctorProgress {
+    /// 当前阶段。
+    pub phase: DoctorPhase,
+    /// 本阶段已处理的文件数。
+    pub processed: usize,
+    /// 本阶段文件总数。
+    pub total: usize,
+    /// 正在处理的文件（阶段起始事件为 `None`）。
+    pub current_file: Option<PathBuf>,
+}
+
+impl DoctorProgress {
+    /// 本阶段百分比（`-1` = 总数为 0 或乘法溢出，无从算起；与下载读数同一口径）。
+    #[must_use]
+    pub fn percent(&self) -> i32 {
+        self.processed
+            .checked_mul(100)
+            .and_then(|scaled| scaled.checked_div(self.total))
+            .map_or(-1, |value| value as i32)
+    }
+}
+
+/// 取消是否已置（检查点唯一判据）。
+fn is_cancelled(cancel: &std::sync::atomic::AtomicBool) -> bool {
+    cancel.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 取消收尾（T-FIX-628）：报告标 `cancelled`，取消记录落盘
+/// （outcome "cancelled" + 已做计数）；记录写失败同样进 `record_error`。
+/// 取消绝不把状态推成 Done —— 记录口径在 [`doctor_state_at`] 里把
+/// "cancelled" 判回 Needed，下次继续提示、可重跑补完。
+fn finish_cancelled(mut report: DoctorReport, root: &Path) -> DoctorReport {
+    report.cancelled = true;
+    if let Err(err) = write_record(root, &report, "cancelled") {
+        report.record_error = Some(one_line_io_error(&err));
+    }
+    report
+}
+
+/// 写体检记录（outcome 由调用方定："checked" / "cancelled"）。
+fn write_record(root: &Path, report: &DoctorReport, outcome: &str) -> std::io::Result<()> {
+    let record = serde_json::json!({
+        "version": 1,
+        "outcome": outcome,
+        "checked_at_epoch_s": epoch_s(),
+        "files_checked": report.files_checked,
+        "links_created": report.links_created.len(),
+        "edits": report.edits.len(),
+        "still_failing": report.still_failing.len(),
+    });
+    fs::write(
+        root.join(DOCTOR_RECORD_FILE),
+        serde_json::to_string_pretty(&record).unwrap_or_default(),
+    )
 }
 
 /// 对一个库目录跑完整体检 + 修复，并把结果写进记录文件。
@@ -186,14 +258,46 @@ pub struct DoctorReport {
 ///
 /// 三趟：大小写链接 → 已知钳值 → 引擎探针回路（拿引擎报错里给的区间
 /// 通用钳值，最多 6 轮）。全程只动**这个目录之内**的文件。
+///
+/// 本函数是 [`run_with`] 的无进度、永不取消的版本（历史调用点不动）。
 pub fn run(library_id: &str, root: &Path) -> Result<DoctorReport, DoctorRefusal> {
+    run_with(
+        library_id,
+        root,
+        |_| {},
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+/// 带进度与取消的体检（T-FIX-628）。
+///
+/// `progress` 在每趟起始与每件文件处理完后各报一次（阶段、已处理/总数、
+/// 当前文件）；`cancel` 只在**检查点**读 —— 每件文件处理前、每次建链接前、
+/// 探针每轮钳值前。取消绝不在一次写盘中途生效（在飞的文件写完才停），
+/// 取消前已做的改动如实留在返回的 [`DoctorReport`] 里；取消记录落盘
+/// （outcome "cancelled"），状态仍是 Needed。
+pub fn run_with<F: FnMut(&DoctorProgress)>(
+    library_id: &str,
+    root: &Path,
+    mut progress: F,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<DoctorReport, DoctorRefusal> {
     guard(library_id, root)?;
     let mut report = DoctorReport::default();
     let tops = top_level_sfzs(root);
 
     // ---- 第一趟：采样路径大小写 -------------------------------------------
+    progress(&DoctorProgress {
+        phase: DoctorPhase::CaseLinks,
+        processed: 0,
+        total: tops.len(),
+        current_file: None,
+    });
     let mut links: BTreeMap<PathBuf, String> = BTreeMap::new();
-    for file in &tops {
+    for (i, file) in tops.iter().enumerate() {
+        if is_cancelled(cancel) {
+            return Ok(finish_cancelled(report, root));
+        }
         let main_dir = file.parent().unwrap_or(Path::new("/")).to_path_buf();
         for region in parse_regions(file) {
             let Some(sample) = region.sample else {
@@ -215,8 +319,18 @@ pub fn run(library_id: &str, root: &Path) -> Result<DoctorReport, DoctorRefusal>
                 links.entry(link).or_insert(target);
             }
         }
+        progress(&DoctorProgress {
+            phase: DoctorPhase::CaseLinks,
+            processed: i + 1,
+            total: tops.len(),
+            current_file: Some(file.clone()),
+        });
     }
     for (link, target) in &links {
+        // 取消只在建链接前判 —— 在飞的符号链接建完才停，不留半截。
+        if is_cancelled(cancel) {
+            return Ok(finish_cancelled(report, root));
+        }
         if link.is_symlink() || link.exists() {
             continue;
         }
@@ -242,16 +356,45 @@ pub fn run(library_id: &str, root: &Path) -> Result<DoctorReport, DoctorRefusal>
     }
 
     // ---- 第二趟：已知钳值（全树 .sfz/.txt） --------------------------------
-    for path in walk_files(root, &["sfz", "txt"]) {
-        clamp_file_known(&path, &mut report.edits);
+    let clamp_files = walk_files(root, &["sfz", "txt"]);
+    progress(&DoctorProgress {
+        phase: DoctorPhase::KnownClamps,
+        processed: 0,
+        total: clamp_files.len(),
+        current_file: None,
+    });
+    for (i, path) in clamp_files.iter().enumerate() {
+        // 取消只在处理下一件前判 —— 在飞的文件写完才停。
+        if is_cancelled(cancel) {
+            return Ok(finish_cancelled(report, root));
+        }
+        clamp_file_known(path, &mut report.edits);
+        progress(&DoctorProgress {
+            phase: DoctorPhase::KnownClamps,
+            processed: i + 1,
+            total: clamp_files.len(),
+            current_file: Some(path.clone()),
+        });
     }
 
     // ---- 第三趟：引擎探针回路 ---------------------------------------------
-    for file in &tops {
-        report.files_checked += 1;
+    progress(&DoctorProgress {
+        phase: DoctorPhase::Probe,
+        processed: 0,
+        total: tops.len(),
+        current_file: None,
+    });
+    for (i, file) in tops.iter().enumerate() {
+        if is_cancelled(cancel) {
+            return Ok(finish_cancelled(report, root));
+        }
         let mut verdict = probe(file);
         let mut rounds = 0;
         while let Err(message) = &verdict {
+            // 取消只在每轮钳值前判 —— 在飞的钳值 + 重探写完才停。
+            if is_cancelled(cancel) {
+                return Ok(finish_cancelled(report, root));
+            }
             if rounds >= 6 {
                 break;
             }
@@ -283,24 +426,20 @@ pub fn run(library_id: &str, root: &Path) -> Result<DoctorReport, DoctorRefusal>
                 .collect();
             report.still_failing.push((file.clone(), one_line));
         }
+        // 只有整件探完才计已查 —— 中途取消的那件不计（它没出 verdict）。
+        report.files_checked += 1;
+        progress(&DoctorProgress {
+            phase: DoctorPhase::Probe,
+            processed: i + 1,
+            total: tops.len(),
+            current_file: Some(file.clone()),
+        });
     }
 
     // ---- 记录落盘 ----------------------------------------------------------
     // T-FIX-306：落盘失败不再 `let _ =` 吞掉 —— 体检本身可能全绿，但记录没
     // 存住 ⇒ 下次启动仍会提示。失败记进 `record_error`，由调用方报给用户。
-    let record = serde_json::json!({
-        "version": 1,
-        "outcome": "checked",
-        "checked_at_epoch_s": epoch_s(),
-        "files_checked": report.files_checked,
-        "links_created": report.links_created.len(),
-        "edits": report.edits.len(),
-        "still_failing": report.still_failing.len(),
-    });
-    if let Err(err) = fs::write(
-        root.join(DOCTOR_RECORD_FILE),
-        serde_json::to_string_pretty(&record).unwrap_or_default(),
-    ) {
+    if let Err(err) = write_record(root, &report, "checked") {
         report.record_error = Some(one_line_io_error(&err));
     }
     Ok(report)
@@ -327,12 +466,160 @@ pub fn format_doctor_readout(name: &str, report: &DoctorReport) -> String {
     format_doctor_readout_in(name, report, crate::host::current_language())
 }
 
+/// 在 `lang` 下的阶段名（进度读数用；与读数模板同一条九语纪律）。
+#[must_use]
+pub fn phase_name_in(phase: DoctorPhase, lang: Language) -> &'static str {
+    use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match (phase, lang) {
+        (DoctorPhase::CaseLinks, ZhCn) => "大小写链接",
+        (DoctorPhase::CaseLinks, EnUs) => "case links",
+        (DoctorPhase::CaseLinks, FrFr) => "liens de casse",
+        (DoctorPhase::CaseLinks, EsEs) => "enlaces de mayúsculas",
+        (DoctorPhase::CaseLinks, PtBr) => "links de maiúsculas",
+        (DoctorPhase::CaseLinks, JaJp) => "大文字小文字リンク",
+        (DoctorPhase::CaseLinks, KoKr) => "대소문자 링크",
+        (DoctorPhase::CaseLinks, RuRu) => "ссылки регистра",
+        (DoctorPhase::CaseLinks, DeDe) => "Case-Links",
+        (DoctorPhase::KnownClamps, ZhCn) => "已知钳值",
+        (DoctorPhase::KnownClamps, EnUs) => "known clamps",
+        (DoctorPhase::KnownClamps, FrFr) => "limites connues",
+        (DoctorPhase::KnownClamps, EsEs) => "límites conocidos",
+        (DoctorPhase::KnownClamps, PtBr) => "limites conhecidos",
+        (DoctorPhase::KnownClamps, JaJp) => "既知のクランプ",
+        (DoctorPhase::KnownClamps, KoKr) => "알려진 클램프",
+        (DoctorPhase::KnownClamps, RuRu) => "известные ограничения",
+        (DoctorPhase::KnownClamps, DeDe) => "bekannte Grenzwerte",
+        (DoctorPhase::Probe, ZhCn) => "探针回路",
+        (DoctorPhase::Probe, EnUs) => "probe loop",
+        (DoctorPhase::Probe, FrFr) => "boucle de sondage",
+        (DoctorPhase::Probe, EsEs) => "bucle de sonda",
+        (DoctorPhase::Probe, PtBr) => "laço de sonda",
+        (DoctorPhase::Probe, JaJp) => "プローブループ",
+        (DoctorPhase::Probe, KoKr) => "프로브 루프",
+        (DoctorPhase::Probe, RuRu) => "цикл проверки",
+        (DoctorPhase::Probe, DeDe) => "Probe-Schleife",
+    }
+}
+
+/// 把一次进度采样换算成一行状态行读数（T-FIX-628；与
+/// [`format_doctor_readout_in`] 同一条九语纪律：模板按当前语言渲染，
+/// 库名与当前文件名不译，原样进占位）。本函数在体检工人线程里调用，
+/// [`crate::host::current_language`] 读原子变量，线程安全。
+#[must_use]
+pub fn format_doctor_progress_in(name: &str, progress: &DoctorProgress, lang: Language) -> String {
+    use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    let phase = phase_name_in(progress.phase, lang);
+    let file_suffix = progress
+        .current_file
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|n| format!(" · {}", n.to_string_lossy()))
+        .unwrap_or_default();
+    match lang {
+        ZhCn => format!(
+            "SFZ Doctor 正在检查《{name}》：{phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        EnUs => format!(
+            "SFZ Doctor checking “{name}” — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        FrFr => format!(
+            "SFZ Doctor : vérification de « {name} » en cours — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        EsEs => format!(
+            "SFZ Doctor: revisando «{name}» — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        PtBr => format!(
+            "SFZ Doctor: verificando «{name}» — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        JaJp => format!(
+            "SFZ Doctor：《{name}》をチェック中 — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        KoKr => format!(
+            "SFZ Doctor: “{name}” 검사 중 — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        RuRu => format!(
+            "SFZ Doctor: проверка «{name}» — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+        DeDe => format!(
+            "SFZ Doctor: Prüfung von „{name}“ läuft — {phase} {}/{}{}",
+            progress.processed, progress.total, file_suffix
+        ),
+    }
+}
+
 /// 在 `lang` 下的完整展示读数。中文态与旧实现逐字相同（单测钉死）；库名与
 /// 引擎报错原文不译，原样进占位。
+///
+/// T-FIX-628：取消的报告先走取消模板（已检查件数 + 已做计数），不冒充"已完成"。
 #[must_use]
 pub fn format_doctor_readout_in(name: &str, report: &DoctorReport, lang: Language) -> String {
     use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
-    let mut out = if report.still_failing.is_empty() {
+    let mut out = if report.cancelled {
+        match lang {
+            ZhCn => format!(
+                "SFZ Doctor：《{name}》已取消 —— 已检查 {} 件（建大小写链接 {}、修正操作码 {}）",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            EnUs => format!(
+                "SFZ Doctor: check of “{name}” cancelled — {} checked (case links created: {}, opcodes fixed: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            FrFr => format!(
+                "SFZ Doctor : vérification de « {name} » annulée — {} vérifiés (liens de casse créés : {}, opcodes corrigés : {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            EsEs => format!(
+                "SFZ Doctor: revisión de «{name}» cancelada — {} revisados (enlaces de mayúsculas creados: {}, opcodes corregidos: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            PtBr => format!(
+                "SFZ Doctor: verificação de «{name}» cancelada — {} verificados (links de maiúsculas criados: {}, opcodes corrigidos: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            JaJp => format!(
+                "SFZ Doctor：《{name}》のチェックをキャンセルしました —— {} 件チェック済み（大文字小文字リンク {} 件作成、オペコード {} 件修正）",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            KoKr => format!(
+                "SFZ Doctor: “{name}” 검사를 취소했습니다 — {}개 검사 완료(대소문자 링크 {}개 생성, 오프코드 {}개 수정)",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            RuRu => format!(
+                "SFZ Doctor: проверка «{name}» отменена — проверено: {} (создано ссылок регистра: {}, исправлено опкодов: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+            DeDe => format!(
+                "SFZ Doctor: Prüfung von „{name}“ abgebrochen — {} geprüft (Case-Links erstellt: {}, Opcodes korrigiert: {})",
+                report.files_checked,
+                report.links_created.len(),
+                report.edits.len()
+            ),
+        }
+    } else if report.still_failing.is_empty() {
         match lang {
             ZhCn => format!(
                 "SFZ Doctor：《{name}》检查完成 —— {} 件乐器全部可装载（建大小写链接 {}、修正操作码 {}）",
@@ -990,6 +1277,344 @@ mod tests {
     use super::*;
     use crate::cli::Language;
 
+    /// T-FIX-628：进度回调按三趟顺序回报（阶段、已处理/总数、当前文件）。
+    ///
+    /// 3 件乐器库：每趟总数都是 3，阶段按 大小写链接 → 已知钳值 → 探针
+    /// 推进；每趟先报一格 (0, total, None)，再逐文件报 (i+1, total, Some)。
+    #[test]
+    fn progress_reports_each_phase_with_counts() {
+        let base = temp_test_dir("progress");
+        let lib_dir = make_multi_library(&base, 3);
+        let mut events: Vec<DoctorProgress> = Vec::new();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let report = run_with(
+            "user:ext-lib",
+            &lib_dir,
+            |p| events.push(p.clone()),
+            &cancel,
+        )
+        .expect("Needed 库应允许体检");
+        assert!(!report.cancelled, "未取消时 cancelled 应为 false");
+        assert_eq!(report.files_checked, 3, "3 件都应查完：{report:?}");
+        assert!(!events.is_empty(), "进度回调至少应收到阶段起始事件");
+        let phases: Vec<DoctorPhase> = events.iter().map(|e| e.phase).collect();
+        let mut seen: Vec<DoctorPhase> = Vec::new();
+        for phase in phases {
+            if seen.last() != Some(&phase) {
+                seen.push(phase);
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                DoctorPhase::CaseLinks,
+                DoctorPhase::KnownClamps,
+                DoctorPhase::Probe
+            ],
+            "阶段必须按三趟顺序推进：{events:?}"
+        );
+        for event in &events {
+            assert!(
+                event.processed <= event.total,
+                "已处理不得超过总数：{event:?}"
+            );
+            assert_eq!(event.total, 3, "每趟总数都是 3 件：{event:?}");
+        }
+        let probe_done = events
+            .iter()
+            .rfind(|e| e.phase == DoctorPhase::Probe)
+            .expect("探针趟应有事件");
+        assert_eq!(probe_done.processed, 3);
+        assert_eq!(probe_done.total, 3);
+        assert_eq!(probe_done.percent(), 100, "末件探针事件应为 100%");
+        assert!(
+            probe_done.current_file.is_some(),
+            "逐文件事件必须带当前文件：{probe_done:?}"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// T-FIX-628：开始前已置取消标志 ⇒ 一次都不跑、报告标 cancelled、
+    /// 一个字节都不写（SFZ 文本原样、无记录文件）。
+    #[test]
+    fn cancel_before_start_reports_cancelled_without_writes() {
+        let base = temp_test_dir("cancel-early");
+        let lib_dir = make_multi_library(&base, 3);
+        let sfz_before = fs::read(lib_dir.join("inst0.sfz")).expect("读原始 SFZ");
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let mut events: Vec<DoctorProgress> = Vec::new();
+        let report = run_with(
+            "user:ext-lib",
+            &lib_dir,
+            |p| events.push(p.clone()),
+            &cancel,
+        )
+        .expect("预置取消也应返回 Ok（不是拒绝）");
+        assert!(report.cancelled, "预置取消时报告必须标 cancelled");
+        assert_eq!(report.files_checked, 0, "一次都不应查：{report:?}");
+        assert!(report.links_created.is_empty(), "不应建链接：{report:?}");
+        assert!(report.edits.is_empty(), "不应改操作码：{report:?}");
+        assert_eq!(
+            fs::read(lib_dir.join("inst0.sfz")).expect("读原 SFZ"),
+            sfz_before,
+            "取消前 SFZ 文本不得被改动"
+        );
+        // 取消记录已落盘（outcome "cancelled"，全零计数 —— 取消本身也留审计
+        // 痕迹），状态仍是 Needed（下次继续提示、可重跑）。
+        let record =
+            fs::read_to_string(lib_dir.join(DOCTOR_RECORD_FILE)).expect("取消记录应已落盘");
+        assert!(
+            record.contains("\"outcome\": \"cancelled\""),
+            "取消记录应标 outcome cancelled：{record}"
+        );
+        assert!(
+            record.contains("\"files_checked\": 0"),
+            "开始前取消的记录应是全零计数：{record}"
+        );
+        assert_eq!(
+            doctor_state(&test_library(lib_dir.clone())),
+            DoctorState::Needed,
+            "取消后仍应提示体检（可重跑）"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// T-FIX-628：中途取消只在下一个检查点生效 —— 已在飞的文件写完才停；
+    /// 取消前已做的改动如实进报告，取消后文件一位不动；取消记录落盘
+    /// （outcome "cancelled"），状态仍是 Needed（下次继续提示、可重跑）。
+    #[test]
+    fn cancel_mid_run_stops_at_next_checkpoint_and_keeps_prior_edits() {
+        let base = temp_test_dir("cancel-mid");
+        let lib_dir = make_multi_library(&base, 3);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let report = run_with(
+            "user:ext-lib",
+            &lib_dir,
+            |p| {
+                // 第一趟已知钳值报到第 1 件就取消：此时大小写趟已跑完、
+                // 钳值趟只动了 inst0.sfz，探针趟一次都没跑。
+                if p.phase == DoctorPhase::KnownClamps && p.processed == 1 {
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            },
+            &cancel,
+        )
+        .expect("中途取消应返回 Ok（不是拒绝）");
+        assert!(report.cancelled, "中途取消时报告必须标 cancelled");
+        assert_eq!(
+            report.files_checked, 0,
+            "探针趟没跑，不应计已查：{report:?}"
+        );
+        assert_eq!(
+            report.edits.len(),
+            1,
+            "取消前只改了 inst0.sfz 的 tune：{report:?}"
+        );
+        assert_eq!(report.edits[0].file.file_name().unwrap(), "inst0.sfz");
+        assert_eq!(report.edits[0].opcode, "tune");
+        assert_eq!(report.edits[0].new, "-100");
+        for name in ["inst1.sfz", "inst2.sfz"] {
+            let text = fs::read_to_string(lib_dir.join(name)).expect("读后两件 SFZ");
+            assert!(
+                text.contains("tune=-109"),
+                "取消后 {name} 必须一位不动：{text}"
+            );
+        }
+        // 大小写趟已跑完：链接数与本机文件系统大小写敏感性一致。
+        let expected_links = if fs_is_case_sensitive(&base) { 1 } else { 0 };
+        assert_eq!(
+            report.links_created.len(),
+            expected_links,
+            "取消前大小写链接应已建完：{report:?}"
+        );
+        // 取消记录已落盘（outcome "cancelled"），状态仍是 Needed。
+        let record =
+            fs::read_to_string(lib_dir.join(DOCTOR_RECORD_FILE)).expect("取消记录应已落盘");
+        assert!(
+            record.contains("\"outcome\": \"cancelled\""),
+            "取消记录应标 outcome cancelled：{record}"
+        );
+        let lib = test_library(lib_dir.clone());
+        assert_eq!(
+            doctor_state(&lib),
+            DoctorState::Needed,
+            "取消后仍应提示体检（可重跑补完）"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// T-FIX-628：新入口 `run_with` 同样先过 618 守卫 —— 官方库拒绝，
+    /// 且一个字节都不写。
+    #[test]
+    fn run_with_keeps_official_guard() {
+        let base = temp_test_dir("run-with-guard");
+        let lib_dir = make_multi_library(&base, 3);
+        fs::write(lib_dir.join(PACK_MARKER_FILE), "{}").expect("写包标记");
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut events: Vec<DoctorProgress> = Vec::new();
+        let refusal = run_with(
+            "user:ext-lib",
+            &lib_dir,
+            |p| events.push(p.clone()),
+            &cancel,
+        )
+        .expect_err("官方库必须拒绝体检");
+        assert_eq!(refusal.state(), DoctorState::Official);
+        assert!(events.is_empty(), "守卫拒绝前不应报任何进度");
+        assert!(
+            !lib_dir.join(DOCTOR_RECORD_FILE).exists(),
+            "官方库不得写体检记录"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// T-FIX-628：进度读数九语全覆盖 —— 每语都含库名、阶段名、计数与当前
+    /// 文件名；非中文语不含中文残片。
+    #[test]
+    fn format_doctor_progress_in_all_languages() {
+        let progress = DoctorProgress {
+            phase: DoctorPhase::Probe,
+            processed: 2,
+            total: 5,
+            current_file: Some(PathBuf::from("inst1.sfz")),
+        };
+        for lang in Language::ALL {
+            let rendered = format_doctor_progress_in("ext-lib", &progress, lang);
+            assert!(
+                rendered.contains("ext-lib"),
+                "{lang:?} 进度读数必须含库名，实际：{rendered}"
+            );
+            assert!(
+                rendered.contains("2/5"),
+                "{lang:?} 进度读数必须含计数 2/5，实际：{rendered}"
+            );
+            assert!(
+                rendered.contains("inst1.sfz"),
+                "{lang:?} 进度读数必须含当前文件名，实际：{rendered}"
+            );
+            if lang != Language::ZhCn {
+                for fragment in ["正在检查", "大小写链接", "已知钳值", "探针回路"]
+                {
+                    assert!(
+                        !rendered.contains(fragment),
+                        "{lang:?} 进度读数不许含中文残片「{fragment}」，实际：{rendered}"
+                    );
+                }
+            }
+        }
+        // 阶段起始事件（无当前文件）不带文件后缀、不留空的 " · "。
+        let start = DoctorProgress {
+            phase: DoctorPhase::CaseLinks,
+            processed: 0,
+            total: 3,
+            current_file: None,
+        };
+        let rendered = format_doctor_progress_in("ext-lib", &start, Language::ZhCn);
+        assert!(
+            rendered.contains("0/3") && !rendered.contains(" · "),
+            "阶段起始读数应为 0/3 且无文件后缀，实际：{rendered}"
+        );
+    }
+
+    /// T-FIX-628：取消读数九语全覆盖 —— 每语都点名"已取消"，非中文语不含
+    /// 中文残片（"已取消" / "已检查" 进残片表）。
+    #[test]
+    fn cancelled_readout_names_cancellation_in_all_languages() {
+        let mut report = sample_report();
+        report.cancelled = true;
+        for lang in Language::ALL {
+            let rendered = format_doctor_readout_in("ext-lib", &report, lang);
+            assert!(
+                rendered.contains("ext-lib"),
+                "{lang:?} 取消读数必须含库名，实际：{rendered}"
+            );
+            if lang == Language::ZhCn {
+                assert!(
+                    rendered.contains("已取消"),
+                    "中文取消读数必须点名已取消，实际：{rendered}"
+                );
+            } else {
+                for fragment in ["已取消", "已检查", "检查完成", "全部可装载"] {
+                    assert!(
+                        !rendered.contains(fragment),
+                        "{lang:?} 取消读数不许含中文残片「{fragment}」，实际：{rendered}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn temp_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-sfz-doctor-628-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    /// 一段最小可解码的 16-bit 单声道 WAV（10 个采样）。
+    fn write_tiny_wav(path: &Path) {
+        let mut bytes: Vec<u8> = Vec::new();
+        let data_len: u32 = 20;
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000u32.to_le_bytes());
+        bytes.extend_from_slice(&96_000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for i in 0..10i16 {
+            bytes.extend_from_slice(&(i * 100).to_le_bytes());
+        }
+        fs::write(path, bytes).expect("写 WAV");
+    }
+
+    /// 造一件多文件坏库：`n` 件 SFZ 共用一个大小写错位的采样路径
+    /// （Samples/flute vs 磁盘 Samples/Flute），每件 region 里 tune=-109 越界。
+    fn make_multi_library(base: &Path, n: usize) -> PathBuf {
+        let lib = base.join("ext-lib");
+        let samples = lib.join("Samples").join("Flute");
+        fs::create_dir_all(&samples).expect("建采样目录");
+        write_tiny_wav(&samples.join("take1.wav"));
+        for i in 0..n {
+            fs::write(
+                lib.join(format!("inst{i}.sfz")),
+                "<control>\ndefault_path=Samples/flute/\n<region> sample=take1.wav key=60 tune=-109\n",
+            )
+            .expect("写 SFZ");
+        }
+        lib
+    }
+
+    /// 本机文件系统是否大小写敏感（与 tests/sfz_doctor_flow.rs 同口径）。
+    fn fs_is_case_sensitive(dir: &Path) -> bool {
+        let probe = dir.join("CaSeSeNsItIvItY.tmp");
+        fs::write(&probe, b"x").expect("写大小写探针");
+        let insensitive = dir.join("casesensitivity.tmp").exists();
+        let _ = fs::remove_file(&probe);
+        !insensitive
+    }
+
+    fn test_library(location: PathBuf) -> InstalledLibrary {
+        InstalledLibrary {
+            id: "user:ext-lib".to_string(),
+            name: "ext-lib".to_string(),
+            location,
+            size_bytes: 0,
+            deletable: true,
+        }
+    }
+
     /// 三场景共用的样本报告：3 件已查、2 条大小写链接、1 处操作码修正。
     fn sample_report() -> DoctorReport {
         DoctorReport {
@@ -1003,6 +1628,7 @@ mod tests {
             }],
             still_failing: vec![],
             record_error: None,
+            cancelled: false,
         }
     }
 
