@@ -201,7 +201,7 @@ integer_count | no_callee | 0 | - | src/loudness.rs | momentary_window_covers_fo
 integer_count | no_callee | 0 | - | src/loudness.rs | one_channel_only_is_three_db_quieter
 float_bits | hard | 9 | - | src/loudness.rs | reset_reproduces_a_freshly_built_gated_meter_bit_for_bit
 integer_count | no_callee | 0 | - | src/loudness.rs | reset_restores_the_initial_state
-integer_count | no_callee | 0 | - | src/loudness.rs | sample_rate_support_covers_the_four_derived_tables
+integer_count | no_callee | 0 | - | src/loudness.rs | sample_rate_support_covers_the_five_derived_tables
 integer_count | no_callee | 0 | - | src/loudness.rs | short_term_window_is_three_seconds_wide
 integer_count | no_callee | 0 | - | src/loudness.rs | silence_and_empty_input_are_negative_infinity_never_nan
 integer_count | no_callee | 0 | - | src/loudness.rs | the_absolute_gate_sits_at_minus_seventy_lufs

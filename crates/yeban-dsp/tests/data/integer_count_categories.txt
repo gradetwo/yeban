@@ -137,7 +137,7 @@ src/loudness.rs|minus_twenty_dbfs_997hz_stereo_is_minus_twenty_lufs|value_bound|
 src/loudness.rs|momentary_window_covers_four_hundred_milliseconds_with_seventy_five_percent_overlap|value_bound|assert_eq!(meter.hop_samples(), 4_800
 src/loudness.rs|one_channel_only_is_three_db_quieter|value_bound|assert!(             (loudness + 23.010_3).abs() < 0.05,             "单通道 −20 dBFS 应为 −23.
 src/loudness.rs|reset_restores_the_initial_state|collection_size|assert_eq!(meter, LoudnessMeter::new_48k()
-src/loudness.rs|sample_rate_support_covers_the_four_derived_tables|value_bound|assert!(                 KWeighting::for_sample_rate(rate).is_none(),                 "{ra
+src/loudness.rs|sample_rate_support_covers_the_five_derived_tables|value_bound|assert!(                 KWeighting::for_sample_rate(rate).is_none(),                 "{ra
 src/loudness.rs|short_term_window_is_three_seconds_wide|value_bound|assert_eq!(                 meter.short_term_lufs(),                 f32::NEG_INFINITY,   
 src/loudness.rs|silence_and_empty_input_are_negative_infinity_never_nan|collection_size|assert_eq!(meter.frames(), 0
 src/loudness.rs|the_absolute_gate_sits_at_minus_seventy_lufs|value_bound|assert!(                 (ungated - target as f32).abs() < 0.05,                 "构造前提: 无门

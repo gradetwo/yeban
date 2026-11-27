@@ -367,10 +367,11 @@
 //!
 //! ### 哪些采样率上可判
 //!
-//! K 加权系数只对 44.1 / 48 / 88.2 / 96 kHz 四档推导并核验过
+//! K 加权系数对 44.1 / 48 / 88.2 / 96 / 192 kHz 五档推导并核验过
 //! （`crates/yeban-dsp/src/loudness.rs` 的 `K_WEIGHTING_SAMPLE_RATES_HZ`）。
-//! `SampleRate` 枚举还有 192 kHz：那时**不硬套 48 kHz 系数**（那会给出错 0.8 dB 的
-//! "说谎"读数），读数写 `null` + `measurementNote`，给了目标则判 `unmeasurable`。
+//! `SampleRate` 枚举包含 192 kHz，因此 192 kHz 工程现在可测量；仍未推导的采样率
+//! 一律**不硬套 48 kHz 系数**（那会给出错 0.8 dB 的"说谎"读数），读数写 `null`
+//! + `measurementNote`，给了目标则判 `unmeasurable`。
 //!
 //! ## 显式帧数（⭐ `#252`；`frames` / `durationSeconds`，⛔ 缺省不变）
 //!
@@ -637,7 +638,7 @@ pub const NORMALIZE_TARGET: f32 = 1.0;
 /// 口径与理由：
 /// - 单位是 **LU**（相对响度差），与 BS.1770 的读数差同量纲；
 /// - 数值取 **0.5 LU**：它比该实现自身的数值噪声大三个数量级
-///   （四档采样率上 997 Hz 标定点的残余偏差 ≤0.025 dB，见
+///   （五档采样率上 997 Hz 标定点的残余偏差 ≤0.025 dB，见
 ///   `crates/yeban-dsp/src/loudness.rs:1091-1127`），又比广播实务里"±1 LU 以内算合规"
 ///   更严 —— 于是它**不会**因为实现误差而误判，也不会宽到让"差 0.9 LU"过关；
 /// - 需要更宽/更严的调用方此刻**没有**参数可调：本切片刻意只加**一个**参数
@@ -677,9 +678,9 @@ pub const VERDICT_VALUES: [&str; 4] = [
 
 /// 响度读数或判定**不可用**时的原因词（进响应 `loudness.measurementNote`）。
 pub const NOTE_SILENT_MASTER: &str = "纯静音母带: 门限积分的读数为负无穷, 不是 0 LUFS";
-/// 见 [`NOTE_SILENT_MASTER`]；这一条是采样率不在四档核验表里。
+/// 见 [`NOTE_SILENT_MASTER`]；这一条是采样率不在五档核验表里。
 pub const NOTE_UNVERIFIED_SAMPLE_RATE: &str =
-    "该采样率没有核验过的 K 加权系数 (44.1/48/88.2/96 kHz 四档), 拒绝硬套 48 kHz 系数";
+    "该采样率没有核验过的 K 加权系数 (44.1/48/88.2/96/192 kHz 五档), 拒绝硬套 48 kHz 系数";
 /// 见 [`NOTE_SILENT_MASTER`]；这一条是**施加后**才测不出：增益把整段压到绝对门限之下。
 pub const NOTE_POST_GAIN_BELOW_ABSOLUTE_GATE: &str =
     "施加增益后整段低于 BS.1770 绝对门限 (−70 LUFS), 复测无读数";
@@ -1243,7 +1244,7 @@ impl LoudnessTarget {
                 Some(value) if value.is_finite() => (Some(value), None),
                 // `Some(−∞)` = 没有任何 400 ms 块过绝对门限（纯静音母带）。
                 Some(_) => (None, Some(NOTE_SILENT_MASTER)),
-                // `None` = 该采样率没有核验过的 K 加权系数（本实现只内置四档）。
+                // `None` = 该采样率没有核验过的 K 加权系数（本实现内置五档）。
                 None => (None, Some(NOTE_UNVERIFIED_SAMPLE_RATE)),
             }
         };

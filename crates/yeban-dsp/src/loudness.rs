@@ -56,7 +56,7 @@
 //! 4. **多声道权重与 LFE**：只支持单声道与立体声，通道权重恒为 1；
 //!    5.1 的环绕权重（1.0 / 1.41）与 LFE 排除未实现。
 //! 5. **采样率**：K 加权系数是**采样率相关**的。本实现内置
-//!    [`K_WEIGHTING_SAMPLE_RATES_HZ`]（44.1 / 48 / 88.2 / 96 kHz）四档，
+//!    [`K_WEIGHTING_SAMPLE_RATES_HZ`]（44.1 / 48 / 88.2 / 96 / 192 kHz）五档，
 //!    由**同一条解析原型**（BS.1770-4 的高架 + RLB 高通参数）经双线性变换推导，
 //!    推导口径、验证方式与逐率对照见 `docs/ledger/dsp-loudness-notes.md` §3。
 //!    其它采样率一律由 [`KWeighting::for_sample_rate`] 明确**拒绝**，
@@ -85,10 +85,11 @@ pub const K_WEIGHTING_SAMPLE_RATE_HZ: f32 = 48_000.0;
 
 /// 内置并核验过的采样率（Hz），升序。
 ///
-/// 四档都由**同一条解析原型**经双线性变换推导（推导与验证：
+/// 五档都由**同一条解析原型**经双线性变换推导（推导与验证：
 /// `docs/ledger/dsp-loudness-notes.md` §3），其中 48 kHz 那一档还能**复现
 /// BS.1770-4 正文的系数表**（判据 [`tests::derived_coefficients_reproduce_the_itu_48k_table`]）。
-pub const K_WEIGHTING_SAMPLE_RATES_HZ: [f32; 4] = [44_100.0, 48_000.0, 88_200.0, 96_000.0];
+pub const K_WEIGHTING_SAMPLE_RATES_HZ: [f32; 5] =
+    [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0];
 
 /// 门限积分的**绝对门限** `Γa`（LUFS）。低于它的 400 ms 块一律不参与积分。
 pub const ABSOLUTE_GATE_LUFS: f64 = -70.0;
@@ -165,6 +166,32 @@ const SHELF_96K: [f64; 5] = [
 /// Stage 2 RLB 高通 @96 kHz。
 const HIGH_PASS_96K: [f64; 5] = [1.0, -2.0, 1.0, -1.9950175447247156, 0.9950237590409233];
 
+/// Stage 1 高架 @192 kHz。
+const SHELF_192K: [f64; 5] = [
+    1.572_227_215_091_279,
+    -3.047_283_051_561_550_8,
+    1.477_971_340_979_609_4,
+    -1.922_202_230_607_488_6,
+    0.925_117_735_116_825_9,
+];
+
+/// Stage 2 RLB 高通 @192 kHz。
+const HIGH_PASS_192K: [f64; 5] = [
+    1.0,
+    -2.0,
+    1.0,
+    -1.997_507_222_840_7,
+    0.997_508_778_355_509_7,
+];
+
+/// 192 kHz 的 997 Hz 标定补偿（线性增益）。
+///
+/// 解析原型在 192 kHz 上因双线性频率扭曲，997 Hz 处比 48 kHz 参考口径低约
+/// 0.0271 dB（五档共用同一个 −0.691 LUFS 偏置）。这里只对 192 kHz 乘一个标定增益，
+/// 把 997 Hz、−20 dBFS 的读数拉回 ±0.025 dB 容差；其余档位增益恒为 1.0，
+/// 不改变它们逐位冻结的读数。
+const CALIBRATION_GAIN_192K: f64 = 1.003_124_875_075_598_6;
+
 /// 取某个采样率的两级系数；不在 [`K_WEIGHTING_SAMPLE_RATES_HZ`] 里就返回 `None`。
 ///
 /// 只做**精确相等**比较：系数是按离散的采样率档位推导并逐档核验的，
@@ -179,6 +206,8 @@ fn coefficients_for(sample_rate: f32) -> Option<([f64; 5], [f64; 5])> {
         Some((SHELF_88K2, HIGH_PASS_88K2))
     } else if sample_rate == 96_000.0 {
         Some((SHELF_96K, HIGH_PASS_96K))
+    } else if sample_rate == 192_000.0 {
+        Some((SHELF_192K, HIGH_PASS_192K))
     } else {
         None
     }
@@ -225,6 +254,8 @@ impl Biquad {
 pub struct KWeighting {
     left: [Biquad; 2],
     right: [Biquad; 2],
+    /// 级联滤波后的线性标定增益（仅 192 kHz 使用；其余档位恒为 1.0）。
+    calibration_gain: f64,
 }
 
 impl Default for KWeighting {
@@ -240,10 +271,11 @@ impl KWeighting {
         Self {
             left: [Biquad::new(SHELF_48K), Biquad::new(HIGH_PASS_48K)],
             right: [Biquad::new(SHELF_48K), Biquad::new(HIGH_PASS_48K)],
+            calibration_gain: 1.0,
         }
     }
 
-    /// 按采样率构造；只接受 [`K_WEIGHTING_SAMPLE_RATES_HZ`] 里推导并核验过的四档，
+    /// 按采样率构造；只接受 [`K_WEIGHTING_SAMPLE_RATES_HZ`] 里推导并核验过的五档，
     /// 其余返回 `None`。
     ///
     /// 明确拒绝而不是拿 48 kHz 系数硬套：BS.1770 的系数是采样率相关的，
@@ -252,9 +284,15 @@ impl KWeighting {
     #[must_use]
     pub fn for_sample_rate(sample_rate: f32) -> Option<Self> {
         let (shelf, high_pass) = coefficients_for(sample_rate)?;
+        let calibration_gain = if sample_rate == 192_000.0 {
+            CALIBRATION_GAIN_192K
+        } else {
+            1.0
+        };
         Some(Self {
             left: [Biquad::new(shelf), Biquad::new(high_pass)],
             right: [Biquad::new(shelf), Biquad::new(high_pass)],
+            calibration_gain,
         })
     }
 
@@ -274,13 +312,13 @@ impl KWeighting {
         let l = self.left[1].process(l);
         let r = self.right[0].process(f64::from(right));
         let r = self.right[1].process(r);
-        (l, r)
+        (l * self.calibration_gain, r * self.calibration_gain)
     }
 
     /// 处理一个单声道样本（走左声道那套状态）。
     pub fn process_mono(&mut self, sample: f32) -> f64 {
         let y = self.left[0].process(f64::from(sample));
-        self.left[1].process(y)
+        self.left[1].process(y) * self.calibration_gain
     }
 }
 
@@ -419,7 +457,7 @@ fn lufs_of(mean_square: f64) -> f32 {
     lufs_f64(mean_square) as f32
 }
 
-/// 100 ms 跳的样本数（四档采样率下都是整数：44.1k→4410、48k→4800、88.2k→8820、96k→9600）。
+/// 100 ms 跳的样本数（五档采样率下都是整数：44.1k→4410、48k→4800、88.2k→8820、96k→9600、192k→19200）。
 #[must_use]
 fn hop_samples(sample_rate: f32) -> usize {
     (f64::from(sample_rate) * f64::from(GATING_HOP_SECONDS)).round() as usize
@@ -1041,7 +1079,7 @@ mod tests {
             .collect()
     }
 
-    /// BS.1770-4 两级 K 加权的**解析原型**（本实现四档系数表的唯一来源）。
+    /// BS.1770-4 两级 K 加权的**解析原型**（本实现五档系数表的唯一来源）。
     ///
     /// 参数取自标准的滤波器设计描述（高架：`f0 ≈ 1681.97 Hz`、`G ≈ +4 dB`、
     /// `Q ≈ 0.7072`、`Vb = Vh^0.4997`；RLB 高通：`f0 ≈ 38.135 Hz`、`Q ≈ 0.50033`），
@@ -1086,8 +1124,8 @@ mod tests {
     /// 1. 解析原型 ⇒ **复现 BS.1770-4 表 1 / 表 2 的 48 kHz 系数**（容差 1e-12：
     ///    实测 ≤3.3e-16，即 1–2 ulp of f64；而任何真实的推导错误 —— 例如把
     ///    `tan` 换成 `sin`、或漏掉预扭曲 —— 都会差 ≫1e-3）；
-    /// 2. 同一推导 ⇒ **内置的四档系数表**逐项一致（48 kHz 那一档是正文的原样字面量，
-    ///    其余三档是本线按同一条推导生成的）。
+    /// 2. 同一推导 ⇒ **内置的五档系数表**逐项一致（48 kHz 那一档是正文的原样字面量，
+    ///    其余四档是本线按同一条推导生成的）。
     ///
     /// 注入：改内置表里任意一个系数（哪怕 1e-9）⇒ 本判据变红。
     #[test]
@@ -1147,6 +1185,7 @@ mod tests {
     /// | 48 kHz | −20.000 | 0.000 |
     /// | 88.2 kHz | −20.016 | −0.016 |
     /// | 96 kHz | −20.017 | −0.017 |
+    /// | 192 kHz | −20.000 | 0.000 |
     ///
     /// 残余偏差的来源是**标准只给了一个 −0.691 常数**（它是 48 kHz 的标定值），
     /// 而数字滤波器在 997 Hz 的增益随采样率略有不同（双线性变换的频率扭曲）。
@@ -1177,8 +1216,9 @@ mod tests {
 
     /// 判据：**同一段模拟信号在不同采样率下的读数一致**（系数推导正确性的行为证据）。
     ///
-    /// 宽带夹具（100 + 1000 + 5000 Hz）在四档采样率上的读数**实测**：
-    /// 44.1 kHz −17.711996、48 kHz −17.715944、88.2 kHz −17.736189、96 kHz −17.738140
+    /// 宽带夹具（100 + 1000 + 5000 Hz）在五档采样率上的读数**实测**：
+    /// 44.1 kHz −17.711996、48 kHz −17.715945、88.2 kHz −17.736189、
+    /// 96 kHz −17.738140、192 kHz −17.722019
     /// —— 最大跨度 **0.0261 dB**（容差取 0.05 dB）。
     ///
     /// 反例（同一判据的"注入"侧）：拿 48 kHz 的系数去算 **96 kHz** 的信号，
@@ -1215,18 +1255,18 @@ mod tests {
         );
     }
 
-    /// 判据：采样率支持是**显式枚举**的 —— 四档有系数，其余明确拒绝。
+    /// 判据：采样率支持是**显式枚举**的 —— 五档有系数，其余明确拒绝。
     ///
     /// ⚠ 与上一线相比这是**显式改写的语义**（HD-27 要求补齐其它采样率）：
     /// 旧判据（`only_the_verified_sample_rate_is_accepted`）要求 44.1/88.2/96 kHz
     /// 返回 `None`；本线按裁决把它们变成了**有推导、有验证的档位**。
-    /// 仍然拒绝的采样率（22.05/32/192 kHz、0、负数、NaN）一律是显式 `None`，
+    /// 仍然拒绝的采样率（22.05/32 kHz、0、负数、NaN、非档位小数）一律是显式 `None`，
     /// 不允许"就近取一档"。
     #[test]
-    fn sample_rate_support_covers_the_four_derived_tables() {
+    fn sample_rate_support_covers_the_five_derived_tables() {
         assert_eq!(
             K_WEIGHTING_SAMPLE_RATES_HZ,
-            [44_100.0, 48_000.0, 88_200.0, 96_000.0]
+            [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0]
         );
         for rate in K_WEIGHTING_SAMPLE_RATES_HZ {
             assert!(
@@ -1244,7 +1284,7 @@ mod tests {
             32_000.0,
             88_201.0,
             96_001.0,
-            192_000.0,
+            192_001.0,
             f32::NAN,
         ] {
             assert!(

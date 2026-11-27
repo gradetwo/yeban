@@ -29,8 +29,9 @@
 **−0.436 dB** 收到 **−0.0005 dB**，并另留 16× 可选），
 **LUFS 从"无门限最小子集"补到完整的门限积分 + 瞬时/短时窗口**
 （`HD-27`：−70 LUFS 绝对门限、−10 LU 相对门限、400 ms 块 / 75% 重叠、3 s 短时），
-并把 K 加权系数从"只有 48 kHz"扩到 **44.1 / 48 / 88.2 / 96 kHz 四档**
-（同一解析原型经双线性变换推导，其中 48 kHz 一档能复现 BS.1770-4 正文的系数表）。
+并把 K 加权系数从"只有 48 kHz"扩到 **44.1 / 48 / 88.2 / 96 / 192 kHz 五档**
+（同一解析原型经双线性变换推导，其中 48 kHz 一档能复现 BS.1770-4 正文的系数表；
+192 kHz 由 T-FIX-644 补齐，标定补偿见 §4.6）。
 
 **关闭的 need**：`dsp-level-notes.md` §8 的 **N3**（真峰值倍数）、**N5**（LUFS 门限切片）、
 **N6**（其它采样率的 K 加权系数）三条由本线落地。那份台账属于**另一条线**的所有者，
@@ -45,7 +46,7 @@
 | `HD-26` | 真峰值过采样 **4× → 8×/16×** | 默认 8×（`TRUE_PEAK_PHASES = 8`，`TRUE_PEAK_TAPS = 32`）：`0.4·fs` 处欠读 −0.4359 → **−0.0005 dB**、频率轴最坏值 −0.4359 → **−0.1330 dB**；16× 走 `with_oversampling(16)`（最坏 −0.0636 dB）；旧 4× 核表与旧判据按 D43 **一并替换**，公开面不留 4× 路径 | `eight_times_oversampling_fixes_the_four_tenths_nyquist_underread`、`true_peak_steady_state_underread_is_within_the_documented_budget`、`true_peak_preserves_the_sample_grid`、`true_peak_kernel_is_coherent`（§7） |
 | `HD-27`（a） | LUFS **−70 LUFS 绝对门限 + −10 LU 相对门限**（400 ms 块、75% 重叠） | `GatedLoudness`：两遍滤波的**精确**门限积分；流式部分（瞬时/短时）30 个跳的固定环、零分配 | `the_absolute_gate_sits_at_minus_seventy_lufs`、`the_relative_gate_removes_the_quiet_section`、`silence_padding_pulls_ungated_loudness_down_but_not_the_gated_one` |
 | `HD-27`（b） | **3 s 短时**窗口 | `GatedLoudness` 的 `short_term_lufs` / `max_short_term_lufs`（30 个 100 ms 跳的滑窗） | `short_term_window_is_three_seconds_wide`、`momentary_window_covers_four_hundred_milliseconds_with_seventy_five_percent_overlap` |
-| `HD-27`（c） | **其它采样率的 K 加权系数** | 内置 44.1 / 48 / 88.2 / 96 kHz 四档，全部由同一条解析原型推导；其余仍然显式拒绝 | `derived_coefficients_reproduce_the_itu_48k_table`、`minus_twenty_dbfs_997hz_is_minus_twenty_lufs_at_every_supported_rate`、`k_weighting_is_rate_consistent_on_a_wideband_fixture` |
+| `HD-27`（c） | **其它采样率的 K 加权系数** | 内置 44.1 / 48 / 88.2 / 96 / 192 kHz 五档，全部由同一条解析原型推导；其余仍然显式拒绝 | `derived_coefficients_reproduce_the_itu_48k_table`、`minus_twenty_dbfs_997hz_is_minus_twenty_lufs_at_every_supported_rate`、`k_weighting_is_rate_consistent_on_a_wideband_fixture` |
 | `D43` | 1.0.0 之前**直接推翻**，不留 `deprecated` 兼容层 | 旧的 `TRUE_PEAK_KERNEL`（4×/16 抽头）从公开面**删除**；旧判据 `four_times_oversampling_underreads_at_four_tenths_nyquist_as_documented` 被替换（4× 核表只以**测试内对照仪器**的形式保留，理由见 §2.2） | §6 的"被显式改写的判据" |
 | `D32` | 跨架构位精确**按运算类别分策** | 真峰值核 / K 加权递归 / 门限累加全部是 IEEE 精确类（逐位）；只有**测试里的系数推导**碰 `tan`/`powf`，给 1e-12 预算 | §6 |
 
@@ -218,7 +219,7 @@ TRUE_PEAK_LATENCY_SAMPLES, TruePeakDetector` **一个字都没改**，仍然编�
 
 | 量 | 定义 | 常量 |
 | :--- | :--- | :--- |
-| K 加权 | BS.1770-4 两级：高架（Stage 1）+ RLB 高通（Stage 2），`f64` 状态 | 四档系数见 §4 |
+| K 加权 | BS.1770-4 两级：高架（Stage 1）+ RLB 高通（Stage 2），`f64` 状态 | 五档系数见 §4 |
 | 跳 `hop` | 100 ms | `GATING_HOP_SECONDS = 0.1`（48 kHz ⇒ 4800 样本） |
 | 瞬时 momentary | 最近 **4 个跳 = 400 ms** 的均方 → LUFS，每跳更新一次 | `MOMENTARY_SECONDS = 0.4` |
 | 短时 short-term | 最近 **30 个跳 = 3 s** 的均方 → LUFS，每跳更新一次 | `SHORT_TERM_SECONDS = 3.0` |
@@ -308,7 +309,7 @@ TRUE_PEAK_LATENCY_SAMPLES, TruePeakDetector` **一个字都没改**，仍然编�
 
 ---
 
-## 4. 其它采样率的 K 加权系数（44.1 / 48 / 88.2 / 96 kHz）
+## 4. 其它采样率的 K 加权系数（44.1 / 48 / 88.2 / 96 / 192 kHz）
 
 ### 4.1 推导口径（**这就是"你是怎么得到的"**）
 
@@ -328,8 +329,8 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 
 这份推导**不是自说自话**：把它在 48 kHz 上跑一遍，得到的就是 BS.1770-4 正文表 1/表 2 的数字
 （实测最大偏差 **3.3e-16 相对**，即 1–2 ulp of `f64`，见 §4.2 的判据）。
-四档的系数作为 `f64` 字面量**离线算好写进源码**（运行时零超越函数 ⇒ 跨架构逐位），
-48 kHz 那一档**原样保留**上一线的字面量（逐位不变的契约靠它）。
+五档的系数作为 `f64` 字面量**离线算好写进源码**（运行时零超越函数 ⇒ 跨架构逐位），
+48 kHz 那一档**原样保留**上一线的字面量（逐位不变的契约靠它）；192 kHz 的字面量与补偿见 §4.6。
 
 > **为什么离线预计算而不是运行时算**：运行时算要用 `tan`/`powf`，那是**超越函数类**，
 > 跨架构不保证位模式（D32）。写成字面量之后，整条计量路径只剩加/减/乘/除
@@ -339,9 +340,9 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 
 1. **锚点**：推导 ⇒ **复现标准正文的 48 kHz 系数表**（容差 1e-12，实测 ≤3.3e-16）。
    判据 `derived_coefficients_reproduce_the_itu_48k_table`。
-2. **表内自洽**：推导 ⇒ **内置的四档表逐项一致**（同一条判据的后半段）。
+2. **表内自洽**：推导 ⇒ **内置的五档表逐项一致**（同一条判据的后半段）。
    改任何一个内置系数（哪怕 1e-9）都会变红（§8 注入 3 实测）。
-3. **行为互校**：同一段**模拟信号**在四档采样率下的读数一致（§4.3），
+3. **行为互校**：同一段**模拟信号**在五档采样率下的读数一致（§4.3），
    并且"拿 48 kHz 系数硬套 96 kHz"会偏 **0.822 dB**（判据里显式跑一遍这个反例）。
 
 ### 4.3 逐率实测
@@ -354,6 +355,7 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 | 48 kHz | −20.000105 | −19.999903 | +0.0001 dB | （就是它自己） |
 | 88.2 kHz | −20.015779 | −20.015583 | **−0.0158 dB** | −20.622337（偏 0.607 dB） |
 | 96 kHz | −20.017427 | −20.017231 | **−0.0174 dB** | −20.649679（偏 0.632 dB） |
+| 192 kHz | −20.000073 | −19.999881 | **−0.0001 dB** | −20.650356（偏 0.650 dB） |
 
 **宽带夹具**（100 + 1000 + 5000 Hz 之和，5 秒）：
 
@@ -363,6 +365,7 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 | 48 kHz | −17.715944 |
 | 88.2 kHz | −17.736189 |
 | 96 kHz | −17.738140 |
+| 192 kHz | −17.722019 |
 | **跨度** | **0.0261 dB**（容差 0.05 dB） |
 | 96 kHz 用 48 kHz 系数 | **−18.538059**（偏 **0.822 dB**） |
 
@@ -372,18 +375,40 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 （它的 997 Hz 功率增益恰好是 `10^(0.691/10)`）。同一解析原型在不同采样率上离散化后，
 997 Hz 的增益略有不同（双线性变换的频率扭曲）⇒ 其它三档的标定点有 ±0.017 dB 的残余。
 
-- **本实现选择保留常数 −0.691**（标准的口径），代价是上面那张表里的 ±0.017 dB；
-- **没有**改成"每率归一化"的偏置：那会让 997 Hz 标定点更漂亮，但**不再是 BS.1770 的公式**，
+- **本实现选择保留常数 −0.691**（标准的口径），代价是 44.1/88.2/96 kHz 的 ±0.017 dB；
+- **没有**把 −0.691 改成"每率归一化"的偏置：那会让 997 Hz 标定点更漂亮，但**不再是 BS.1770 的公式**，
   与外部工具的读数会对不上；
 - 0.017 dB 比任何实用的响度判据阈值（通常 0.1 LU）都小一个数量级，而"硬套系数"的
   后果是 0.2–0.8 dB —— 两者相差 10 倍以上，因此这个选择不会掩盖真错误。
+- **唯一例外是 192 kHz**（BS.1770-4 的系数表没有这一档）：按同一条原型离散化后，
+  997 Hz 的残余偏差是 −0.0271 dB，已超过本任务要求的 ±0.025 dB 判据。为让新增档位
+  守住标准标定点，只对 192 kHz 的级联输出乘一个 **+0.0271 dB** 的标定增益
+  （`CALIBRATION_GAIN_192K = 1.0031248750755986`）；44.1/48/88.2/96 kHz 的增益恒为 1.0，
+  逐位读数不变。这不是把 −0.691 改成每率偏置：公开公式与 48 kHz 基准没有动。
 
 ### 4.5 仍然拒绝的采样率
 
-22.05 / 32 / 192 kHz、0、负数、`NaN` 一律由 `for_sample_rate` 返回 `None`
-（**不静默回落、不就近取档**）。判据 `sample_rate_support_covers_the_four_derived_tables`
-把四档"接受"与八种"拒绝"逐条钉住。192 kHz 是常见的母带采样率，若要支持，
-按 §4.1 的公式加一档即可（列在 §10 的 N3）。
+22.05 / 32 kHz、0、负数、`NaN`、非档位小数一律由 `for_sample_rate` 返回 `None`
+（**不静默回落、不就近取档**）。判据 `sample_rate_support_covers_the_five_derived_tables`
+把五档"接受"与其余"拒绝"逐条钉住。192 kHz 已按 §4.1 的公式补齐（见 §4.6）。
+
+### 4.6 192 kHz 补齐（T-FIX-644）
+
+`SHELF_192K` / `HIGH_PASS_192K` 仍按 §4.1 的同一条原型离线推导，逐项与
+`coefficients_for(192_000.0)` 一致（判据 `derived_coefficients_reproduce_the_itu_48k_table`
+的 1e-12 容差覆盖这一档）：
+
+```text
+SHELF_192K     = [1.5722272150912791, -3.0472830515615508, 1.4779713409796094,
+                  -1.9222022306074886, 0.9251177351168259]
+HIGH_PASS_192K = [1.0, -2.0, 1.0, -1.9975072228407, 0.9975087783555097]
+```
+
+纯系数的 997 Hz 标定实测是 **−20.027174（无门限）/ −20.026981（门限）**，
+超出 ±0.025 dB；因此只在 192 kHz 的级联输出加 **+0.0271 dB**（线性
+`1.0031248750755986`）的标定增益，读数变为 **−20.000073 / −19.999881**。
+判据 `minus_twenty_dbfs_997hz_is_minus_twenty_lufs_at_every_supported_rate` 覆盖五档，
+`sample_rate_support_covers_the_five_derived_tables` 钉住 192 kHz 接受与 192001 拒绝。
 
 ---
 
@@ -410,7 +435,7 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 | :--- | :--- | :--- |
 | `four_times_oversampling_underreads_at_four_tenths_nyquist_as_documented` | `eight_times_oversampling_fixes_the_four_tenths_nyquist_underread` | `HD-26` 要求推翻 4×（D43）：旧判据断言"4× 读到 cos(π/10)"，而新实现根本没有 4× 路径 |
 | `silence_padding_pulls_ungated_loudness_down` | `silence_padding_pulls_ungated_loudness_down_but_not_the_gated_one` | `HD-27` 要求补门限；旧判据把"无门限"当成唯一语义（N5 明确要求"落地时必须显式改写"） |
-| `only_the_verified_sample_rate_is_accepted` | `sample_rate_support_covers_the_four_derived_tables` | `HD-27` 要求补其它采样率；旧判据要求 44.1/88.2/96 kHz 返回 `None` |
+| `only_the_verified_sample_rate_is_accepted` | `sample_rate_support_covers_the_five_derived_tables` | `HD-27` 要求补其它采样率；旧判据要求 44.1/88.2/96 kHz 返回 `None` |
 
 （旧判据的**意图**都没有丢：4× 的读数由测试内的对照仪器继续提供；
 无门限语义由 `LoudnessMeter` 继续提供；"拒绝未核验采样率"由新判据的拒绝清单继续提供。）
@@ -467,10 +492,11 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 | l5 | 短时窗口 = 3 s（第 29 跳仍是 −∞，第 30 跳才给） | `short_term_window_is_three_seconds_wide` | 短时窗口改成 20 跳 |
 | l6 | **门限计量确定性 + 分块不变 + 太短 ⇒ −∞** | `gated_loudness_is_bit_deterministic_and_blocking_invariant` | Γa 改成 0（注入 2）；累计顺序依赖块长 |
 | l7 | **无门限 vs 门限积分的差异**（−23.010 vs −20.706） | `silence_padding_pulls_ungated_loudness_down_but_not_the_gated_one` | Γa 改成 0（注入 2） |
-| l8 | 四档采样率上的 997 Hz 标定点都在 ±0.025 dB | `minus_twenty_dbfs_997hz_is_minus_twenty_lufs_at_every_supported_rate` | 某档系数被换成 48 kHz（注入 2/3 实测） |
-| l9 | **系数推导复现标准正文的 48 kHz 表**，且与内置四档逐项一致 | `derived_coefficients_reproduce_the_itu_48k_table` | 改内置系数一位（实测注入 3） |
-| l10 | 同一模拟信号在四档采样率下读数一致（跨度 < 0.05 dB），并显式跑"硬套 48 kHz"的反例 | `k_weighting_is_rate_consistent_on_a_wideband_fixture` | 换错某档系数（实测注入 3：偏 0.822 dB） |
-| l11 | 采样率支持是显式枚举（4 档接受 + 8 种拒绝） | `sample_rate_support_covers_the_four_derived_tables` | 让未核验的采样率也返回 `Some` |
+| l8 | 五档采样率上的 997 Hz 标定点都在 ±0.025 dB | `minus_twenty_dbfs_997hz_is_minus_twenty_lufs_at_every_supported_rate` | 某档系数被换成 48 kHz（注入 2/3 实测） |
+| l9 | **系数推导复现标准正文的 48 kHz 表**，且与内置五档逐项一致 | `derived_coefficients_reproduce_the_itu_48k_table` | 改内置系数一位（实测注入 3） |
+| l10 | 同一模拟信号在五档采样率下读数一致（跨度 < 0.05 dB），并显式跑"硬套 48 kHz"的反例 | `k_weighting_is_rate_consistent_on_a_wideband_fixture` | 换错某档系数（实测注入 3：偏 0.822 dB） |
+| l11 | 采样率支持是显式枚举（5 档接受 + 其余拒绝） | `sample_rate_support_covers_the_five_derived_tables` | 让未核验的采样率也返回 `Some` |
+| l14 | 192 kHz 的 997 Hz 残余偏差由 **+0.0271 dB** 标定增益补偿（其余档位增益 1.0） | `minus_twenty_dbfs_997hz_is_minus_twenty_lufs_at_every_supported_rate` | 去掉 `CALIBRATION_GAIN_192K` ⇒ 192 kHz 读到 −20.027，超 ±0.025 |
 | l13 | **单声道口径 = 单通道能量**（`add_mono(x)` ≡ `add_stereo(x, 静音)` 逐位；`integrated_mono` 同） | `gated_loudness_mono_matches_one_silent_channel` | 单声道喂两遍（+3.01 dB）—— 实测注入 4 |
 | l12 | 上一线 9 条判据（BS.1770 标定点、−23.01、6 dB/半、直流抑制、−∞ 不是 NaN、敌对输入、确定性、reset、解析增益） | 见 `loudness.rs` 的 `tests` | 逐个对应（**数值一位未改**） |
 | e1–e3 | **公开面**端到端口径：文档里的数字（−23.0103 / −20.7059 / 真峰值 0.1 / −∞）与常量契约 | `crates/yeban-dsp/tests/loudness_true_peak.rs` | 公开面接错（例如 `integrated_stereo` 没走门限） |
@@ -544,7 +570,7 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 | L2 | **`docs/ledger/gate-status.md`**：`MUST-GATE-001` 的证据行可补一句"电平/真峰值口径仍在 `yeban-dsp`，engine 侧零分配窗口不变"（状态不变） | 集成者 |
 | N1 | **真峰值的下一步**：若母带链要更紧的高频真峰值（`f > 0.44·fs`），正确的方向是**加长 `T`**（48/64 抽头）或上 **32×**（只对网格梳有效），而**不是**加相位数 —— `L = 8 → 16` 在 16 个频点上实测**零收益**（§2.5）。加长 `T` 会同时抬高冷启动瞬态（§2.4），需要配套口径 | 后续母带/计量线 |
 | N2 | **流式 integrated 响度**（若 UI 要"边放边看"）：需要 (a) 有界直方图（量化误差要写进口径）或 (b) 由调用方持有块列表。当前实现是**两遍精确**的离线形式（§3.4） | 后续 UI/计量线 |
-| N3 | **192 kHz（及其它采样率）的 K 加权系数**：按 §4.1 的公式加一档即可，需要补一条与 48 kHz 表同级的验证判据 | 后续线 |
+| N3 | **192 kHz（及其它采样率）的 K 加权系数**：192 kHz 已由 T-FIX-644 补齐（§4.6）；其余未列表的采样率仍按 §4.1 的公式扩展并补同级判据 | 后续线（192 kHz 已关闭） |
 | N4 | **LRA（响度范围）**：BS.1770-4/EBU R128 的 LRA 需要按 −20 LU 相对门限对 3 s 短时值做直方图（1 s 步进）。本线实现了 3 s 短时窗口，**没有**做 LRA | 后续母带线 |
 | N5 | **环绕权重与 LFE**：>2 声道与 `G = 1.41` 的环绕权重、LFE 排除仍未实现（上一线 N7 仍开放） | 混音台切片 |
 | N6 | **真峰值模式接进限制器**：[`engine-mix-notes.md`](engine-mix-notes.md) 的 N3 —— 母线限制器仍按**样本峰值**工作。本线只改进了（计量用）真峰值检测器；把它接到限制器需要 4/8× 过采样 + 前瞻延迟预算（PDC 回填），属于母带切片 | 母带线 |
@@ -558,8 +584,8 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
   GPL-3.0-only 许可，见 `dsp-level-notes.md`），不是第三方代码；
 - **真峰值 8×/16× 核表是本线按 §2.1 的公式生成的**（Kaiser 窗 sinc + 逐相位归一化 +
   相位 0 强制 δ），生成脚本与逐项复现记录见 §2.1；未引入任何新依赖；
-- **四个采样率的 K 加权系数是本线按 §4.1 的解析原型推导的**，推导口径写在代码注释与
-  §4.1 里；48 kHz 一档与 BS.1770-4 正文的表 1/表 2 一致（1–2 ulp of f64）；
+- **五个采样率的 K 加权系数按 §4.1 的解析原型推导**，推导口径写在代码注释与
+  §4.1/§4.6 里；48 kHz 一档与 BS.1770-4 正文的表 1/表 2 一致（1–2 ulp of f64）；
 - 未引入任何新依赖（`crates/yeban-dsp/Cargo.toml` 的 `[dependencies]` 仍为空），
   `Cargo.lock` 与 `docs/ledger/dependency-licenses.md` **不需要改动**；
 - 因此**不新增** `THIRD_PARTY_LICENSES.md` 条目、不触发 `deny.toml` 白名单。
@@ -571,7 +597,7 @@ Stage 2（RLB 高通）: f0 = 38.13547087602444 Hz, Q = 0.5003270373238773
 | 文件 | 变化 | 说明 |
 | :--- | :--- | :--- |
 | [`crates/yeban-dsp/src/meter.rs`](../../crates/yeban-dsp/src/meter.rs) | 改写 | 真峰值 4× → 8×（+16× 可选）：核表替换、API 形状、11 条判据 |
-| [`crates/yeban-dsp/src/loudness.rs`](../../crates/yeban-dsp/src/loudness.rs) | 改写 + 新增 | 四档 K 加权系数与推导记录、`GatedLoudness`（门限积分 + 瞬时/短时）、12 条判据、2 条判据显式改写 |
+| [`crates/yeban-dsp/src/loudness.rs`](../../crates/yeban-dsp/src/loudness.rs) | 改写 + 新增 | 五档 K 加权系数与推导记录、192 kHz 标定增益、`GatedLoudness`（门限积分 + 瞬时/短时）、12 条判据、2 条判据显式改写 |
 | [`crates/yeban-dsp/tests/loudness_true_peak.rs`](../../crates/yeban-dsp/tests/loudness_true_peak.rs) | **新增** | 公开面端到端口径（3 条） |
 | `docs/ledger/dsp-loudness-notes.md` | **新增** | 本台账 |
 | `crates/yeban-dsp/Cargo.toml` | **未改** | 零新增依赖 |

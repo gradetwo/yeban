@@ -80,17 +80,18 @@ fn public_gates_exclude_quiet_material_and_reject_unsupported_rates() {
     );
     assert!(LoudnessMeter::integrated_stereo(&quiet, &quiet).is_finite());
 
-    // 采样率支持是显式枚举的四档; 其余响亮失败(不静默回落)。
+    // 采样率支持是显式枚举的五档; 其余响亮失败(不静默回落)。
     assert_eq!(
         K_WEIGHTING_SAMPLE_RATES_HZ,
-        [44_100.0, 48_000.0, 88_200.0, 96_000.0]
+        [44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0]
     );
     for rate in K_WEIGHTING_SAMPLE_RATES_HZ {
         assert!(GatedLoudness::for_sample_rate(rate).is_some());
         assert!(LoudnessMeter::for_sample_rate(rate).is_some());
     }
-    assert!(GatedLoudness::for_sample_rate(192_000.0).is_none());
+    assert!(GatedLoudness::for_sample_rate(192_000.0).is_some());
     assert!(LoudnessMeter::for_sample_rate(22_050.0).is_none());
+    assert!(LoudnessMeter::for_sample_rate(192_001.0).is_none());
 }
 
 #[test]

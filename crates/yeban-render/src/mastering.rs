@@ -118,7 +118,7 @@
 //!
 //! let outcome = ExportPreset::new(Some(-14.0), None)
 //!     .apply(48_000, &mut left, &mut right)
-//!     .expect("48 kHz 是内置的四档采样率之一");
+//!     .expect("48 kHz 是内置的五档采样率之一");
 //!
 //! assert_eq!(outcome.bound, GainBound::LoudnessTarget);
 //! assert!((outcome.gain_db - 6.0).abs() < 0.05, "实际 {}", outcome.gain_db);
@@ -390,7 +390,7 @@ impl ExportPreset {
 
     /// 按预设**就地**给母带施加增益, 并返回前后两次测量。
     ///
-    /// 采样率不在 `crate::loudness::K_WEIGHTING_SAMPLE_RATES_HZ`（44.1 / 48 / 88.2 / 96 kHz）
+    /// 采样率不在 `crate::loudness::K_WEIGHTING_SAMPLE_RATES_HZ`（44.1 / 48 / 88.2 / 96 / 192 kHz）
     /// 里 ⇒ `None`（**不静默回落**到 48 kHz 的系数, 那会给出错误读数）。
     ///
     /// 真峰值按 [`MASTERING_TRUE_PEAK_OVERSAMPLING`]（**16×**）测量 —— 这是"导出天花板"
@@ -628,7 +628,7 @@ fn within_measurement_resolution(demand: f32, actual: f32, residual: f32) -> boo
 /// 偏序。`PartialEq` 仍然可用（判据用 `assert_eq!` 比错误值）。
 #[derive(Clone, Debug, PartialEq)]
 pub enum MasterExportError {
-    /// 采样率不在内置四档（44.1 / 48 / 88.2 / 96 kHz）里 ⇒ 响度读数会错 ⇒ 拒绝。
+    /// 采样率不在内置五档（44.1 / 48 / 88.2 / 96 / 192 kHz）里 ⇒ 响度读数会错 ⇒ 拒绝。
     UnsupportedSampleRate(u32),
     /// 声道数不是 2（响度计量与常设预设都是立体声口径）⇒ 拒绝, **不**做下混。
     NotStereo(usize),
@@ -701,7 +701,7 @@ impl core::fmt::Display for MasterExportError {
             Self::UnsupportedSampleRate(rate) => {
                 write!(
                     f,
-                    "响度计量不支持 {rate} Hz（内置档位: 44.1/48/88.2/96 kHz）"
+                    "响度计量不支持 {rate} Hz（内置档位: 44.1/48/88.2/96/192 kHz）"
                 )
             }
             Self::NotStereo(channels) => {
@@ -1665,7 +1665,7 @@ mod tests {
         );
     }
 
-    /// 采样率不在内置四档 ⇒ `None`, **不静默回落**。
+    /// 采样率不在内置五档 ⇒ `None`, **不静默回落**。
     #[test]
     fn unsupported_sample_rates_are_rejected() {
         let tone = sine_997(0.1, 4_800);
@@ -2285,7 +2285,7 @@ mod tests {
             Err(MasterExportError::BextCannotCarryLoudness(1))
         );
 
-        // 采样率不在内置四档: 拒绝, 不静默回落到 48 kHz 的系数。
+        // 采样率不在内置五档: 拒绝, 不静默回落到 48 kHz 的系数。
         let mut master = master_output(&tone, &tone);
         let mut rng = seed_rng(1);
         assert_eq!(

@@ -746,7 +746,7 @@ mod contract_tests {
             (
                 "Mst::UnsupportedSampleRate",
                 MasterExportError::UnsupportedSampleRate(22_050).to_string(),
-                r#"响度计量不支持 22050 Hz（内置档位: 44.1/48/88.2/96 kHz）"#,
+                r#"响度计量不支持 22050 Hz（内置档位: 44.1/48/88.2/96/192 kHz）"#,
             ),
             (
                 "Mst::NotStereo",

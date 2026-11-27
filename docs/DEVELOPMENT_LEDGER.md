@@ -1817,7 +1817,7 @@ D24 的结论不变（不捆绑字体），但**理由要改成"依赖系统字�
   把 0.4·fs 的欠读从 **−0.4359 dBFS 改善到 −0.0005**（+0.4354 dB），并给出频率轴最坏值
   （8× −0.1330 @4/9·fs、16× −0.0636 @6/13·fs ⇒ **默认 8×、母带 16×**）；
   LUFS 门限把"信号+静音"从 −23.010 纠到 **−20.706**、−75 LUFS ⇒ **−∞**；
-  四档采样率系数由同一解析原型推导并**复现 BS.1770-4 正文表到 3.3e-16**。
+  五档采样率系数由同一解析原型推导（192 kHz 见 `docs/ledger/dsp-loudness-notes.md` §4.6），并**复现 BS.1770-4 正文表到 3.3e-16**。
   顺手修掉"单声道被当双通道"（+3.01 dB）的真实缺陷。**它自己还推翻过一版错结论**（漏掉相称频率 ⇒ 曾以为"16× 零收益"）。
 - **`line/app-automation-ui`**（run 37250016613 = success）：自动化曲线真的画出来了，并且**AI 在控件树里读得到** ——
   每条泳道一个元素 ID，标签带单位与当前值（实测 `"鼓 · 音量 自动化 -3.2 dB · 录制臂 触碰"`、
@@ -6709,7 +6709,7 @@ The read round 267 asked for, and it removes almost all of the work:
 
 | capability | where it already is |
 | :--- | :--- |
-| K 加权 + **门限积分 LUFS** + 瞬时/短时窗口 (BS.1770-4, 44.1/48/88.2/96 kHz, −70 LUFS / −10 LU gates) | `crates/yeban-dsp/src/loudness.rs`, indexed in `yeban-dsp/src/lib.rs:41,66` |
+| K 加权 + **门限积分 LUFS** + 瞬时/短时窗口 (BS.1770-4, 44.1/48/88.2/96/192 kHz, −70 LUFS / −10 LU gates) | `crates/yeban-dsp/src/loudness.rs`, indexed in `yeban-dsp/src/lib.rs:41,66` |
 | **真峰值** | `crates/yeban-engine/src/level.rs` (`TruePeakDetector`, with its latency/phases/taps constants) |
 
 So the spec's requirement (round 267) is **already implemented**, at the standards it names, and nothing about the MCP item needs a new
