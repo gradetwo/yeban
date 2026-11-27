@@ -384,3 +384,25 @@ pub fn is_downloaded(root: &Path, spec: &DemoSpec) -> bool {
     let path = cached_project(root, spec);
     path.is_file() && looks_like_container(&path)
 }
+
+/// 官方 demo 的本地缓存根目录（T-FIX-951）：`YEBAN_DEMOS_DIR` 设了就与清单扫描
+/// 同一处（下载完成即出现在演示分类）；未设时退到用户缓存目录，⛔ 不写仓库。
+///
+/// 不引入 `dirs` 之类的新依赖：XDG / Windows 本地应用数据 / HOME 依次尝试，
+/// 全拿不到才退到临时目录（功能仍可用，只是不保证跨会话持久）。
+#[must_use]
+pub fn cache_root() -> PathBuf {
+    if let Some(dir) = std::env::var_os("YEBAN_DEMOS_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("LOCALAPPDATA").map(|value| PathBuf::from(value).join("cache"))
+        })
+        .or_else(|| std::env::var_os("HOME").map(|value| PathBuf::from(value).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("yeban").join("demos")
+}

@@ -147,6 +147,66 @@ pub struct DemoEntry {
     pub duration_secs: f64,
     /// 封面图路径（文件型 demo 的同名图片；无同名图片时 `None`）。
     pub cover: Option<PathBuf>,
+    /// 官方 demo 的下载态（T-FIX-951）；本地 demo 为 `None`。
+    pub download: Option<DemoDownloadState>,
+}
+
+/// 官方 demo 的下载态（T-FIX-951）：只有命中
+/// [`crate::demo_download::DEMOS`] 固定清单的条目才有值；用户自己放进
+/// `YEBAN_DEMOS_DIR` 的普通 demo 恒为 `None`（它们是本地文件，没有下载这一步）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DemoDownloadState {
+    /// 未下载：可点「下载」。
+    NotDownloaded,
+    /// 下载中：已收字节 / 总量（`None` = 服务端没给 Content-Length）。
+    Downloading {
+        /// 已收字节数。
+        received: u64,
+        /// 总字节数（`None` = 服务端没给 Content-Length）。
+        total: Option<u64>,
+    },
+    /// 失败：人读原因，可重试。
+    Failed(String),
+    /// 已下载：正式文件就位，可直接打开播放。
+    Downloaded,
+}
+
+impl DemoDownloadState {
+    /// .slint 侧整数编码：0 = 无下载概念，1 = 可下载，2 = 下载中，
+    /// 3 = 失败（可重试），4 = 已下载。
+    #[must_use]
+    pub fn code(&self) -> i32 {
+        match self {
+            Self::NotDownloaded => 1,
+            Self::Downloading { .. } => 2,
+            Self::Failed(_) => 3,
+            Self::Downloaded => 4,
+        }
+    }
+
+    /// 进度 / 回执原文（总量未知时明说，⛔ 不编一个假数）。
+    #[must_use]
+    pub fn progress_text(&self) -> String {
+        fn bytes(value: u64) -> String {
+            const KB: f64 = 1024.0;
+            const MB: f64 = 1024.0 * 1024.0;
+            if value >= 1024 * 1024 {
+                format!("{:.1} MB", value as f64 / MB)
+            } else if value >= 1024 {
+                format!("{:.1} KB", value as f64 / KB)
+            } else {
+                format!("{value} B")
+            }
+        }
+        match self {
+            Self::Downloading { received, total } => match total {
+                Some(total) => format!("{} / {}", bytes(*received), bytes(*total)),
+                None => format!("{} / 总量未知", bytes(*received)),
+            },
+            Self::Failed(message) => message.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// 演示清单阶段单文件**整体读盘**的上限（字节）。
@@ -284,6 +344,25 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
         let scan = scan_file_demos(Path::new(&dir));
         demos.extend(scan.entries);
         blocked_demos.extend(scan.blocked);
+    }
+    // ⭐ T-FIX-951：官方 8 首 demo 常驻清单 —— 即使 `YEBAN_DEMOS_DIR` 没设、
+    // 本地一首都没有，演示分类也显示这 8 条带下载入口的卡片，⛔ 不再是
+    // "还没有演示工程。" 的空态。已下载的走官方元数据卡片（不读整包），
+    // 没下载的走固定清单占位卡片；两条路的 `source` 都指向下载落地路径。
+    let demo_root = crate::demo_download::cache_root();
+    for spec in crate::demo_download::DEMOS {
+        let path = crate::demo_download::cached_project(&demo_root, &spec);
+        if demos
+            .iter()
+            .any(|entry| matches!(&entry.source, DemoSource::File(existing) if *existing == path))
+        {
+            continue;
+        }
+        if path.is_file() {
+            demos.push(load_official_demo_entry(&path, &spec));
+        } else {
+            demos.push(pending_official_demo_entry(&spec));
+        }
     }
     let templates = list_templates(roots);
     ChooserData {
@@ -435,6 +514,7 @@ fn load_demo_entry(path: &Path) -> Result<DemoEntry, String> {
         bars,
         duration_secs,
         cover,
+        download: None,
     })
 }
 
@@ -463,6 +543,29 @@ fn load_official_demo_entry(path: &Path, spec: &crate::demo_download::DemoSpec) 
         duration_secs: meta.duration_secs.unwrap_or(0.0),
         meta,
         cover,
+        download: Some(DemoDownloadState::Downloaded),
+    }
+}
+
+/// 还没下载的官方 demo 卡片（T-FIX-951）：只来自固定清单，**不读包**。
+///
+/// `source` 指向下载落地后的正式路径，因此下载成功回调把 `download` 改成
+/// `Downloaded` 之后，现有的「打开」臂无需改动就能直接打开播放；未下载时
+/// 卡片带 `NotDownloaded`，界面给出下载入口而不是一个点了就报错的路径。
+fn pending_official_demo_entry(spec: &crate::demo_download::DemoSpec) -> DemoEntry {
+    let path = crate::demo_download::cached_project(&crate::demo_download::cache_root(), spec);
+    DemoEntry {
+        source: DemoSource::File(path),
+        title: spec.title.to_owned(),
+        track_count: 0,
+        author: None,
+        genre: None,
+        meta: DemoMeta::default(),
+        bpm: 0.0,
+        bars: 0,
+        duration_secs: 0.0,
+        cover: None,
+        download: Some(DemoDownloadState::NotDownloaded),
     }
 }
 
@@ -674,6 +777,8 @@ pub struct ChooserRow {
     pub enabled: bool,
     /// 封面图路径（只有文件型 demo 条目有；其余行一律 `None`）。
     pub cover: Option<PathBuf>,
+    /// 官方 demo 的下载态（T-FIX-951），随行灌给 Slint 卡片/面板；其余行 `None`。
+    pub download: Option<DemoDownloadState>,
 }
 
 fn header(kind: ChooserRowKind, label: String) -> ChooserRow {
@@ -689,6 +794,7 @@ fn header(kind: ChooserRowKind, label: String) -> ChooserRow {
         entry_index: None,
         enabled: false,
         cover: None,
+        download: None,
     }
 }
 
@@ -741,6 +847,7 @@ pub fn recent_rows_matching(
             entry_index: Some(index),
             enabled: entry.exists,
             cover: None,
+            download: None,
         });
     }
     rows
@@ -792,6 +899,7 @@ pub fn demo_rows_matching_with_blocked(
             entry_index: None,
             enabled: false,
             cover: None,
+            download: None,
         });
     }
     rows
@@ -831,6 +939,7 @@ fn demo_rows_matching_entries(
             entry_index: Some(index),
             enabled: true,
             cover: entry.cover.clone(),
+            download: entry.download.clone(),
         });
     }
     rows
@@ -1144,6 +1253,7 @@ pub fn template_rows_matching(
             entry_index: Some(index),
             enabled: true,
             cover: None,
+            download: None,
         });
     }
     rows
@@ -1175,6 +1285,7 @@ pub fn template_rows_matching_with_diagnostics(
             entry_index: None,
             enabled: false,
             cover: None,
+            download: None,
         });
     }
     rows
@@ -1777,6 +1888,7 @@ mod tests {
             bars: 0,
             duration_secs: 0.0,
             cover: None,
+            download: None,
         }
     }
 

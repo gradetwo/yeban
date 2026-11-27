@@ -228,6 +228,7 @@ fn gather_collects_demos_and_templates() {
         bars: 0,
         duration_secs: 0.0,
         cover: None,
+        download: None,
     };
     let demo_rows = demo_rows(&[filled_entry], Language::ZhCn);
     assert_eq!(
@@ -690,19 +691,12 @@ fn startup_chooser_live_window_flow() {
     ui.set_startup_chooser_open(true);
     ui.invoke_startup_category_selected(2);
     let rows = ui.get_startup_rows();
-    assert_eq!(
-        rows.iter().count(),
-        1,
-        "演示分类只有文件型一条（内置样本已移出清单）"
-    );
     let filled = yeban_model::samples::filled_project();
-    let demo_row = rows.iter().next().expect("演示行必须在");
-    assert_eq!(
-        demo_row.label.as_str(),
-        filled.title.as_str(),
-        "演示行标题必须从容器实读"
-    );
-    ui.invoke_startup_entry_activated(0);
+    let demo_index = rows
+        .iter()
+        .position(|row| row.label.as_str() == filled.title.as_str())
+        .expect("文件型演示行必须在演示分类里");
+    ui.invoke_startup_entry_activated(demo_index as i32);
     assert!(!ui.get_startup_chooser_open(), "演示打开后选择器必须关");
     let demo_project = undo.project();
     assert_eq!(

@@ -1571,6 +1571,10 @@ export struct StartupChooserRow {
     enabled: bool,
     has-cover: bool,
     cover: image,
+    // 官方 demo 的下载态（T-FIX-951）：0=无下载概念 1=可下载 2=下载中
+    // 3=失败可重试 4=已下载；进度/失败原因原文由宿主写入。
+    download-state: int,
+    download-progress: string,
 }
 
 // 帮助系统（line/onboarding-help）：手册渲染行。level 与 src/manual.rs 的

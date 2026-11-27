@@ -12542,6 +12542,15 @@ fn apply_startup_category(
                 enabled: row.enabled,
                 has_cover,
                 cover,
+                download_state: row
+                    .download
+                    .as_ref()
+                    .map_or(0, crate::startup_chooser::DemoDownloadState::code),
+                download_progress: row
+                    .download
+                    .as_ref()
+                    .map_or_else(String::new, |state| state.progress_text())
+                    .into(),
             }
         })
         .collect();
@@ -12549,6 +12558,25 @@ fn apply_startup_category(
     // 全量写入 ⇒ 没有行被排除；`hidden-rows` 只剩诊断意义（恒 0）。
     ui.set_startup_hidden_rows(0);
     ui.set_startup_category(category);
+    // ⭐ T-FIX-951：下载面板三格随当前选中条目刷新（必须在清选中之前取）。
+    let selected = ui.get_startup_selected_entry();
+    let chosen = rows
+        .iter()
+        .find(|row| row.entry_index == Some(usize::try_from(selected).unwrap_or(usize::MAX)));
+    let download = chosen.and_then(|row| row.download.as_ref());
+    ui.set_startup_demo_download_state(
+        download.map_or(0, crate::startup_chooser::DemoDownloadState::code),
+    );
+    ui.set_startup_demo_download_progress(
+        download
+            .map_or_else(String::new, |state| state.progress_text())
+            .into(),
+    );
+    ui.set_startup_demo_download_title(
+        chosen
+            .map_or_else(String::new, |row| row.label.clone())
+            .into(),
+    );
     ui.set_startup_selected_entry(-1);
     ui.set_startup_empty_selected(false);
 }
@@ -12559,6 +12587,88 @@ fn format_startup_bpm(bpm: f64) -> String {
         format!("{bpm:.0}")
     } else {
         format!("{bpm:.1}")
+    }
+}
+
+/// T-FIX-951：工作线程交给 UI 线程的一条 demo 下载事件。
+#[derive(Debug, Clone)]
+struct DemoDownloadUiEvent {
+    entry_index: usize,
+    event: crate::demo_download::DownloadEvent,
+}
+
+/// T-FIX-951：在 UI 线程把一条下载事件落进演示卡片与常驻回执。
+///
+/// 工作线程只往 Send 队列里塞事件并请求排空，⛔ 一个 Slint 对象都不碰；
+/// 生产路径与判据路径走的是同一个函数（终态不会因"谁排空"而分叉）。
+fn apply_demo_download_event(
+    ui: &MainWindow,
+    data: &Rc<RefCell<crate::startup_chooser::ChooserData>>,
+    search: &Rc<RefCell<String>>,
+    flags: &Rc<RefCell<std::collections::HashMap<usize, crate::demo_download::CancelFlag>>>,
+    incoming: DemoDownloadUiEvent,
+) {
+    use crate::demo_download::DownloadEvent;
+    use crate::startup_chooser::DemoDownloadState;
+
+    let started = std::time::Instant::now();
+    let entry_index = incoming.entry_index;
+    let (state, terminal_fields): (DemoDownloadState, Option<Vec<String>>) = match incoming.event {
+        DownloadEvent::Progress { received, total } => {
+            (DemoDownloadState::Downloading { received, total }, None)
+        }
+        DownloadEvent::Finished(path) => (
+            DemoDownloadState::Downloaded,
+            Some(vec![
+                "outcome=ok".to_owned(),
+                format!("path={}", path.display()),
+                "demo-download=finished".to_owned(),
+            ]),
+        ),
+        DownloadEvent::Failed(message) => (
+            DemoDownloadState::Failed(message.clone()),
+            Some(module_error_fields("demo-download", &message)),
+        ),
+        DownloadEvent::Cancelled => (
+            DemoDownloadState::NotDownloaded,
+            Some(vec![
+                "outcome=cancelled".to_owned(),
+                "demo-download=no-part-file".to_owned(),
+            ]),
+        ),
+    };
+    {
+        let mut guard = data.borrow_mut();
+        let Some(entry) = guard.demos.get_mut(entry_index) else {
+            let message = format!("下载回执指向不存在的演示条目 #{entry_index}");
+            let receipt = module_receipt(
+                "startup-chooser",
+                &module_error_fields("demo-download", &message),
+            );
+            apply_module_receipt(ui, &receipt, false);
+            module_trace("startup-chooser", started, &receipt);
+            return;
+        };
+        entry.download = Some(state);
+    }
+    // 终态才撤取消把手并写常驻回执；Progress 只刷卡片，⛔ 不刷屏回执区。
+    if terminal_fields.is_some() {
+        flags.borrow_mut().remove(&entry_index);
+    }
+    let selected = ui.get_startup_selected_entry();
+    apply_startup_category(
+        ui,
+        &data.borrow(),
+        ui.get_startup_category(),
+        &search.borrow(),
+    );
+    // 进度刷新重建了模型 ⇒ 把选中项放回去，下载面板才不会闪没。
+    ui.set_startup_selected_entry(selected);
+    if let Some(fields) = terminal_fields {
+        let ok = fields.iter().any(|field| field == "outcome=ok");
+        let receipt = module_receipt("startup-chooser", &fields);
+        apply_module_receipt(ui, &receipt, ok);
+        module_trace("startup-chooser", started, &receipt);
     }
 }
 
@@ -12616,6 +12726,164 @@ pub fn wire_startup_chooser(
     // 搜索串（T-FIX-293）：输入框是它的唯一写者（两向绑定），宿主只读、
     // ⛔ 不写回；换分类不清空（与左栏搜索同口径）。
     let search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
+    // ---- ⭐ T-FIX-951：官方 demo 下载（后台线程 + 事件回 UI） ----------
+    let download_flags: Rc<
+        RefCell<std::collections::HashMap<usize, crate::demo_download::CancelFlag>>,
+    > = Rc::new(RefCell::new(std::collections::HashMap::new()));
+    let download_events: std::sync::Arc<
+        std::sync::Mutex<std::collections::VecDeque<DemoDownloadUiEvent>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+
+    // 工作线程塞事件 ⇒ 请求 UI 线程排空（与 midi-in / instrument-probe 同款）。
+    {
+        let weak = ui.as_weak();
+        let data_drain = Rc::clone(&data);
+        let search_drain = Rc::clone(&search_query);
+        let flags_drain = Rc::clone(&download_flags);
+        let events_drain = std::sync::Arc::clone(&download_events);
+        ui.on_startup_demo_download_drain_requested(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let batch: Vec<DemoDownloadUiEvent> = {
+                let mut queue = events_drain
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                queue.drain(..).collect()
+            };
+            for event in batch {
+                apply_demo_download_event(&ui, &data_drain, &search_drain, &flags_drain, event);
+            }
+        });
+    }
+
+    // 下载 / 重试：选中的官方 demo ⇒ 后台 download_to ⇒ 进度逐条回 UI。
+    {
+        let weak = ui.as_weak();
+        let data_dl = Rc::clone(&data);
+        let search_dl = Rc::clone(&search_query);
+        let flags_dl = Rc::clone(&download_flags);
+        let events_dl = std::sync::Arc::clone(&download_events);
+        ui.on_startup_demo_download(move |index| {
+            let Some(ui) = weak.upgrade() else { return };
+            let started = std::time::Instant::now();
+            let fail = |ui: &MainWindow, message: &str| {
+                let receipt = module_receipt(
+                    "startup-chooser",
+                    &module_error_fields("demo-download", message),
+                );
+                apply_module_receipt(ui, &receipt, false);
+                module_trace("startup-chooser", started, &receipt);
+            };
+            let idx = usize::try_from(index).unwrap_or(usize::MAX);
+            let Some(entry) = data_dl.borrow().demos.get(idx).cloned() else {
+                fail(&ui, "演示条目下标越界");
+                return;
+            };
+            let Some(state) = &entry.download else {
+                fail(&ui, "这条不是官方 demo，没有下载入口");
+                return;
+            };
+            if matches!(
+                *state,
+                crate::startup_chooser::DemoDownloadState::Downloading { .. }
+            ) {
+                fail(&ui, "这首 demo 正在下载中");
+                return;
+            }
+            if flags_dl.borrow().contains_key(&idx) {
+                fail(&ui, "已有下载在进行，请先等它结束或取消");
+                return;
+            }
+            let crate::startup_chooser::DemoSource::File(target) = &entry.source else {
+                fail(&ui, "官方 demo 没有磁盘落点");
+                return;
+            };
+            let root = crate::demo_download::cache_root();
+            let Some(spec) = crate::demo_download::DEMOS
+                .iter()
+                .find(|spec| crate::demo_download::cached_project(&root, spec) == *target)
+            else {
+                fail(&ui, "固定清单里找不到这首 demo");
+                return;
+            };
+            let url = crate::demo_download::project_url(&crate::demo_download::remote_base(), spec);
+            let cancel = crate::demo_download::CancelFlag::new();
+            flags_dl.borrow_mut().insert(idx, cancel.clone());
+
+            // 同步写一次"下载中/0 B" ⇒ 点击后立刻可观察，不靠线程竞态。
+            {
+                let mut guard = data_dl.borrow_mut();
+                if let Some(entry) = guard.demos.get_mut(idx) {
+                    entry.download = Some(crate::startup_chooser::DemoDownloadState::Downloading {
+                        received: 0,
+                        total: None,
+                    });
+                }
+            }
+            apply_startup_category(
+                &ui,
+                &data_dl.borrow(),
+                ui.get_startup_category(),
+                &search_dl.borrow(),
+            );
+            ui.set_startup_selected_entry(index);
+
+            let worker_weak = weak.clone();
+            let worker_events = std::sync::Arc::clone(&events_dl);
+            let worker_cancel = cancel.clone();
+            let worker_target = target.clone();
+            let _ = std::thread::spawn(move || {
+                let _ = crate::demo_download::download_to(
+                    &url,
+                    &worker_target,
+                    &worker_cancel,
+                    |event| {
+                        let mut queue = worker_events
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner());
+                        queue.push_back(DemoDownloadUiEvent {
+                            entry_index: idx,
+                            event,
+                        });
+                        drop(queue);
+                        let _ = worker_weak.upgrade_in_event_loop(|ui| {
+                            ui.invoke_startup_demo_download_drain_requested();
+                        });
+                    },
+                );
+            });
+        });
+    }
+
+    // 取消：置 CancelFlag，核心在下一个读块点清理 .part 并发出 Cancelled。
+    {
+        let weak = ui.as_weak();
+        let flags_cancel = Rc::clone(&download_flags);
+        ui.on_startup_demo_cancel_download(move |index| {
+            let Some(ui) = weak.upgrade() else { return };
+            let started = std::time::Instant::now();
+            let idx = usize::try_from(index).unwrap_or(usize::MAX);
+            let Some(flag) = flags_cancel.borrow().get(&idx).cloned() else {
+                let receipt = module_receipt(
+                    "startup-chooser",
+                    &module_error_fields("demo-download", "没有在飞的下载可取消"),
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                module_trace("startup-chooser", started, &receipt);
+                return;
+            };
+            flag.cancel();
+            let receipt = module_receipt(
+                "startup-chooser",
+                &[
+                    "outcome=cancelled".to_owned(),
+                    "demo-download=cancel-requested".to_owned(),
+                ],
+            );
+            apply_module_receipt(&ui, &receipt, true);
+            module_trace("startup-chooser", started, &receipt);
+        });
+    }
 
     // ---- 播种：Details 初值 + 停在「新建工程」分类 -------------------
     ui.set_startup_tempo_text(format_startup_bpm(initial_details.bpm).into());

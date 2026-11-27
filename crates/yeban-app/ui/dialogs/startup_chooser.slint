@@ -72,6 +72,17 @@ export component StartupChooserDialog inherits Rectangle {
     callback cancel();
     callback tap-tempo();
     callback cycle-key(int);
+    // ⭐ T-FIX-951：官方 demo 下载 / 取消（参数 = 演示清单 entry-index），
+    // 以及工作线程把 DownloadEvent 交回 UI 线程的排空请求。
+    callback demo-download(int);
+    callback demo-cancel-download(int);
+    callback demo-download-drain-requested();
+
+    // 选中的官方 demo 下载面板（T-FIX-951）：三格由宿主按当前行写入，
+    // 不在这里对模型做运行时下标读取（Slint 的模型索引不由本文件假设）。
+    in property <int> demo-download-state: 0;
+    in property <string> demo-download-progress: "";
+    in property <string> demo-download-title: "";
 
     // 堆叠模式点选（循环移位）：收起详情、同步选中态，把被点
     // 行记为步进目标；顶层行号先物化（-1 时物化为默认的最后
@@ -1872,6 +1883,98 @@ export component StartupChooserDialog inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 clicked => { root.open-existing(); }
+            }
+        }
+
+        // ⭐ T-FIX-951：官方 demo 下载条 —— 只在演示分类且有选中条目时出现。
+        // "下什么 / 进度 / 取消 / 失败重试"由宿主按 DownloadEvent 逐条刷新进
+        // 选中行的 download-state / download-progress，长操作全程可见。
+        Rectangle {
+            visible: root.category == 2 && root.selected-entry >= 0;
+            x: 24px;
+            y: parent.height - 96px;
+            width: parent.width - 48px;
+            height: 34px;
+            background: Tokens.bg-raised;
+            border-radius: Tokens.radius-md;
+            accessible-role: text;
+            accessible-id: "startup-demo-download-bar";
+            accessible-label: @tr("演示工程");
+
+            UiText {
+                x: 10px;
+                y: 0;
+                width: 180px;
+                height: parent.height;
+                text: root.demo-download-title;
+                color: Tokens.ink-1;
+                font-size: Tokens.font-size-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            UiText {
+                x: 196px;
+                y: 0;
+                width: parent.width - 196px - 196px;
+                height: parent.height;
+                text: root.demo-download-progress;
+                color: Tokens.ink-2;
+                font-size: Tokens.font-size-md;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-id: "startup-demo-download-progress";
+                accessible-value: root.demo-download-progress;
+            }
+
+            // 下载 / 重试（未下载或失败态）。
+            Rectangle {
+                visible: root.demo-download-state != 2 && root.demo-download-state != 4;
+                x: parent.width - 184px;
+                y: 2px;
+                width: 88px;
+                height: 30px;
+                background: Tokens.accent;
+                border-radius: Tokens.radius-md;
+                accessible-role: button;
+                accessible-id: "startup-demo-download-button";
+                accessible-label: root.demo-download-state == 3 ? @tr("重试") : @tr("下载");
+                accessible-action-default => { root.demo-download(root.selected-entry); }
+                UiText {
+                    x: 0; y: 0; width: parent.width; height: parent.height;
+                    text: root.demo-download-state == 3 ? @tr("重试") : @tr("下载");
+                    color: Tokens.ink-0; font-size: Tokens.font-size-md;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea {
+                    width: parent.width; height: parent.height;
+                    clicked => { root.demo-download(root.selected-entry); }
+                }
+            }
+
+            // 取消（下载中）。取消后核心保证 .part 被清理，不留半成品冒充已下载。
+            Rectangle {
+                visible: root.demo-download-state == 2;
+                x: parent.width - 92px;
+                y: 2px;
+                width: 84px;
+                height: 30px;
+                background: Tokens.bg-raised;
+                border-radius: Tokens.radius-md;
+                accessible-role: button;
+                accessible-id: "startup-demo-cancel-download-button";
+                accessible-label: @tr("取消");
+                accessible-action-default => { root.demo-cancel-download(root.selected-entry); }
+                UiText {
+                    x: 0; y: 0; width: parent.width; height: parent.height;
+                    text: @tr("取消");
+                    color: Tokens.ink-1; font-size: Tokens.font-size-md;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea {
+                    width: parent.width; height: parent.height;
+                    clicked => { root.demo-cancel-download(root.selected-entry); }
+                }
             }
         }
 

@@ -935,6 +935,10 @@ export component MainWindow inherits Window {
     in-out property <string> startup-key-label: "—";
     in-out property <int> startup-rate-index: 1;
     in-out property <[StartupChooserRow]> startup-rows: [];
+    // ⭐ T-FIX-951：选中 demo 的下载面板三格（宿主写、对话框读）。
+    in property <int> startup-demo-download-state: 0;
+    in property <string> startup-demo-download-progress: "";
+    in property <string> startup-demo-download-title: "";
     in-out property <int> startup-selected-entry: -1;
     // 启动选择器搜索串（T-FIX-293）：唯一写者是搜索框的两向绑定，宿主只读。
     in-out property <string> startup-search-text: "";
@@ -1258,6 +1262,10 @@ export component MainWindow inherits Window {
     callback song-overview-viewport-zoom(int);
     callback startup-cancel();
     callback startup-category-selected(int);
+    // ⭐ T-FIX-951：官方 demo 下载（后台线程 + 进度/取消/失败回执）。
+    callback startup-demo-download(int);
+    callback startup-demo-cancel-download(int);
+    callback startup-demo-download-drain-requested();
     callback startup-cycle-key(int);
     callback startup-entry-activated(int);
     callback startup-new-project();
@@ -3016,6 +3024,9 @@ export component MainWindow inherits Window {
             details-open <=> root.startup-details-open;
             empty-selected <=> root.startup-empty-selected;
             rows: root.startup-rows;
+            demo-download-state: root.startup-demo-download-state;
+            demo-download-progress: root.startup-demo-download-progress;
+            demo-download-title: root.startup-demo-download-title;
             hidden-rows: root.startup-hidden-rows;
             search-text <=> root.startup-search-text;
             key-label: root.startup-key-label;
@@ -3025,6 +3036,9 @@ export component MainWindow inherits Window {
             time-den-index <=> root.startup-time-den-index;
             rate-index <=> root.startup-rate-index;
             category-selected(c) => { root.startup-category-selected(c); }
+            demo-download(i) => { root.startup-demo-download(i); }
+            demo-cancel-download(i) => { root.startup-demo-cancel-download(i); }
+            demo-download-drain-requested => { root.startup-demo-download-drain-requested(); }
             entry-activated(i) => { root.startup-entry-activated(i); }
             search-changed(q) => { root.startup-search-changed(q); }
             new-project => { root.startup-new-project(); }
