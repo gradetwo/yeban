@@ -1217,3 +1217,160 @@ fn phase2_visual_acceptance_1x_and_3x() {
         "宿主接线层必须注册 apply_transport"
     );
 }
+
+// ---------------------------------------------------------------------------
+// T-FIX-585：A/B 三回调的**行为**判据（不是源码字符串断言）。
+// 红对照：断开 `wire_song_overview` 里任一回调接线，或把 ab-status 的
+// “先存 A 与 B，再对比”分支改坏 ⇒ 对应判据即红。
+//
+// 本片 UI 重构后旧的 `Rig`（靠语义 ID 点折叠键）已不进控件树，因此这里
+// 直接用 `LivePort` + 产品那一个 `wire_song_overview` 建台，只走回调，
+// 不依赖任何视觉语义 ID。
+// ---------------------------------------------------------------------------
+
+/// 一台带活工程的 A/B 测试台：真引擎 + 主窗口 + 产品接线（含撤销端口）。
+#[allow(clippy::type_complexity)]
+fn ab_rig_with_project() -> (
+    ProductionLoop,
+    LivePort<MainWindow>,
+    Rc<RefCell<song_overview::SongOverviewLive>>,
+    Rc<UndoPort>,
+) {
+    let project = demo_project();
+    let production =
+        ProductionLoop::start_with_audio_source(&project, 0, None).expect("产品装配建引擎");
+    let engine = production.engine_handle();
+    engine.borrow_mut().stop();
+    let view = ViewState::from_project(&project).expect("演示工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let mut port = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + 主窗口");
+    let live_view = Rc::new(RefCell::new(view));
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<song-overview>", "yeban-app", project.clone(), NOW_MS).expect("打开"),
+    ));
+    let state = song_overview::wire_song_overview(
+        port.ui(),
+        Rc::clone(&engine),
+        Rc::clone(&live_view),
+        Some(Rc::clone(&undo)),
+    );
+    port.refresh_tree(None).expect("重抓控件树");
+    (production, port, state, undo)
+}
+
+fn ab_status(port: &LivePort<MainWindow>) -> String {
+    port.ui().get_song_overview_ab_status().to_string()
+}
+
+/// ① 只存 A 后点对比：状态必须响亮提示“先存 A 与 B”，且快照/工程都不被改动。
+#[test]
+fn tfix585_compare_with_only_one_snapshot_is_a_loud_refusal_and_writes_nothing() {
+    let (_production, mut port, state, undo) = ab_rig_with_project();
+    let before = serde_json::to_string(&undo.project()).expect("序列化工程");
+
+    port.ui().invoke_song_overview_capture_a();
+    port.refresh_tree(None).expect("重抓树");
+    let a_status = ab_status(&port);
+    assert!(a_status.contains("A 已存"), "存 A 必须有回执: {a_status}");
+
+    port.ui().invoke_song_overview_compare_ab();
+    port.refresh_tree(None).expect("重抓树");
+    let status = ab_status(&port);
+    assert!(
+        status.contains("先存 A 与 B"),
+        "只存一侧对比必须响亮提示补齐两侧: {status}"
+    );
+    let state_borrow = state.borrow();
+    let core = state_borrow
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(core.compare.a.is_some(), "A 快照应保留");
+    assert!(core.compare.b.is_none(), "拒绝时不得伪造 B 快照");
+    drop(core);
+    drop(state_borrow);
+    let after = serde_json::to_string(&undo.project()).expect("序列化工程");
+    assert_eq!(before, after, "A/B 快照与对比不得写进工程");
+}
+
+/// ② A/B 都存后对比：状态含成功摘要与对比小节数，且该小节数来自两份快照本身
+///    （即与 `get_song_overview` 同一 provider 的口径，不是 UI 垫条后的小节数）。
+#[test]
+fn tfix585_compare_after_both_captures_reports_summary_from_the_snapshots() {
+    let (_production, mut port, state, _undo) = ab_rig_with_project();
+
+    port.ui().invoke_song_overview_capture_a();
+    port.refresh_tree(None).expect("重抓树");
+    port.ui().invoke_song_overview_capture_b();
+    port.refresh_tree(None).expect("重抓树");
+    let captured = ab_status(&port);
+    assert!(captured.contains("B 已存"), "存 B 必须有回执: {captured}");
+
+    let state_borrow = state.borrow();
+    let core = state_borrow
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let expected_bars = core.compare.a.as_ref().expect("A 快照").bar_series.len();
+    assert!(expected_bars > 0, "MCP 快照必须有可分析的小节");
+    assert_eq!(
+        expected_bars,
+        core.compare.b.as_ref().expect("B 快照").bar_series.len(),
+        "两次捕获必须同一口径"
+    );
+    drop(core);
+    drop(state_borrow);
+
+    port.ui().invoke_song_overview_compare_ab();
+    port.refresh_tree(None).expect("重抓树");
+    let status = ab_status(&port);
+    assert!(
+        status.starts_with("A→B"),
+        "成功对比必须有 A→B 摘要: {status}"
+    );
+    assert!(
+        status.contains(&format!("比 {expected_bars} 小节")),
+        "对比小节数必须来自同一份快照（期望 {expected_bars}）: {status}"
+    );
+}
+
+/// ③ 没有活工程（port=None）时捕获：状态如实报“没有打开的工程”，不留半份快照。
+#[test]
+fn tfix585_capture_without_a_project_is_a_loud_no_project_status() {
+    let project = demo_project();
+    let production =
+        ProductionLoop::start_with_audio_source(&project, 0, None).expect("产品装配建引擎");
+    let engine = production.engine_handle();
+    engine.borrow_mut().stop();
+    let view = ViewState::from_project(&project).expect("演示工程必须能投影");
+    let scene = DemoScene::from_view(&view);
+    let mut port = LivePort::new(WINDOW, Permission::Interactive, None, || {
+        host::build_main_window(&view, &scene)
+    })
+    .expect("Tier-1 平台 + 主窗口");
+    let live_view = Rc::new(RefCell::new(view));
+    let state = song_overview::wire_song_overview(
+        port.ui(),
+        Rc::clone(&engine),
+        Rc::clone(&live_view),
+        None,
+    );
+
+    port.ui().invoke_song_overview_capture_a();
+    port.refresh_tree(None).expect("重抓树");
+    let status = ab_status(&port);
+    assert!(
+        status.contains("没有打开的工程"),
+        "无工程捕获必须响亮拒绝: {status}"
+    );
+    let state_borrow = state.borrow();
+    let core = state_borrow
+        .core
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(core.compare.a.is_none(), "失败不得留下半份 A 快照");
+    assert!(core.compare.b.is_none(), "失败不得留下半份 B 快照");
+}
