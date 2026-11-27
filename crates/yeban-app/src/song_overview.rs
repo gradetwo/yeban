@@ -44,6 +44,9 @@
 //!   回退口径：能量 / 频率记哨兵，情绪响度分量走谱面力度代理，疏密与和声照常算），
 //!   并把回退写进 [`RefreshReport`] 与日志；纯谱面也空时才画静音面板，⛔ 不留旧工程
 //!   的数据（那会把上一首歌的曲线画到新工程上）。
+//! - 空工程（0 帧）例外（T-FIX-815）：渲染层报 `SongOverviewError::EmptyProject`
+//!   时不走回退口径 —— 面板画静音 + 中性空状态文案「工程为空：暂无可渲染内容」,
+//!   不报渲染失败、不进回退态；`RefreshReport.empty_project` 标记该态。
 //! - SFZ provider（[`arm_sfz_input`]）：只走磁盘腿（`resolve_sampler_path` 的既定
 //!   候选顺序：工程目录 ⇒ 采样库根 ⇒ 仓库根 ⇒ cwd）+ 既有解码（`build_region_samples`）。
 //!   内嵌 SFZ（`.yeban` 容器内）本轮不接：解析不到时 provider 记失败并返回空输入，
@@ -101,7 +104,9 @@ use yeban_dsp::song_overview::{
 };
 use yeban_model::song_overview::score_input_from_project;
 use yeban_render::engine_source::{ArmedSfzInput, ArmedSfzSample};
-use yeban_render::song_overview::{RenderSettings, SongOverviewCache, cached_overview};
+use yeban_render::song_overview::{
+    RenderSettings, SongOverviewCache, SongOverviewError, cached_overview,
+};
 
 use yeban_mcp::domain::compare_snapshots::compare_snapshots;
 use yeban_mcp::domain::error::Fault;
@@ -748,6 +753,10 @@ pub struct RefreshReport {
     pub cache_hit: bool,
     /// 本次是否走了纯谱面回退（渲染失败时才为真；见 [`refresh_song_overview`]）。
     pub score_only: bool,
+    /// 本次是空工程（0 帧）—— 中性空状态，不报渲染失败（T-FIX-815）。
+    /// 空工程时 `error` 为 `None`、`score_only` 为 `false`：它既不是失败，
+    /// 也不是纯谱面回退。
+    pub empty_project: bool,
     /// 失败 / 回退的原因（成功且全量时为 `None`；回退时记渲染失败原文）。
     pub error: Option<String>,
 }
@@ -897,6 +906,8 @@ fn arm_sfz_input(
 ///   采样率取工程 `audio_config` 的值（与渲染层校验的口径同一条）；种子 0。
 /// - 渲染失败时回退到纯谱面分析（`analyze_song_overview(score, None)`）；回退原因
 ///   写进回执与日志，面板画的是谱面实测值 + 能量/频率哨兵，⛔ 不是假全量。
+/// - 空工程（0 帧）不走回退（T-FIX-815）：`EmptyProject` 时画静音 + 中性空状态文案，
+///   回执记 `empty_project: true`、无失败原文。
 /// - 纯谱面也空（空工程）时画静音面板；没有工程（`port` 为 `None` 或取不到工程）
 ///   时同样画静音面板，⛔ 不留旧工程的数据。
 /// - 这是**装配 / 判据用的阻塞入口**：首算在调用线程上跑完整曲渲染 + 分析，
@@ -923,6 +934,7 @@ pub fn refresh_song_overview(
             bars: 0,
             cache_hit: false,
             score_only: false,
+            empty_project: false,
             error: Some("总览刷新结果已被更新的请求代次取代".to_owned()),
         },
     )
@@ -994,7 +1006,8 @@ fn snapshot_analysis_job(
     (generation, job)
 }
 
-/// 工作线程上的完整总览计算（渲染 + 分析 + 映射；失败走纯谱面回退）。
+/// 工作线程上的完整总览计算（渲染 + 分析 + 映射；失败走纯谱面回退，
+/// 空工程走中性空状态 —— 见 T-FIX-815）。
 ///
 /// 这是唯一的重计算入口：工作线程只碰 job 里的输入 / 缓存，不碰任何 Slint 对象。
 #[doc(hidden)]
@@ -1008,6 +1021,7 @@ pub fn compute_song_overview(job: &SongOverviewAnalysisJob) -> SongOverviewAnaly
                 bars: silent.total_bars,
                 cache_hit: false,
                 score_only: false,
+                empty_project: false,
                 error: Some("没有活工程：总览面板画静音（不留旧工程数据）".to_string()),
             },
             failures: Vec::new(),
@@ -1035,6 +1049,7 @@ pub fn compute_song_overview(job: &SongOverviewAnalysisJob) -> SongOverviewAnaly
                 bars,
                 cache_hit: false,
                 score_only: true,
+                empty_project: false,
                 error: None,
             },
             failures,
@@ -1057,6 +1072,7 @@ pub fn compute_song_overview(job: &SongOverviewAnalysisJob) -> SongOverviewAnaly
                     bars: 0,
                     cache_hit: hit,
                     score_only: false,
+                    empty_project: false,
                     error: None,
                 },
                 failures,
@@ -1064,6 +1080,24 @@ pub fn compute_song_overview(job: &SongOverviewAnalysisJob) -> SongOverviewAnaly
             .with_bars()
         }
         Err(error) => {
+            // T-FIX-815：空工程不是渲染失败 —— 中性空状态，不走纯谱面回退口径。
+            // 渲染层报 `EmptyProject` 时面板画静音 + 中性空状态文案，不记失败原文、
+            // 不进回退态（`score_only` 为假）；真渲染失败仍走下面的回退臂。
+            if error == SongOverviewError::EmptyProject {
+                eprintln!("[yeban-app] 总览图刷新：工程为空（0 帧），显示空状态");
+                return SongOverviewAnalysisOutcome {
+                    data: silent_overview(view),
+                    report: RefreshReport {
+                        bars: 0,
+                        cache_hit: false,
+                        score_only: false,
+                        empty_project: true,
+                        error: None,
+                    },
+                    failures,
+                }
+                .with_bars();
+            }
             // 渲染失败 ⇒ 纯谱面回退（dsp 的既定回退口径），不留旧工程数据。
             let score = score_input_from_project(project);
             let dsp = analyze_song_overview_with_options(&score, None, &job.options);
@@ -1080,6 +1114,7 @@ pub fn compute_song_overview(job: &SongOverviewAnalysisJob) -> SongOverviewAnaly
                     bars: 0,
                     cache_hit: false,
                     score_only,
+                    empty_project: false,
                     error: Some(message),
                 },
                 failures,
@@ -1152,6 +1187,10 @@ pub fn apply_refresh_report(ui: &MainWindow, report: &RefreshReport) {
 
 /// 回执 → 面板文案（唯一构造点；空串 ⇒ 正常全量分析）。
 fn analysis_status_text(report: &RefreshReport) -> String {
+    // T-FIX-815：空工程是中性空状态 —— 不点名回退、不带失败原因。
+    if report.empty_project {
+        return "工程为空：暂无可渲染内容".to_owned();
+    }
     if let Some(error) = report.error.as_deref() {
         return format!("纯谱面回退：{error}；能量/频率为谱面代理值");
     }
@@ -1704,6 +1743,7 @@ mod tests {
             bars: 3,
             cache_hit: false,
             score_only: true,
+            empty_project: false,
             error: Some("渲染失败（missing sample），回退到纯谱面分析".to_owned()),
         };
         let text = analysis_status_text(&failed);
@@ -1715,6 +1755,7 @@ mod tests {
             bars: 16,
             cache_hit: false,
             score_only: true,
+            empty_project: false,
             error: None,
         };
         let text = analysis_status_text(&large);
@@ -1725,9 +1766,82 @@ mod tests {
             bars: 16,
             cache_hit: true,
             score_only: false,
+            empty_project: false,
             error: None,
         };
         assert_eq!(analysis_status_text(&full), "", "全量成功必须清空提示");
+    }
+
+    /// 空工程刷新任务（`YebanProjectV1::default()` + 主总线轨，无任何剪辑；
+    /// 与 `yeban-render` 的 `an_empty_project_is_a_loud_error_not_silence`
+    /// 同一夹具形状）。
+    fn empty_project_job() -> SongOverviewAnalysisJob {
+        let master = yeban_model::EntityId::default();
+        let mut project = yeban_model::YebanProjectV1::default();
+        project.tracks.insert(
+            master,
+            yeban_model::TrackV3 {
+                id: master,
+                name: "Master".to_owned(),
+                kind: yeban_model::TrackKind::Master,
+                ..yeban_model::TrackV3::default()
+            },
+        );
+        project.routing_graph.nodes.push(master);
+        let view = ViewState::from_project(&project).expect("空工程必须能投影");
+        SongOverviewAnalysisJob {
+            generation: 1,
+            project: Some(project),
+            view,
+            project_dir: None,
+            options: AnalysisOptions::default(),
+            cache: Arc::new(Mutex::new(SongOverviewCache::new())),
+        }
+    }
+
+    /// T-FIX-815：空工程是中性空状态，不是渲染失败。
+    ///
+    /// 判据分两层：① `analysis_status_text` 对空工程回执只写中性文案，
+    /// 不带「渲染失败 / 纯谱面回退 / 谱面代理」；② 真跑 `compute_song_overview`
+    ///（空工程夹具）得到的回执就是空工程回执，且面板数据是静音面板。
+    /// 真失败仍响亮的一半由 `a_fallback_report_is_written_as_a_visible_analysis_status`
+    /// 覆盖（带 error 的回退仍点名回退与失败原因）。
+    #[test]
+    fn an_empty_project_refresh_reports_a_neutral_empty_state() {
+        let empty = RefreshReport {
+            bars: 0,
+            cache_hit: false,
+            score_only: false,
+            error: None,
+            empty_project: true,
+        };
+        let text = analysis_status_text(&empty);
+        assert_eq!(
+            text, "工程为空：暂无可渲染内容",
+            "空状态文案必须逐字中性: {text}"
+        );
+        assert!(!text.contains("渲染失败"), "空状态不得报渲染失败: {text}");
+        assert!(!text.contains("纯谱面回退"), "空状态不得说回退: {text}");
+        assert!(!text.contains("谱面代理"), "空状态不得提谱面代理: {text}");
+
+        let outcome = compute_song_overview(&empty_project_job());
+        let report = &outcome.report;
+        assert!(report.empty_project, "空工程必须标空工程回执: {report:?}");
+        assert!(report.error.is_none(), "空工程不得带失败原文: {report:?}");
+        assert!(!report.score_only, "空工程不是纯谱面回退: {report:?}");
+        assert_eq!(
+            analysis_status_text(report),
+            "工程为空：暂无可渲染内容",
+            "真跑出来的回执也必须写中性文案"
+        );
+        assert!(
+            outcome
+                .data
+                .lufs_short
+                .iter()
+                .all(|value| *value == NO_LOUDNESS_READING_LUFS),
+            "空工程面板必须是静音面板（全哨兵）"
+        );
     }
 
     /// Magma 锚点逐位相等（设计稿 §4.5 的 5 个色值）。
