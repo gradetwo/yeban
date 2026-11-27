@@ -87,6 +87,21 @@ impl Fixture {
         let scene_bpm = first.tempo.expect("夹具刚写过场景 tempo 覆盖");
         let mut engine = EngineHost::new();
         engine.reload(&project, 0).expect("引擎必须能建起来");
+        // 走带速度在第一个量子才武装进 Transport（reload 后读数是缺省 120）；
+        // 先推一个量子，base_bpm 的读数才与工程速度一致，后面的"排队不得改速度"
+        // 断言才有意义。
+        {
+            let mut block = vec![0.0_f32; DEFAULT_BLOCK_FRAMES * 2];
+            let runtime = engine
+                .runtime_for_criteria()
+                .expect("控制驱动档：运行时归宿主所有");
+            runtime.process_quantum(&mut block, 2);
+            assert!(
+                (runtime.transport().bpm() - base_bpm).abs() < 1e-9,
+                "夹具前提：推一个量子后走带速度必须是工程速度 {base_bpm}，实测 {}",
+                runtime.transport().bpm()
+            );
+        }
         let engine = Rc::new(RefCell::new(engine));
         let view = Rc::new(RefCell::new(view));
         let port = LivePort::new(WINDOW, Permission::Interactive, None, || {
