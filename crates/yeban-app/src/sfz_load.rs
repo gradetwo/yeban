@@ -1836,6 +1836,33 @@ impl core::fmt::Display for SfzPathError {
 
 impl core::error::Error for SfzPathError {}
 
+/// ⭐ T-FIX-723：历史 demo 工程写死的 SFZ 路径 → 现行资源路径的**精确**重定向表。
+///
+/// 背景：远程 demo（《雨声太吵》等，从 `gradetwo/yeban-extras` 下载）的工程文件把
+/// `emily_basic` 写死成 `assets/samples/_suite/emily_basic.sfz`，但本仓现行资源的登记
+/// 路径是 `assets/samples/karoryfer-emilyguitar/Emilyguitar/emily_basic.sfz`
+/// （见 `assets/samples/manifest.json`）。`_suite/` 是早期 bundling 布局的历史残留。
+///
+/// demo 工程文件**不随本仓分发**（远程下载），无法改源引用；故在唯一解析收口
+/// [`resolve_sampler_path`] 处做重定向——一处同时覆盖打开校验、渲染导出、缺音源救援。
+/// ⛔ 只认下表的**精确**路径，不做前缀/模糊匹配，绝不影响其它工程写的 SFZ 路径。
+pub const LEGACY_SFZ_REDIRECTS: &[(&str, &str)] = &[(
+    "assets/samples/_suite/emily_basic.sfz",
+    "assets/samples/karoryfer-emilyguitar/Emilyguitar/emily_basic.sfz",
+)];
+
+/// 若 `path` 是已知历史路径，返回它应重定向到的现行路径；否则 `None`。
+///
+/// 精确匹配：把 `\` 归一成 `/` 后逐字相等（Windows 存下来的工程可能带反斜杠）。
+#[must_use]
+pub fn legacy_sfz_redirect(path: &str) -> Option<&'static str> {
+    let normalized = path.replace('\\', "/");
+    LEGACY_SFZ_REDIRECTS
+        .iter()
+        .find(|(legacy, _)| *legacy == normalized.as_str())
+        .map(|(_, current)| *current)
+}
+
 /// ⭐ ⭐ **SFZ 路径的唯一种解析**（任务单 `#168`）：探测与渲染都调它。
 ///
 /// ## 规则（按序，**先命中先返回**）
@@ -1866,6 +1893,13 @@ impl core::error::Error for SfzPathError {}
 /// ⚠ 候选按 `PathBuf` **去重**（工程目录可能就是仓库根）⇒ 错误信息不会有重复行。
 /// ⚠ 本函数**只查存在性**（`is_file`），⛔ 不读文件内容、⛔ 不解析 SFZ。
 ///
+/// ## T-FIX-723：历史 demo 路径重定向
+///
+/// 相对路径先经 [`legacy_sfz_redirect`] 精确映射（如 `_suite/emily_basic.sfz` ⇒
+/// `karoryfer-emilyguitar/Emilyguitar/emily_basic.sfz`），**再用映射后的路径**找候选；
+/// 绝对路径（规则 1）⛔ 不重定向。错误里的 [`SfzPathError::path`] 仍是**原样字符串**
+/// （用户写什么就报什么），但 `tried` 列的是映射后真正找过的位置 —— 响亮、不骗人。
+///
 /// # Errors
 ///
 /// [`SfzPathError`]：相对路径在全部候选根下都不是一个文件。
@@ -1875,6 +1909,9 @@ pub fn resolve_sampler_path(path: &str, roots: SfzRoots<'_>) -> Result<PathBuf, 
     if raw.is_absolute() {
         return Ok(raw.to_path_buf());
     }
+    // ⭐ T-FIX-723：相对路径先做历史 demo 路径精确重定向，再按映射后的路径找候选。
+    let effective = legacy_sfz_redirect(path).unwrap_or(path);
+    let raw = Path::new(effective);
     // 规则 2：四个候选，按序。
     let mut tried: Vec<PathBuf> = Vec::with_capacity(4);
     if let Some(project_dir) = roots.project_dir {
