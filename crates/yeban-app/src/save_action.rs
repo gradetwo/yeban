@@ -220,6 +220,23 @@ impl SaveRequest {
             embedded_presets: Vec::new(),
         }
     }
+
+    /// 显式接收保存时要内嵌的用户预制（T-FIX-808）。
+    ///
+    /// 由调用方按**当前工程 + 当前内嵌副本表**调用
+    /// `yeban_mcp::domain::preset::collect_embedded_presets` 后传入；本模块只
+    /// 原样写进容器，⛔ 不在这里猜哪些预制该带。
+    #[must_use]
+    pub fn with_embedded_presets(mut self, embedded_presets: Vec<(String, Vec<u8>)>) -> Self {
+        self.embedded_presets = embedded_presets;
+        self
+    }
+
+    /// 当前请求带的内嵌预制（判据读回；不在保存路径上使用）。
+    #[must_use]
+    pub fn embedded_presets(&self) -> &[(String, Vec<u8>)] {
+        &self.embedded_presets
+    }
 }
 
 /// 一次用户保存的结果（**界面拿它渲染状态文本**，不是内部日志）。
@@ -278,6 +295,10 @@ pub enum SaveStage {
     Authority,
     /// 本地原子写拒绝了（`.yeban.lock` 被占 / 容器被拒 / I/O）。
     Local,
+    /// 保存前收集被引用用户预制失败（缺副本 / 用户库没有 / 超限）。
+    ///
+    /// 这一档发生在本地写**之前**：一个字节都还没写，界面必须响亮报出缺失 id。
+    EmbeddedPresets,
 }
 
 /// **用户按保存**的唯一下发点：按"谁是写者"把这次请求送到唯一正确的落点。

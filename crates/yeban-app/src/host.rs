@@ -10419,6 +10419,46 @@ pub fn wire_save_with_engine(
             live.try_project()
                 .map(|project| (project, live.graph(), live.assets()))
         });
+        // T-FIX-808：保存前按**当前工程 + 当前内嵌副本表**收集被引用 user 预制。
+        // 与 MCP 保存同一条 `collect_embedded_presets`；缺副本 / 用户库没有 / 超限
+        // 时一个字节都不写，直接把原文写进保存状态（不静默写出缺件工程）。
+        fn preset_fault_text(error: &yeban_mcp::domain::error::Fault) -> String {
+            match error {
+                yeban_mcp::domain::error::Fault::Domain { message, .. } => message.clone(),
+                yeban_mcp::domain::error::Fault::Impl { error } => error.message.clone(),
+            }
+        }
+        let embedded_presets = (|| -> Result<Vec<(String, Vec<u8>)>, String> {
+            let entries = live_port
+                .as_ref()
+                .map_or_else(Vec::new, |live| live.embedded_presets());
+            let embedded = if entries.is_empty() {
+                std::collections::BTreeMap::new()
+            } else {
+                yeban_mcp::domain::preset::parse_embedded_presets(&entries)
+                    .map_err(|error| preset_fault_text(&error))?
+            };
+            let project = live_port
+                .as_ref()
+                .and_then(|live| live.project_shared())
+                .unwrap_or_else(|| Rc::clone(&port.project));
+            let project = project.borrow();
+            yeban_mcp::domain::preset::collect_embedded_presets(&embedded, &project, true)
+                .map_err(|error| preset_fault_text(&error))
+        })();
+        let embedded_presets = match embedded_presets {
+            Ok(presets) => presets,
+            Err(message) => {
+                apply_save_outcome(
+                    &ui,
+                    &crate::save_action::SaveOutcome::Failed {
+                        stage: crate::save_action::SaveStage::EmbeddedPresets,
+                        message: format!("保存被拒：收集内嵌用户预制失败: {message}"),
+                    },
+                );
+                return;
+            }
+        };
         let request = match live {
             // ⭐ 活会话这一版：工程 ＋ 图谱 ＋ **资产池**（`#132` 补的第三层）。
             Some((project, graph, assets)) => {
@@ -10428,13 +10468,15 @@ pub fn wire_save_with_engine(
                     yeban_model::commit::encode_history_dag(&graph),
                     assets,
                 )
+                .with_embedded_presets(embedded_presets)
             }
             // 没有活会话 ⇒ 退回共享的那一份工程（T-ISS-MWW4H8J6：与会话共享同一份
             // `Rc`，读的是**此刻**的工程，⛔ 不再是装配时刻的快照），如实写
             // "没有历史 / 没有资产"（既有语义）。
             // ⭐ T-FIX-457：句柄直接交进请求，序列化时只借用 —— 这一步
             // ⛔ 不再整工程深拷贝（`SaveRequest::new_shared`）。
-            None => crate::save_action::SaveRequest::new_shared(target, Rc::clone(&port.project)),
+            None => crate::save_action::SaveRequest::new_shared(target, Rc::clone(&port.project))
+                .with_embedded_presets(embedded_presets),
         };
         let outcome = crate::save_action::dispatch_save(&request, authority);
         apply_save_outcome(&ui, &outcome);
