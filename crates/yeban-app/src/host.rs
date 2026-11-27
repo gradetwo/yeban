@@ -20608,6 +20608,14 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
+            // 卷帘有音符选区 ⇒ 音符剪贴板；无音符选区才回落到片段剪贴板。
+            // `selected-ulids` 是选区唯一事实源；身份全陈旧时也算"没有有效音符"，
+            // 但此时仍给音符回执（⛔ 不静默改去复制片段）。
+            if selected_note_ids_for_ops(ui).is_some() {
+                let count = clipboard_copy_notes(ui, &project);
+                report_note_clipboard(ui, NoteClipboardVerb::Copy, count);
+                return count > 0;
+            }
             let ok = clipboard_copy_selected(ui, &project);
             report_clipboard(ui, ClipboardVerb::Copy, ok);
             ok
@@ -20619,6 +20627,13 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
+            // 音符剪贴板非空 ⇒ 音符粘贴（目标 = 当前选中 MIDI 片段 + 播放头）；
+            // 空 ⇒ 片段粘贴。目标不合法时给音符回执，⛔ 不静默改成粘片段。
+            if note_clipboard_has_content() {
+                let count = clipboard_paste_notes(ui, port, &project);
+                report_note_clipboard(ui, NoteClipboardVerb::Paste, count);
+                return count > 0;
+            }
             let ok = clipboard_paste(ui, port, &project);
             report_clipboard(ui, ClipboardVerb::Paste, ok);
             ok
@@ -20630,6 +20645,11 @@ fn apply_action(
             let Some(project) = port.try_project() else {
                 return false;
             };
+            if selected_note_ids_for_ops(ui).is_some() {
+                let count = clipboard_cut_notes(ui, port, &project);
+                report_note_clipboard(ui, NoteClipboardVerb::Cut, count);
+                return count > 0;
+            }
             let ok = clipboard_cut(ui, port, &project);
             report_clipboard(ui, ClipboardVerb::Cut, ok);
             ok
@@ -24852,6 +24872,17 @@ thread_local! {
 }
 
 thread_local! {
+    /// 进程内**音符**剪贴板：一组完整 `MidiNote`（含 `pitch` / `velocity` /
+    /// `channel` / micro-timing / syllable 等全部字段），顺序按工程键序。
+    ///
+    /// 与 [`CLIP_CLIPBOARD`] 同一取向：只活在 UI 线程、只活本次运行，
+    /// ⛔ 不进 `.yeban`、⛔ 不进撤销栈。两个剪贴板互斥：复制音符清空片段剪贴板，
+    /// 复制片段清空音符剪贴板，避免 Cmd+V 选错对象。
+    static NOTE_CLIPBOARD: std::cell::RefCell<Option<Vec<yeban_model::MidiNote>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
     /// 剪辑拖动的**组快照**：按下时那一刻选区集里每条摆放的（音轨，摆放身份，起点 tick）。
     ///
     /// 与 [`CLIP_CLIPBOARD`] 同一取向：只活在 UI 线程、只活一次手势（按下 → 松手 / 取消），
@@ -24976,6 +25007,8 @@ pub fn clipboard_copy_selected(ui: &MainWindow, project: &yeban_model::YebanProj
         return false;
     }
     CLIP_CLIPBOARD.with(|cell| *cell.borrow_mut() = Some(copied));
+    // 单一系统剪贴板：复制片段后，上一次复制的音符不再可粘贴。
+    NOTE_CLIPBOARD.with(|cell| *cell.borrow_mut() = None);
     true
 }
 
@@ -25122,6 +25155,237 @@ pub fn clipboard_cut(
     clear_region_card(ui);
     refresh_undo_window(ui, port, true);
     true
+}
+
+/// 把**卷帘音符选区**解析成完整音符副本（复制 / 剪切共用）。
+///
+/// 只按身份从 `clip_pool` 取音符：身份解析不出或早已不存在的条目直接跳过；
+/// 一条都取不到 ⇒ 空 `Vec`（调用方据此响亮回执，⛔ 不猜"复制最后一个音符"）。
+/// `MidiNote` 整体 `clone` ⇒ `pitch` / `velocity` / `channel` / micro-timing /
+/// syllable 等字段逐位保留，粘贴不丢表现力。
+#[must_use]
+pub fn note_clipboard_notes_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+) -> Vec<yeban_model::MidiNote> {
+    use std::collections::BTreeSet;
+    let targets: BTreeSet<yeban_model::EntityId> = selected_ulids
+        .iter()
+        .filter_map(|raw| raw.parse::<yeban_model::EntityId>().ok())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+    let mut notes = Vec::new();
+    // 片段池键序 → 音符键序：与 `ViewState.notes` 同源，复制顺序确定。
+    for entry in project.clip_pool.values() {
+        let Some(clip_notes) = entry.content.notes() else {
+            continue;
+        };
+        for (note_id, note) in clip_notes {
+            if targets.contains(note_id) {
+                notes.push(note.clone());
+            }
+        }
+    }
+    notes
+}
+
+/// 剪切载荷 = 完整音符副本 ＋ 待提交的 `DeleteNote` 批。
+///
+/// 复制与删除读**同一份**选区；副本不为空但删除批为空（陈旧身份）⇒ 两边一起空，
+/// 调用方不提交也不写剪贴板（一次按键不该只做半件事）。
+#[must_use]
+pub fn note_cut_payload_for(
+    project: &yeban_model::YebanProjectV1,
+    selected_ulids: &[String],
+) -> (Vec<yeban_model::MidiNote>, Vec<yeban_model::ops::Op>) {
+    let notes = note_clipboard_notes_for(project, selected_ulids);
+    if notes.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    (notes, delete_ops_for(project, selected_ulids))
+}
+
+/// 音符粘贴：把剪贴板里的音符整组落到**目标 MIDI 片段**的播放头处（纯函数，有判据）。
+///
+/// # 取舍（与 Logic Pro 对照）
+///
+/// 选 **播放头**，不选"选区末端"：Logic Pro 的 `Cmd+V` 也是把剪贴板内容落到播放头；
+/// 选区末端只适合"原位续写"，而复制后通常先挪播放头再粘。最早那颗音符对齐播放头，
+/// 其余按来源 `start_tick` 之差顺延（组内相对节奏不变）。
+///
+/// 播放头是**工程绝对 tick**，`MidiNote.start_tick` 是**片段内相对 tick** ⇒ 先减
+/// 目标摆放的 `start_tick`。播放头不在目标摆放 `[start, start+duration)` 内 ⇒ 返回空，
+/// 由宿主响亮提示"把播放头挪进选中片段"，⛔ 不静默夹到边界（那会粘到用户没指的位置）。
+///
+/// 返回第二元是每个新音符的身份，供宿主把选区迁到副本（Logic 粘完选中新内容）。
+pub fn note_paste_ops_for(
+    project: &yeban_model::YebanProjectV1,
+    clipboard: &[yeban_model::MidiNote],
+    target_clip_ulid: &str,
+    playhead_tick: u64,
+) -> (Vec<yeban_model::ops::Op>, Vec<yeban_model::EntityId>) {
+    if clipboard.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let Some((track_id, _, placement)) = clip_placement_for(project, target_clip_ulid) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+        return (Vec::new(), Vec::new());
+    };
+    if !matches!(
+        &entry.content,
+        yeban_model::project::ClipContent::Midi { .. }
+    ) {
+        return (Vec::new(), Vec::new());
+    }
+    let clip_start = placement.start_tick;
+    let clip_end = clip_start.saturating_add(placement.duration_ticks);
+    if playhead_tick < clip_start || playhead_tick >= clip_end {
+        return (Vec::new(), Vec::new());
+    }
+    let base_local = playhead_tick.saturating_sub(clip_start);
+    let anchor = clipboard
+        .iter()
+        .map(|note| note.start_tick)
+        .min()
+        .unwrap_or(0);
+    let mut ops = Vec::with_capacity(clipboard.len());
+    let mut ids = Vec::with_capacity(clipboard.len());
+    for note in clipboard {
+        let mut copy = note.clone();
+        copy.id = yeban_model::EntityId::new();
+        copy.start_tick = base_local.saturating_add(note.start_tick.saturating_sub(anchor));
+        ids.push(copy.id);
+        ops.push(yeban_model::ops::Op::AddNote {
+            track_id,
+            clip_id: placement.clip_id,
+            note: copy,
+        });
+    }
+    (ops, ids)
+}
+
+/// [`NoteClipboardVerb`] 的**唯一**用户可见出口（键盘 / 菜单共用，⛔ 不静默）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NoteClipboardVerb {
+    /// `Cmd/Ctrl+C` 且卷帘有音符选区。
+    Copy,
+    /// `Cmd/Ctrl+V` 且音符剪贴板非空。
+    Paste,
+    /// `Cmd/Ctrl+X` 且卷帘有音符选区。
+    Cut,
+}
+
+/// 写一条**音符**剪贴板回执：成功带数量，失败给可执行的下一步。
+pub fn report_note_clipboard(ui: &MainWindow, verb: NoteClipboardVerb, count: usize) {
+    let (verb_word, hint) = match verb {
+        NoteClipboardVerb::Copy => ("复制", "先在卷帘里选中音符再按 Ctrl+C"),
+        NoteClipboardVerb::Paste => ("粘贴", "音符剪贴板为空，或播放头不在选中的 MIDI 片段内"),
+        NoteClipboardVerb::Cut => ("剪切", "先在卷帘里选中音符再按 Ctrl+X"),
+    };
+    let text = if count == 0 {
+        format!("[剪贴板] {verb_word}音符未生效：{hint}")
+    } else {
+        format!("[剪贴板] 已{verb_word} {count} 个音符")
+    };
+    eprintln!("[yeban-app] toast: {text}");
+    ui.set_toast_message(text.into());
+    ui.set_toast_is_error(false);
+    ui.set_show_floating_toast(true);
+}
+
+/// 音符剪贴板是否非空（派发时决定 Paste 走音符还是片段）。
+#[must_use]
+pub fn note_clipboard_has_content() -> bool {
+    NOTE_CLIPBOARD.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .is_some_and(|notes| !notes.is_empty())
+    })
+}
+
+/// 复制卷帘音符选区到音符剪贴板；返回复制个数（`0` = 无有效选区）。
+pub fn clipboard_copy_notes(ui: &MainWindow, project: &yeban_model::YebanProjectV1) -> usize {
+    let Some(selected) = selected_note_ids_for_ops(ui) else {
+        return 0;
+    };
+    let selected: Vec<String> = selected.iter().map(ToString::to_string).collect();
+    let notes = note_clipboard_notes_for(project, &selected);
+    if notes.is_empty() {
+        return 0;
+    }
+    let count = notes.len();
+    NOTE_CLIPBOARD.with(|cell| *cell.borrow_mut() = Some(notes));
+    // 单一系统剪贴板：复制音符后，上一次复制的片段不再可粘贴。
+    CLIP_CLIPBOARD.with(|cell| *cell.borrow_mut() = None);
+    count
+}
+
+/// 粘贴音符剪贴板到当前选中 MIDI 片段的播放头（**一次**提交 = 一步撤销）。
+///
+/// 返回粘贴个数；`0` = 剪贴板空 / 无目标片段 / 播放头不在片段内 / 模型拒绝。
+/// 成功后选区迁到新音符（与 Logic 粘完选中新内容一致）。
+pub fn clipboard_paste_notes(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> usize {
+    let Some(notes) = NOTE_CLIPBOARD.with(|cell| cell.borrow().clone()) else {
+        return 0;
+    };
+    let target = ui.get_selected_clip_ulid().to_string();
+    let (ops, ids) = note_paste_ops_for(project, &notes, target.trim(), playhead_tick(ui));
+    if ops.is_empty() {
+        return 0;
+    }
+    if port.commit_ops(now_ms(), "paste notes", ops).is_err() {
+        report_rejected(ui, "粘贴音符");
+        return 0;
+    }
+    let selected: Vec<slint::SharedString> = ids
+        .iter()
+        .map(|id| id.to_canonical_string().into())
+        .collect();
+    let count = i32::try_from(selected.len()).unwrap_or(i32::MAX);
+    ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(selected)));
+    ui.set_selected_note_count(count);
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    reproject_roll(ui, port, width, ui.get_roll_scroll_x());
+    refresh_undo_window(ui, port, true);
+    ids.len()
+}
+
+/// 剪切音符 = 复制到音符剪贴板 ＋ 一次 `DeleteNote` 批（一步撤销同时回滚两者）。
+pub fn clipboard_cut_notes(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project: &yeban_model::YebanProjectV1,
+) -> usize {
+    let Some(selected) = selected_note_ids_for_ops(ui) else {
+        return 0;
+    };
+    let selected: Vec<String> = selected.iter().map(ToString::to_string).collect();
+    let (notes, ops) = note_cut_payload_for(project, &selected);
+    if notes.is_empty() || ops.is_empty() {
+        return 0;
+    }
+    if port.commit_ops(now_ms(), "cut notes", ops).is_err() {
+        report_rejected(ui, "剪切音符");
+        return 0;
+    }
+    let count = notes.len();
+    NOTE_CLIPBOARD.with(|cell| *cell.borrow_mut() = Some(notes));
+    CLIP_CLIPBOARD.with(|cell| *cell.borrow_mut() = None);
+    let cleared: Vec<slint::SharedString> = Vec::new();
+    ui.set_selected_ulids(slint::ModelRc::new(slint::VecModel::from(cleared)));
+    ui.set_selected_note_count(0);
+    let width = slint::ComponentHandle::window(ui).size().width as f32;
+    reproject_roll(ui, port, width, ui.get_roll_scroll_x());
+    refresh_undo_window(ui, port, true);
+    count
 }
 
 /// 选中剪辑的身份 + 切分点 ⇒ 待提交的**切分 op 组合**（纯函数，有判据）。
