@@ -13558,13 +13558,13 @@ fn s114_the_volume_family_is_the_third_unit_category_across_three_paths() {
     assert_eq!(ModTarget::COUNT, ModTarget::ALL.len());
     assert_eq!(
         ModTarget::COUNT,
-        30,
+        31,
         "⭐ **声像族建模补全片：尾加 `Position`／`Width` ⇒ 目标数 12 → **14**（既有十二个下标一个都没动）**；\
          历史：⭐ 本片（stage 5）加上 `Cutoff` ⇒ 目标数 11 → **12**（既有十一个下标一个都没动）；\
          历史：⭐ 本片（stage 3）加上 `Pan` ⇒ 目标数 10 → **11**（既有十个下标一个都没动）；\
          历史：⭐ `#119` 加上 `Volume` ⇒ 目标数是 8；⭐ **包络族片修订：`AmpegParam` 尾加 \
          `Delay`／`Start` ⇒ 目标数 10（`Volume` 仍在末尾；`#104`～`#118` 七个目标的**相对序未动**、\
-         绝对下标随 `AmpegParam::COUNT` 派生）**；⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面「目标数 12 → 14」那一支**（⛔ 原文一字未删）：本单尾加 `Fileg`／`Pitcheg` 两族（各 8 个目标）⇒ 目标数 14 → **30**；既有十四个目标的下标一个都没动。"
+         绝对下标随 `AmpegParam::COUNT` 派生）**；⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面「目标数 12 → 14」那一支**（⛔ 原文一字未删）：本单尾加 `Fileg`／`Pitcheg` 两族（各 8 个目标）⇒ 目标数 14 → **30**；既有十四个目标的下标一个都没动；⭐ ⭐ **追加修订段（T-ISS-MWXTS6KA）—— 被修订的是上面「目标数 14 → 30」那一支**（⛔ 原文一字未删）：`7db2deae` 尾加 `Resonance` 一个目标 ⇒ 目标数 30 → **31**；既有三十个目标的下标一个都没动。"
     );
     assert_eq!(
         ModTarget::ALL[9],
@@ -16325,9 +16325,9 @@ fn s117_the_gain_spelling_is_the_volume_alias_across_three_paths() {
     // ---- ⑦ 尺寸（`size_of` 现读，⛔ 不手抄）：四个全 ＋0 ----
     assert_eq!(
         ModTarget::COUNT,
-        30,
+        31,
         "⛔ `#124` ⛔ 不加目标（本片 stage 5 加的是 `Cutoff`：11 → 12；stage 3 加的是 `Pan`：10 → 11）（`gain_ccN` 落**既有**的 `Volume`）；\
-         ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**／⭐ **声像族建模补全片修订：`ModTarget` 尾加 `Position`／`Width` ⇒ 目标数 12 → 14**；⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面「目标数 12 → 14」那一支**（⛔ 原文一字未删）：本单尾加 `Fileg`／`Pitcheg` 两族（各 8 个目标）⇒ 目标数 14 → **30**；`gain_ccN` 仍落既有的 `Volume`，既有十四个目标的下标一个都没动。"
+         ⭐ **包络族片修订：`AmpegParam` 尾加 `Delay`／`Start` ⇒ 目标数 8 → 10**／⭐ **声像族建模补全片修订：`ModTarget` 尾加 `Position`／`Width` ⇒ 目标数 12 → 14**；⭐ ⭐ **追加修订段（T-FIX-281A）—— 被修订的是上面「目标数 12 → 14」那一支**（⛔ 原文一字未删）：本单尾加 `Fileg`／`Pitcheg` 两族（各 8 个目标）⇒ 目标数 14 → **30**；`gain_ccN` 仍落既有的 `Volume`，既有十四个目标的下标一个都没动；⭐ ⭐ **追加修订段（T-ISS-MWXTS6KA）—— 被修订的是上面「目标数 14 → 30」那一支**（⛔ 原文一字未删）：`7db2deae` 尾加 `Resonance` 一个目标 ⇒ 目标数 30 → **31**；`gain_ccN` 仍落既有的 `Volume`，既有三十个目标的下标一个都没动。"
     );
     assert_eq!(ModTarget::ALL[9], ModTarget::Volume);
     assert_eq!(ModTarget::Volume.mod_unit(), ModUnit::Decibels);
