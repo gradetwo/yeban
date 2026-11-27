@@ -739,7 +739,8 @@ def source_line_problems(path: Path) -> tuple[list[str], int, int, int, int]:
         nearest = min(present, key=lambda n: min(abs(n - c) for c in cited)) if cited else min(present)
         problems.append(
             f"{citing}:{lineno} 的**非历史**源码引用 `{path}:{spec}` 点名 {named}，"
-            f"但第 {spec} 行没有它（构件最近出现在第 {nearest} 行）—— "
+            f"但第 {spec} 行没有它（与所引行号最接近的 token 出现处在第 {nearest} 行，"
+            "模糊匹配、仅供定位，不是构件所在行；请逐行直读核实）—— "
             "旧位置请写成 `旧记 :N` 或 `⚠ …就地更正：…现位于 :M`，别把旧行号留在活声明里"
         )
     return problems, checked, skipped, hints, appendix_unjudged
