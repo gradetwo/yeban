@@ -13601,4 +13601,67 @@ mod tests {
             .expect("必须声明 sessionId 参数");
         assert!(session_param.required, "sessionId 必须是必填实参");
     }
+
+    /// T-FIX-707：`connectRouting` 重复边走**真**工具路径。
+    ///
+    /// 判据：已有边的端点 + `edgeKind` 不变、`edgeId` 换新身份时，必须报
+    /// `CONFLICT` + `routingEdgeDuplicate`，并点名已有边身份；提案/合并两条路径
+    /// 都在编译层被拒，工程与提案注册表都不动。
+    ///
+    /// 红对照：删掉 `compile` 的重复边提前拒绝块 ⇒ 本判据在"响应为 success"处变红。
+    #[test]
+    fn edit_notes_rejects_duplicate_endpoint_routing_edge_at_tool_layer() {
+        for auto_merge in [false, true] {
+            let mut domain = domain();
+            let project = domain.active_project().cloned().expect("工程");
+            let track = fixture_track(&domain);
+            let clip = clip_id(&domain);
+            let edge = *project.routing_graph.edges.values().next().expect("样本边");
+            let new_id = EntityId::new();
+            let response = execute(
+                &mut domain,
+                &call(
+                    "yeban_edit_notes",
+                    serde_json::json!({
+                        "trackId": track.to_canonical_string(),
+                        "clipId": clip.to_canonical_string(),
+                        "ops": [{
+                            "kind": "connectRouting",
+                            "edgeId": new_id.to_canonical_string(),
+                            "sourceNode": edge.source_node.to_canonical_string(),
+                            "destinationNode": edge.destination_node.to_canonical_string(),
+                            "edgeKind": serde_json::to_value(edge.kind).expect("kind"),
+                            "gainDb": edge.gain_db,
+                        }],
+                        "autoMerge": auto_merge,
+                    }),
+                ),
+            )
+            .expect("领域失败也必须回契约信封");
+            assert_eq!(
+                response["status"], "error",
+                "重复边不得静默成功 (autoMerge={auto_merge}): {response}"
+            );
+            assert_eq!(
+                response["error"]["code"], "CONFLICT",
+                "重复边必须是 CONFLICT (autoMerge={auto_merge}): {response}"
+            );
+            let data = &response["error"]["data"];
+            assert_eq!(
+                data["reason"], "routingEdgeDuplicate",
+                "reason 必须可识别 (autoMerge={auto_merge}): {response}"
+            );
+            assert_eq!(
+                data["existingEdgeId"],
+                edge.id.to_canonical_string(),
+                "必须点名已有边身份 (autoMerge={auto_merge}): {response}"
+            );
+            assert_eq!(domain.proposal_count(), 0, "拒绝必须发生在建提案之前");
+            assert_eq!(
+                domain.active_project(),
+                Some(&project),
+                "拒绝必须保持工程不变 (autoMerge={auto_merge})"
+            );
+        }
+    }
 }

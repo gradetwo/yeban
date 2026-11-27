@@ -11443,6 +11443,42 @@ fn compile_inner(
                         }),
                     ));
                 }
+                // 第三条提前拒绝：端点 + `edgeKind` 已经存在，但 `edgeId` 是新身份。
+                // 模型 `ConnectRouting` 只拒绝 `edge.id` 重复；这种"换一个 id 再连同一
+                // 条连接"会静默插出一条平行边（实测活尖端 2f3d6882：autoMerge 成功、
+                // 图里多一条同端点同 kind 的边），比报 `ENTITY_NOT_FOUND` 更坏。这里按
+                // `addRoutingNode` 的重复口径报 `CONFLICT`，并点名已有边身份。
+                //
+                // ⚠ `connectRouting` 的载荷没有 lane 字段，永远建节点级边；若已有的是
+                // `Sidechain` 的 lane 级边（`source_lane` / `dest_lane` 非空），它和新
+                // 建的节点级边是两种连接，不按重复拒绝。
+                if let Some(existing) = project.routing_graph.edges.values().find(|existing| {
+                    existing.source_node == *source_node
+                        && existing.destination_node == *destination_node
+                        && existing.kind == *kind
+                        && existing.source_lane.is_none()
+                        && existing.dest_lane.is_none()
+                }) {
+                    return Err(Fault::domain_with_data(
+                        ErrorCode::Conflict,
+                        format!(
+                            "工程的 routing_graph 里已经有 {} → {} 的 {:?} 边 (身份 {}), \
+                             不能用新 edgeId {} 再连一条相同连接",
+                            source_node, destination_node, kind, existing.id, edge_id
+                        ),
+                        serde_json::json!({
+                            "edgeId": edge_id.to_canonical_string(),
+                            "existingEdgeId": existing.id.to_canonical_string(),
+                            "sourceNode": source_node.to_canonical_string(),
+                            "destinationNode": destination_node.to_canonical_string(),
+                            "edgeKind": format!("{kind:?}"),
+                            "reason": "routingEdgeDuplicate",
+                            "hint": "端点与 edgeKind 相同的边已经存在; 要改它的增益用 \
+                                     `setRoutingGain`, 要取走它用 `disconnectRouting`; \
+                                     需要另一条独立连接请改端点或 edgeKind",
+                        }),
+                    ));
+                }
                 Op::ConnectRouting {
                     edge: RoutingEdge {
                         id: *edge_id,
@@ -25487,6 +25523,68 @@ mod tests {
         }]))
         .expect_err("增益必须有限（收窄到 f32 后）");
         assert_eq!(reason_of(&bad_gain).as_deref(), Some("nonFiniteValue"));
+    }
+
+    /// `connectRouting` 的第三条前置条件：端点 + `edgeKind` 已存在时，即使
+    /// `edgeId` 是新身份也必须 `CONFLICT/routingEdgeDuplicate`，不能静默插平行边。
+    ///
+    /// 红对照：删掉本判据对应的提前拒绝块 ⇒ 本判据在"重复边成功"处变红。
+    #[test]
+    fn connect_routing_refuses_duplicate_endpoint_kind_with_a_new_edge_id() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let existing = *project
+            .routing_graph
+            .edges
+            .values()
+            .next()
+            .expect("样本里必须有路由边");
+        let new_edge_id = EntityId::new();
+        let duplicate = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND,
+            "edgeId": new_edge_id.to_canonical_string(),
+            "sourceNode": existing.source_node.to_canonical_string(),
+            "destinationNode": existing.destination_node.to_canonical_string(),
+            "edgeKind": serde_json::to_value(existing.kind).expect("kind"),
+            "gainDb": existing.gain_db,
+        }]))
+        .expect("解析不查文档");
+        let fault = compile(&project, &track_id, &clip_id, &duplicate)
+            .expect_err("同端点同 edgeKind 的新 edgeId 必须被拒");
+        assert_eq!(
+            fault.domain_code(),
+            Some(ErrorCode::Conflict),
+            "重复边必须报 CONFLICT: {fault:?}"
+        );
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("routingEdgeDuplicate"),
+            "reason 必须点名重复边: {fault:?}"
+        );
+        assert_eq!(
+            lane_fault_data(&fault)["existingEdgeId"],
+            existing.id.to_canonical_string(),
+            "必须点名已有边身份, 让调用方改增益/取走"
+        );
+
+        // 端点不存在仍走既有的 ENTITY_NOT_FOUND，不被重复边检查遮蔽。
+        let ghost = EntityId::from_str("01J8ZQ000000000000000000GH").expect("ULID");
+        assert!(!project.routing_graph.nodes.contains(&ghost));
+        let dangling = parse_ops(&serde_json::json!([{
+            "kind": CONNECT_ROUTING_KIND,
+            "edgeId": EntityId::new().to_canonical_string(),
+            "sourceNode": existing.source_node.to_canonical_string(),
+            "destinationNode": ghost.to_canonical_string(),
+            "edgeKind": serde_json::to_value(existing.kind).expect("kind"),
+        }]))
+        .expect("解析不查文档");
+        let fault = compile(&project, &track_id, &clip_id, &dangling)
+            .expect_err("端点不存在必须仍然先被拒");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("routingNodeNotFound"),
+            "端点不存在必须维持 routingNodeNotFound: {fault:?}"
+        );
     }
 
     /// `connectRouting` 的**字面名与支持集合**被钉住。
