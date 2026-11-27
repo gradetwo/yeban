@@ -8760,6 +8760,12 @@ fn apply_save(
             "durabilityWarning": null,
         })));
     }
+    // T-FIX-958：另存为取新锁之前先校验父目录 —— 否则会在 `.lock` 路径上
+    // 先撞 `No such file or directory`，错误只剩内部锁文件名。普通保存不取新锁，
+    // 保留原 `write_project_atomic` 的 IO_ERROR 口径，不扩大行为变更。
+    if save_as {
+        store::ensure_save_parent(path)?;
+    }
     // 另存为：先对新路径取排他锁，再写盘，最后把活跃工程切到新路径。
     // 顺序与 `apply_open` 相反是有意的：这里活跃工程已经存在，写失败时旧工程
     // 必须原样保留（旧锁也继续持有），而新锁会在本函数返回时被 Drop 释放。
@@ -11758,6 +11764,72 @@ mod tests {
         .expect("执行");
         assert_eq!(forced["status"], "error");
         assert_eq!(forced["error"]["code"], "IO_ERROR");
+    }
+
+    #[test]
+    fn save_to_missing_parent_is_structured_file_not_found() {
+        let mut domain = domain_with_assets();
+        let missing = std::env::temp_dir()
+            .join(format!(
+                "yeban-mcp-t958-{}-{}",
+                std::process::id(),
+                EntityId::new().to_canonical_string()
+            ))
+            .join("song.yeban");
+        let response = execute(
+            &mut domain,
+            &call(
+                "yeban_save_project",
+                serde_json::json!({"path": missing.display().to_string(), "force": true}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(response["status"], "error");
+        assert_eq!(response["error"]["code"], "FILE_NOT_FOUND");
+        let data = &response["error"]["data"];
+        assert_eq!(data["field"], "path");
+        assert_eq!(data["path"], missing.display().to_string());
+        assert_eq!(
+            data["parent"],
+            missing.parent().expect("父目录").display().to_string()
+        );
+        assert_eq!(data["reason"], "parentDirectoryMissing");
+        assert!(
+            data["nextStep"].get("arguments").is_none(),
+            "nextStep 不得原样回放坏 path: {data}"
+        );
+        assert!(
+            !data["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(".lock"),
+            "业务错误文案不得只暴露内部 .lock: {data}"
+        );
+    }
+
+    #[test]
+    fn save_to_existing_directory_still_succeeds() {
+        let mut domain = domain_with_assets();
+        let dir = std::env::temp_dir().join(format!(
+            "yeban-mcp-t958-ok-{}-{}",
+            std::process::id(),
+            EntityId::new().to_canonical_string()
+        ));
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("song.yeban");
+        let response = execute(
+            &mut domain,
+            &call(
+                "yeban_save_project",
+                serde_json::json!({"path": path.display().to_string(), "force": true}),
+            ),
+        )
+        .expect("执行");
+        assert_eq!(response["status"], "success", "{response}");
+        assert_eq!(response["data"]["path"], path.display().to_string());
+        assert_eq!(response["data"]["saved"], true);
+        assert!(path.is_file(), "已存在目录保存必须真的落盘");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// T-FIX-43 判据用的**独占**临时工程路径（自己的目录，⛔ 不碰

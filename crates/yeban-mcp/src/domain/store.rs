@@ -978,6 +978,31 @@ pub fn write_project_atomic(path: &Path, bytes: &[u8]) -> Result<(), Fault> {
     write_project_atomic_with_durability(path, bytes).map(|_| ())
 }
 
+/// 保存前校验目标父目录存在；缺失时给**业务对象**（path/parent）而不是内部锁路径。
+///
+/// 保存入口必须先调本函数，再取排他锁：否则父目录缺失会在 `lock_path`
+/// 上先撞 `No such file or directory`，调用方只能看到 `.lock` 内部路径。
+pub fn ensure_save_parent(path: &Path) -> Result<(), Fault> {
+    let parent = parent_dir(path);
+    if parent.is_dir() {
+        return Ok(());
+    }
+    Err(Fault::domain_with_data(
+        ErrorCode::FileNotFound,
+        format!("保存目标父目录不存在: {}", parent.display()),
+        serde_json::json!({
+            "field": "path",
+            "path": path.display().to_string(),
+            "parent": parent.display().to_string(),
+            "reason": "parentDirectoryMissing",
+            "nextStep": {
+                "tool": "yeban_save_project",
+                "action": "本工具不会自动创建父目录；先创建该父目录，或把 path 改为已存在目录下的文件后重试"
+            }
+        }),
+    ))
+}
+
 /// **原子**把 `bytes` 落盘到 `path`，并返回持久化读数（[`Durability`]）。
 ///
 /// 与 [`write_project_atomic`] 同一个协议，唯一区别是返回值把"第 3.5 步"
