@@ -412,7 +412,6 @@ export component MainWindow inherits Window {
     in-out property <[float]> track-volume-fractions: [];
     in-out property <[string]> track-pans: [];
     in-out property <[float]> track-pan-values: [];
-    in-out property <float> bus-volume-db: -1.0;
     in-out property <[bool]> track-mutes: [];
     in-out property <[bool]> track-solos: [];
     in-out property <[string]> track-meter-peaks: [];
@@ -427,6 +426,10 @@ export component MainWindow inherits Window {
     in-out property <string> master-volume-display: "-0.0 dB";
     in-out property <float> master-volume-fraction: 0.85;
     in-out property <string> master-pan: "C";
+    // T-FIX-567：声像归一化数值（-1.0..=1.0），与 `master-pan` 文本同源，
+    // 由宿主 `apply_master` / `preview_master_pan` 投影。总线通道条声像旋钮
+    // 的指针位置与读数据此渲染，不再持有第二份只改数字的本地状态。
+    in-out property <float> master-pan-value: 0.0;
     in-out property <bool> master-mute: false;
     in-out property <bool> master-solo: false;
     in-out property <color> master-color: Theme.track-bass;
@@ -1782,7 +1785,12 @@ export component MainWindow inherits Window {
                         root.tracks[root.safe-selected-idx].insert2,
                         root.tracks[root.safe-selected-idx].insert3
                     ] : [];
-                    bus-track-vol <=> root.bus-volume-db;
+                    // T-FIX-567：总线通道条读主控事实源（与主控通道条 / 下坞推子同源），
+                    // ⛔ 不再有"左栏推子 <=> 下坞推子"那份只改数字的本地假状态网。
+                    bus-volume-fraction: root.master-volume-fraction;
+                    bus-volume-display: root.master-volume-display;
+                    bus-pan-value: root.master-pan-value;
+                    bus-pan-display: root.master-pan;
 
                     normalize-heights() => { root.normalize-track-heights(); }
                     fader-changed(vol) => { root.track-volume-changed(root.selected-track-index, vol); }
@@ -1800,6 +1808,15 @@ export component MainWindow inherits Window {
                     mixer-pan-drag(idx, x) => { root.mixer-pan-drag(idx, x); }
                     mixer-pan-release(idx) => { root.mixer-pan-release(idx); }
                     mixer-pan-reset(idx) => { root.mixer-pan-reset(idx); }
+                    // T-FIX-567：总线推子 / 声像旋钮走既有主控手势链（同一投影与 Op 提交）。
+                    mixer-master-fader-grab(y) => { root.mixer-master-fader-grab(y); }
+                    mixer-master-fader-drag(y) => { root.mixer-master-fader-drag(y); }
+                    mixer-master-fader-release() => { root.mixer-master-fader-release(); }
+                    mixer-master-fader-reset() => { root.mixer-master-fader-reset(); }
+                    mixer-master-pan-grab(x) => { root.mixer-master-pan-grab(x); }
+                    mixer-master-pan-drag(x) => { root.mixer-master-pan-drag(x); }
+                    mixer-master-pan-release() => { root.mixer-master-pan-release(); }
+                    mixer-master-pan-reset() => { root.mixer-master-pan-reset(); }
                     execute-action(id) => { root.command-execute(id); }
                     focus-devices() => {
                         root.show-lower-dock = true;
@@ -2247,7 +2264,8 @@ export component MainWindow inherits Window {
                 track-volumes: root.track-volumes;
                 master-volume-db: Math.round((-60.0 + root.master-volume-fraction * 66.0) * 10.0) / 10.0;
                 master-volume-display: root.master-volume-display;
-                bus-volume-db <=> root.bus-volume-db;
+                // T-FIX-567：下坞总线推子读主控事实源，删掉那份双向绑定的本地假状态。
+                // 那份只改数字的本地状态。
                 selected-track-id: root.selected-track-index;
                 notes: root.notes;
                 playhead-px: root.playhead-px;

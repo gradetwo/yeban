@@ -85,15 +85,14 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     in-out property <[string]> selected-track-inserts: [];
 
     in-out property <string> bus-name: "Bus 1 · Synth";
-    in-out property <float> bus-track-vol: -1.0;
-    in-out property <float> bus-pan-norm: 0.0;
+    // T-FIX-567：总线推子 / 声像旋钮改为读主控事实源（与主控通道条、下坞推子同源）。
+    // 这四格由 `app.slint` 从 `master-volume-fraction` / `master-volume-display` /
+    // `master-pan-value` / `master-pan` 注入，⛔ 不再持有第二份只改数字的本地状态。
+    in property <float> bus-volume-fraction: 0.85;
+    in property <string> bus-volume-display: "-0.0";
+    in property <float> bus-pan-value: 0.0;
+    in property <string> bus-pan-display: "C";
     in-out property <float> bus-track-peak: 0.55;
-    private property <bool> bus-dragging: false;
-    private property <length> bus-drag-start-y: 0px;
-    private property <float> bus-drag-start-db: -1.0;
-    private property <bool> bus-pan-dragging: false;
-    private property <length> bus-pan-start-x: 0px;
-    private property <float> bus-pan-start-norm: 0.0;
     in-out property <[string]> bus-inserts: ["Tape Saturator", "Vintage Verb", @tr("+ 添加总线效果")];
     in-out property <bool> show-bus-strip: false; // 默认折叠总线通道条，收缩至专注单轨检查器
 
@@ -165,6 +164,15 @@ export component ZoneBrowserAndInspector inherits Rectangle {
     callback mixer-pan-drag(int, length);
     callback mixer-pan-release(int);
     callback mixer-pan-reset(int);
+    // T-FIX-567：总线通道条三件套走既有主控手势链（同一投影与 Op 提交）。
+    callback mixer-master-fader-grab(length);
+    callback mixer-master-fader-drag(length);
+    callback mixer-master-fader-release();
+    callback mixer-master-fader-reset();
+    callback mixer-master-pan-grab(length);
+    callback mixer-master-pan-drag(length);
+    callback mixer-master-pan-release();
+    callback mixer-master-pan-reset();
     callback search-changed(string);
     callback execute-action(string);
 
@@ -1140,7 +1148,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: Math.round(Math.abs(root.bus-pan-norm) * 100.0) < 1 ? "C" : (root.bus-pan-norm < 0.0 ? ("L" + Math.round(-root.bus-pan-norm * 100.0)) : ("R" + Math.round(root.bus-pan-norm * 100.0)));
+                                        // T-FIX-567：与主控通道条 `master-pan` 同源（⛔ 不再自算 L/C/R）。
+                                        text: root.bus-pan-display;
                                         font-family: Tokens.font-mono;
                                         font-size: 9.5px;
                                         font-weight: 400;
@@ -1150,22 +1159,19 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 }
                                 bus_pan_touch := TouchArea {
                                     mouse-cursor: MouseCursor.ew-resize;
+                                    // T-FIX-567：拖动预览 / 松手提交 / 双击归中全走既有主控声相手势链，
+                                    // 与主控通道条是同一投影与同一 Op 提交，⛔ 不再只改本地数字。
                                     pointer-event(event) => {
                                         if event.kind == PointerEventKind.down {
-                                            root.bus-pan-dragging = true;
-                                            root.bus-pan-start-x = self.mouse-x;
-                                            root.bus-pan-start-norm = root.bus-pan-norm;
+                                            root.mixer-master-pan-grab(self.mouse-x);
                                         } else if event.kind == PointerEventKind.move {
-                                            if root.bus-pan-dragging {
-                                                root.bus-pan-norm = Math.max(-1.0, Math.min(1.0, root.bus-pan-start-norm + ((self.mouse-x - root.bus-pan-start-x) / 36px) * 2.0));
-                                            }
+                                            root.mixer-master-pan-drag(self.mouse-x);
                                         } else {
-                                            root.bus-pan-dragging = false;
+                                            root.mixer-master-pan-release();
                                         }
                                     }
                                     double-clicked => {
-                                        root.bus-pan-dragging = false;
-                                        root.bus-pan-norm = 0.0;
+                                        root.mixer-master-pan-reset();
                                     }
                                 }
                                 TooltipBubble { text: @tr("总线声像 (左右拖拽调节，双击归中)"); is-visible: bus_pan_touch.has-hover; tip-offset-y: 22px; }
@@ -1216,7 +1222,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
 
                                 Rectangle {
                                     x: 1px;
-                                    y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, (root.bus-track-vol + 60.0) / 66.0)));
+                                    // T-FIX-567：位置取主控事实源 `master-volume-fraction`（同一口径）。
+                                    y: 4px + 81px * (1.0 - Math.max(0.0, Math.min(1.0, root.bus-volume-fraction)));
                                     width: 22px;
                                     height: 15px;
                                     background: Tokens.texture-physical ? Tokens.raised-brush : Tokens.ink-1;
@@ -1234,25 +1241,22 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 }
                                 bus_fader_touch := TouchArea {
                                     mouse-cursor: MouseCursor.ns-resize;
+                                    // T-FIX-567：与主控通道条同一增益手势链（同投影 / 同 Op 提交）；
+                                    // 双击归 0dB 走 `mixer-master-fader-reset`，⛔ 不再只改本地数字。
                                     pointer-event(event) => {
                                         if event.kind == PointerEventKind.down {
-                                            root.bus-dragging = true;
-                                            root.bus-drag-start-y = self.mouse-y;
-                                            root.bus-drag-start-db = root.bus-track-vol;
+                                            root.mixer-master-fader-grab(self.mouse-y);
                                         } else if event.kind == PointerEventKind.move {
-                                            if root.bus-dragging {
-                                                root.bus-track-vol = Math.round(Math.max(-60.0, Math.min(6.0, root.bus-drag-start-db + ((root.bus-drag-start-y - self.mouse-y) / 1px) * (66.0 / 88.0))) * 10.0) / 10.0;
-                                            }
+                                            root.mixer-master-fader-drag(self.mouse-y);
                                         } else {
-                                            root.bus-dragging = false;
+                                            root.mixer-master-fader-release();
                                         }
                                     }
                                     double-clicked => {
-                                        root.bus-dragging = false;
-                                        root.bus-track-vol = 0.0;
+                                        root.mixer-master-fader-reset();
                                     }
                                 }
-                                TooltipBubble { text: @tr("总线推子: {} dB (上下拖拽调节，双击归 0dB)", Math.round(root.bus-track-vol * 10.0) / 10.0); is-visible: bus_fader_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 106px; }
+                                TooltipBubble { text: @tr("总线推子: {} dB (上下拖拽调节，双击归 0dB)", root.bus-volume-display); is-visible: bus_fader_touch.has-hover; tip-offset-x: -30px; tip-offset-y: 106px; }
                             }
 
                             Rectangle {
@@ -1288,7 +1292,8 @@ export component ZoneBrowserAndInspector inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: center;
                                     Text {
-                                        text: "" + (Math.round(root.bus-track-vol * 10.0) / 10.0) + " dB";
+                                        // T-FIX-567：读数与主控通道条同源（master-volume-display）。
+                                        text: root.bus-volume-display + " dB";
                                         font-family: Tokens.font-mono;
                                         font-size: 10px;
                                         font-weight: 400;

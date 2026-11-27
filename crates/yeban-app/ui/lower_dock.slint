@@ -160,7 +160,8 @@ export component UnifiedLowerDock inherits Rectangle {
     in-out property <bool> dock-instrument-menu-open: false;
     in-out property <int> dock-instrument-target-id: -1;
     in property <[string]> track-volumes: [];
-    in-out property <float> bus-volume-db: -1.0;
+    // T-FIX-567：总线推子读主控事实源 `master-volume-db`（由 app.slint 从
+    // `master-volume-fraction` 派生），⛔ 删掉那份只改数字的本地总线音量状态。
     in-out property <float> master-volume-db: -0.3;
     in property <string> master-volume-display: "";
     // ⭐ T-FIX-215：MONO 是**总输出监听状态**，唯一事实源是主窗口的 `control-room-mono`
@@ -168,9 +169,6 @@ export component UnifiedLowerDock inherits Rectangle {
     //   实例化时把本属性绑到 `root.control-room-mono`，点击只发 `master-toggle-mono`
     //   （⛔ 不许本地先翻一次 —— 绑定后再翻会变成“翻两次 = 不变”）。
     in-out property <bool> master-mono: false;
-    private property <bool> bus-dragging: false;
-    private property <length> bus-drag-start-y: 0px;
-    private property <float> bus-drag-start-db: -1.0;
     in-out property <length> dock-height: 320px;
     // 矮窗紧凑档（A12）：通道条内容自然高 ≈ 180px（名称 18 + 音色插入 15 + M/S 16 + 推子 88
     // + dB 牌 17 + 行间距 16 + 内边距 10），而下坞被 `window-h - 420px` 压到 200px 时，
@@ -1910,7 +1908,8 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                     Rectangle {
                                         x: 1px;
-                                        y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (root.bus-volume-db + 60.0) / 66.0)))));
+                                        // T-FIX-567：位置取主控事实源 `master-volume-db`。
+                                        y: Math.max(2px, Math.min(parent.height - 18px, 4px + (parent.height - 24px) * (1.0 - Math.max(0.0, Math.min(1.0, (root.master-volume-db + 60.0) / 66.0)))));
                                         width: 22px;
                                         height: 15px;
                                         // 一期质感: flat 分支保留旧值与 1px 强调边; physical 走凸面刷 + 斜面 + 控件级落影。
@@ -1949,25 +1948,22 @@ export component UnifiedLowerDock inherits Rectangle {
 
                                     bus_fader_touch := TouchArea {
                                         mouse-cursor: MouseCursor.ns-resize;
+                                        // T-FIX-567：与主控通道条同一增益手势链（同投影 / 同 Op 提交），
+                                        // 双击归 0dB 走 `mixer-master-fader-reset`，⛔ 不再只改本地数字。
                                         pointer-event(event) => {
                                             if (event.kind == PointerEventKind.down) {
-                                                root.bus-dragging = true;
-                                                root.bus-drag-start-y = self.mouse-y;
-                                                root.bus-drag-start-db = root.bus-volume-db;
+                                                root.mixer-master-fader-grab(self.mouse-y);
                                             } else if (event.kind == PointerEventKind.move) {
-                                                if (root.bus-dragging) {
-                                                    root.bus-volume-db = Math.round(Math.max(-60.0, Math.min(6.0, root.bus-drag-start-db + ((root.bus-drag-start-y - self.mouse-y) / 1px) * (66.0 / 88.0))) * 10.0) / 10.0;
-                                                }
+                                                root.mixer-master-fader-drag(self.mouse-y);
                                             } else {
-                                                root.bus-dragging = false;
+                                                root.mixer-master-fader-release();
                                             }
                                         }
                                         double-clicked => {
-                                            root.bus-dragging = false;
-                                            root.bus-volume-db = 0.0;
+                                            root.mixer-master-fader-reset();
                                         }
                                     }
-                                    TooltipBubble { text: @tr("总线推子: {} dB (上下拖拽/双击归 0dB)", Math.round(root.bus-volume-db * 10.0) / 10.0); is-visible: bus_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
+                                    TooltipBubble { text: @tr("总线推子: {} dB (上下拖拽/双击归 0dB)", root.master-volume-display != "" ? root.master-volume-display : ("" + root.master-volume-db)); is-visible: bus_fader_touch.has-hover; tip-offset-x: -20px; tip-offset-y: -22px; }
                                 }
 
                                 Rectangle {
@@ -2010,7 +2006,8 @@ export component UnifiedLowerDock inherits Rectangle {
                                     HorizontalLayout {
                                         alignment: center;
                                         Text {
-                                            text: "" + (Math.round(root.bus-volume-db * 10.0) / 10.0) + " dB";
+                                            // T-FIX-567：读数与主控通道条同源。
+                                            text: (root.master-volume-display != "" ? root.master-volume-display : ("" + root.master-volume-db)) + " dB";
                                             font-family: Tokens.font-mono;
                                             font-size: 9px;
                                             font-weight: 400;

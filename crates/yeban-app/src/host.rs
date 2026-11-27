@@ -2336,6 +2336,10 @@ fn preview_master_volume(ui: &MainWindow, volume_db: f32) {
 /// **主控通道条**的视图态预览（声相）：写 `master-pan`（口径同 [`preview_track_pan`]）。
 fn preview_master_pan(ui: &MainWindow, pan: f32) {
     ui.set_master_pan(crate::bridge::pan_display(pan_millis_of(pan)).into());
+    // 归一化数值与上面的文本**同一口径**（`pan_millis_of` = round(pan * 1000)）。
+    // 供总线声像旋钮的指针定位、以及三处声像读数共用同一份主控事实源，
+    // ⛔ 不再是"只改数字的本地状态"。
+    ui.set_master_pan_value(pan.clamp(-1.0, 1.0));
 }
 
 /// 按**目标**分派音量预览（[`cancel_mixer_gesture`] 与收尾路径的唯一入口）。
@@ -6460,6 +6464,7 @@ fn apply_master(ui: &MainWindow, view: &ViewState) {
         ui.set_master_volume_display("".into());
         ui.set_master_volume_fraction(0.0);
         ui.set_master_pan("C".into());
+        ui.set_master_pan_value(0.0);
         ui.set_master_mute(false);
         ui.set_master_solo(false);
         ui.set_master_color(to_color(DEFAULT_TRACK_COLOR));
@@ -6470,6 +6475,9 @@ fn apply_master(ui: &MainWindow, view: &ViewState) {
     ui.set_master_volume_display(master.volume_display.clone().into());
     ui.set_master_volume_fraction(master.volume_fraction);
     ui.set_master_pan(master.pan_display.clone().into());
+    // T-FIX-567：声像归一化数值与 `pan_display` 文本、权威工程 `pan_millis` 同源
+    // （`pan_millis` 的口径是 `round(pan * 1000)`，见 bridge.rs::track_view）。
+    ui.set_master_pan_value((master.pan_millis as f32 / 1000.0).clamp(-1.0, 1.0));
     ui.set_master_mute(master.mute);
     ui.set_master_solo(master.solo);
     ui.set_master_color(to_color(master.color_rgb));
