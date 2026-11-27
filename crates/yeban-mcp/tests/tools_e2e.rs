@@ -3594,13 +3594,24 @@ fn spec_ids_in_responses_match_the_registry() {
     assert_eq!(dry["data"]["tool"], "yeban_query_project");
     assert_eq!(dry["data"]["requiredScope"], "app:admin");
     assert_eq!(dry["data"]["sideEffect"], "read-only");
-    // `tools/list` 的注解仍然是唯一事实源。
-    let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string();
-    let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
-    let tools = outcome.response.expect("响应").result.expect("result")["tools"]
-        .as_array()
-        .expect("tools")
-        .clone();
+    // `tools/list` 的注解仍然是唯一事实源（T-FIX-832：默认分页，翻页收齐再对账）。
+    let mut tools = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let params = match &cursor {
+            None => json!({}),
+            Some(cursor) => json!({"cursor": cursor}),
+        };
+        let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": params})
+            .to_string();
+        let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
+        let page = outcome.response.expect("响应").result.expect("result");
+        tools.extend(page["tools"].as_array().expect("tools").iter().cloned());
+        match page.get("nextCursor") {
+            Some(next) => cursor = Some(next.as_str().expect("游标是字符串").to_owned()),
+            None => break,
+        }
+    }
     assert_eq!(tools.len(), TOOLS.len());
     for (descriptor, spec) in tools.iter().zip(TOOLS.iter()) {
         assert_eq!(descriptor["name"], spec.name);

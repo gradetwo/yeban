@@ -1308,10 +1308,12 @@ mod tests {
         assert_eq!(response.content_type, CONTENT_TYPE_JSON);
         let value: Value = serde_json::from_str(&response.body).expect("JSON");
         assert_eq!(value["id"], "req-7");
+        // T-FIX-832：`tools/list` 默认分页 —— 无参只回第一页。
         assert_eq!(
             value["result"]["tools"].as_array().expect("tools").len(),
-            crate::tools::TOOL_COUNT
+            crate::tools::TOOLS_LIST_PAGE_SIZE
         );
+        assert_eq!(value["result"]["nextCursor"], "tools-list:5");
         let bytes = response.to_bytes();
         assert!(bytes.starts_with(b"HTTP/1.1 200 OK\r\n"));
         assert!(bytes.ends_with(response.body.as_bytes()));

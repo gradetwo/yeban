@@ -800,23 +800,23 @@ fn editing_after_an_undo_forks_an_anonymous_branch() {
 #[test]
 fn the_two_new_tools_respect_the_existing_pipeline() {
     let (mut dispatcher, auth) = new_dispatcher();
-    let listed = {
-        let line = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string();
+    // T-FIX-832：`tools/list` 默认分页 —— 按名逐个拉取完整描述符。
+    let mut listed_tools: Vec<serde_json::Value> = Vec::new();
+    for name in ["yeban_undo", "yeban_redo"] {
+        let line = json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"name":name}})
+            .to_string();
         let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
-        outcome.response.expect("响应").result.expect("result")
-    };
-    let names: Vec<String> = listed["tools"]
-        .as_array()
-        .expect("tools")
+        let page = outcome.response.expect("响应").result.expect("result");
+        listed_tools.extend(page["tools"].as_array().expect("tools").iter().cloned());
+    }
+    let names: Vec<String> = listed_tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("name").to_owned())
         .collect();
-    assert_eq!(names.len(), yeban_mcp::tools::TOOL_COUNT);
+    assert_eq!(names.len(), 2, "按名拉取两条必须恰好回 2 条");
     assert!(names.contains(&"yeban_undo".to_owned()));
     assert!(names.contains(&"yeban_redo".to_owned()));
-    let undo_descriptor = listed["tools"]
-        .as_array()
-        .expect("tools")
+    let undo_descriptor = listed_tools
         .iter()
         .find(|tool| tool["name"] == "yeban_undo")
         .expect("yeban_undo 描述符");

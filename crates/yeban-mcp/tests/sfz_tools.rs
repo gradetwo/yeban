@@ -1264,17 +1264,24 @@ fn the_registry_is_session_scoped_and_content_addressed() {
 fn the_two_new_tools_are_discoverable_and_use_d25_codes() {
     let mut dispatcher = dispatcher_with_project(filled_project());
     let auth = bearer(&dispatcher);
-    let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#;
-    let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), line);
-    let listed = outcome
-        .response
-        .expect("响应")
-        .result_value()
-        .expect("result")["tools"]
-        .as_array()
-        .expect("tools 数组")
-        .clone();
-    assert_eq!(listed.len(), tools::TOOL_COUNT, "tools/list 必须列全部工具");
+    // T-FIX-832：`tools/list` 默认分页 —— 按名逐个拉取完整描述符。
+    let mut listed: Vec<serde_json::Value> = Vec::new();
+    for name in ["yeban_load_sfz", "yeban_render_sfz_wav"] {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{{"name":"{name}"}}}}"#
+        );
+        let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
+        let page = outcome
+            .response
+            .expect("响应")
+            .result_value()
+            .expect("result")["tools"]
+            .as_array()
+            .expect("tools 数组")
+            .clone();
+        assert_eq!(page.len(), 1, "按名拉取必须恰好回 1 条");
+        listed.extend(page);
+    }
     for name in ["yeban_load_sfz", "yeban_render_sfz_wav"] {
         let descriptor = listed
             .iter()

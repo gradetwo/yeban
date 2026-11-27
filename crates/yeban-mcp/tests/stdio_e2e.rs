@@ -7,7 +7,8 @@
 //! 六条判据, 每条都有一条会红的断言:
 //! 1. `one_client_session_does_handshake_tools_list_and_a_real_call` —— **台账点名的那一条**: 一个真实客户端在
 //!    **一次**会话里走完 握手 → `tools/list` → 真容器工程的 `yeban_open_project` → `yeban_query_project`,
-//!    并断言 `tools/list` 与注册表**逐项相同**(`TOOL_COUNT` 条, 名字与顺序)以及查询载荷的形状;
+//!    并断言首响应是注册表前 5 条（名字与顺序；T-FIX-832 分页）以及查询载荷的形状
+//!    （整表逐项对账见判据 2 `tools_list_over_stdio_is_real`，翻页收齐）;
 //! 2. `tools_list_over_stdio_is_real` —— 真进程、真 stdout 上取到工具数组, 与注册表逐项对账, 并点名工具在场;
 //! 3. `open_then_query_over_stdio_succeeds` —— 写一份**真容器**工程, 经 stdio 打开并查询, 断言 `status=success` + `data`;
 //! 4. `unknown_path_is_refused_has_teeth` —— 路径不存在时必须得到 `FILE_NOT_FOUND`(判据有牙: 否则 3 可能是假绿);
@@ -16,7 +17,7 @@
 //! 6. `notification_produces_no_response_but_the_session_survives` —— notification 不产生响应, 且会话继续可用。
 //!
 //! 会话的**机械边界**全部收在 [`session`] 里, 所有判据共用:
-//! - stdout / stderr 由**独立线程**抽干 ⇒ 17 个工具的 `tools/list`(实测约 15 KB)不会把子进程堵在写端;
+//! - stdout / stderr 由**独立线程**抽干 ⇒ 46 个工具的 `tools/list` 首响应(实测约 32 KB)不会把子进程堵在写端;
 //! - 写完请求即关 stdin(EOF); 退出由 [`SESSION_TIMEOUT`] 兜底, 超时先 `kill` 再红
 //!   ⇒ 真二进制出问题是一次**响亮的失败**, 不是一次挂到 CI 作业上限的"卡住";
 //! - 断言退出码**恰好是 `0`**(不是被信号带走) ⇒ "客户端关掉 stdin 后服务器自己收摊、什么也没留下"也是判据。
@@ -87,8 +88,8 @@ fn registry_names() -> Vec<String> {
 
 /// 起一次 stdio 会话: 写请求 → 关 stdin(EOF) → 等子进程自己退出 → 读全部响应行。
 ///
-/// 为什么 stdout / stderr 要在**独立线程**里抽干: `tools/list` 的响应实测约 15 KB, 再多几条工具
-/// 就会超过管道缓冲区 —— 那时子进程会阻塞在写端、永远到不了 EOF, 而"先写完再读"的调用方会一直
+/// 为什么 stdout / stderr 要在**独立线程**里抽干: `tools/list` 的首响应实测约 32 KB
+///（T-FIX-832 分页后；整表约 310 KB）, 再多几条工具就会超过管道缓冲区 —— 那时子进程会阻塞在写端、永远到不了 EOF, 而"先写完再读"的调用方会一直
 /// 等它 ⇒ 双方互等。抽干线程让这件事在结构上不可能发生。
 ///
 /// 为什么"先关 stdin": 批处理语义是读到 EOF 就退出, 因此不存在边写边读的往返死锁, 也不用猜
@@ -230,7 +231,10 @@ fn one_client_session_does_handshake_tools_list_and_a_real_call() {
     assert_eq!(init["protocolVersion"], "2024-11-05", "{init}");
     assert!(init["capabilities"]["tools"].is_object(), "{init}");
 
-    // ---- ③ tools/list: 与注册表逐项相同(条数 + 名字 + 顺序) ----
+    // ---- ③ tools/list: 默认只回第一页（T-FIX-832：分页）；首 5 条与注册表
+    // 前 5 条逐项相同（名字与顺序）。整表逐项对账见
+    // `tests/tools_list_pagination.rs` 与本文件的 `tools_list_over_stdio_is_real`
+    //（翻页收齐）。
     let names: Vec<String> = res[1]["result"]["tools"]
         .as_array()
         .expect("tools 必须是数组")
@@ -244,13 +248,17 @@ fn one_client_session_does_handshake_tools_list_and_a_real_call() {
         .collect();
     assert_eq!(
         names.len(),
-        yeban_mcp::tools::TOOL_COUNT,
-        "tools/list 的条数必须等于注册表 TOOL_COUNT: {names:?}"
+        yeban_mcp::tools::TOOLS_LIST_PAGE_SIZE,
+        "无参 tools/list 必须只回第一页: {names:?}"
     );
     assert_eq!(
         names,
-        registry_names(),
-        "tools/list 必须与注册表逐项相同(名字与顺序)"
+        registry_names()[..yeban_mcp::tools::TOOLS_LIST_PAGE_SIZE],
+        "首响应必须是注册表前 5 条（名字与顺序）"
+    );
+    assert_eq!(
+        res[1]["result"]["nextCursor"], "tools-list:5",
+        "首响应必须带 nextCursor 指向下一页"
     );
 
     // ---- ④ 真实调用一: 打开一份真容器工程(第 ⑤ 步只读查询的确定性前提) ----
@@ -297,17 +305,38 @@ fn one_client_session_does_handshake_tools_list_and_a_real_call() {
 
 #[test]
 fn tools_list_over_stdio_is_real() {
-    let res = session(&[req(2, "tools/list", serde_json::json!({}))]);
-    let r = res.first().expect("至少一行响应");
-    assert_eq!(r["id"], 2, "响应必须回显请求 id: {r}");
-    let tools = r["result"]["tools"].as_array().expect("tools 必须是数组");
+    // T-FIX-832：`tools/list` 默认分页 —— 用静态游标翻页收齐（游标格式
+    // `tools-list:<偏移>`、页大小 5 均由 `tools::TOOLS_LIST_PAGE_SIZE` 派生，
+    // 见 `tests/tools_list_pagination.rs`），再与注册表逐项对账。
+    let page_size = yeban_mcp::tools::TOOLS_LIST_PAGE_SIZE;
+    let mut requests = vec![req(2, "tools/list", serde_json::json!({}))];
+    for (id, offset) in (3u32..).zip((page_size..yeban_mcp::tools::TOOL_COUNT).step_by(page_size)) {
+        requests.push(req(
+            id,
+            "tools/list",
+            serde_json::json!({"cursor": format!("tools-list:{offset}")}),
+        ));
+    }
+    let res = session(&requests);
+    assert_eq!(res.len(), requests.len(), "每页都必须有响应: {res:?}");
+    let mut tools: Vec<serde_json::Value> = Vec::new();
+    for (i, r) in res.iter().enumerate() {
+        assert_eq!(r["id"], i as u32 + 2, "响应必须回显请求 id: {r}");
+        tools.extend(
+            r["result"]["tools"]
+                .as_array()
+                .expect("tools 必须是数组")
+                .iter()
+                .cloned(),
+        );
+    }
     // 与**注册表**逐项对账, 而不是"至少几个": 台账 `ROAD-M4-002` 要的正是
     // "tools/list 与注册表一致"。条数单独断言, 是为了让"少了一条"与"顺序变了"分开报。
     // (沿革: 这里曾经写 `>= 15`, 那是 D46 扩张期的下限; 注册表现在是 `TOOL_COUNT` 条。)
     assert_eq!(
         tools.len(),
         yeban_mcp::tools::TOOL_COUNT,
-        "tools/list 的条数必须等于注册表 TOOL_COUNT"
+        "翻页收齐的 tools/list 条数必须等于注册表 TOOL_COUNT"
     );
     let names: Vec<String> = tools
         .iter()
@@ -1366,12 +1395,13 @@ fn request_and_response_scale_edges_over_stdio() {
     ]);
     assert_eq!(res.len(), 8, "8 条请求都必须有响应: {res:?}");
 
-    // ① 最小请求。
+    // ① 最小请求（T-FIX-832：`tools/list` 默认分页，首响应只含第一页）。
     // ⚠ 从**注册表**派生，不写死数字：新增工具时这条判据不该变成第二个会漂移的"口径"。
     assert_eq!(
         res[1]["result"]["tools"].as_array().map(Vec::len),
-        Some(yeban_mcp::tools::TOOL_COUNT)
+        Some(yeban_mcp::tools::TOOLS_LIST_PAGE_SIZE)
     );
+    assert_eq!(res[1]["result"]["nextCursor"], "tools-list:5");
     // ② 空 ops 不允许。
     let empty = &res[3]["result"];
     assert_eq!(empty["status"], "error", "{empty}");

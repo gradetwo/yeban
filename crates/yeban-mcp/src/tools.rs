@@ -2855,6 +2855,18 @@ pub fn tools_declaring(error: ErrorCode) -> Vec<&'static str> {
         .collect()
 }
 
+/// `tools/list` 一页的工具数（T-FIX-832）。
+///
+/// 为什么是 5：实测——`yeban_edit_notes` 一个描述符就 141,496 字节，占整表
+/// 310,171 字节的 46%，且它在表里排第 6（下标 5）；于是 10 条一页的首响应仍有
+/// 215,689 字节，5 条一页的首响应只有 32,179 字节（`yeban_open_project` …
+/// `yeban_propose_section`）。页大小是服务端定值：MCP 规范的 `tools/list` 只
+/// 定义 `cursor`，不定义页大小；客户端按 `nextCursor` 翻页，不解析游标内容。
+pub const TOOLS_LIST_PAGE_SIZE: usize = 5;
+
+/// `tools/list` 分页游标的前缀（不透明串：客户端只应原样回传，不得解析）。
+const TOOLS_LIST_CURSOR_PREFIX: &str = "tools-list:";
+
 /// MCP `tools/list` 的结果：`{"tools":[…]}`（顺序 = 规范顺序，逐字节稳定）。
 ///
 /// 结果缓存（[`OnceLock`]）：`TOOLS` 是编译期常量，描述符逐字节稳定，
@@ -2873,6 +2885,104 @@ pub fn catalog() -> Value {
             Value::Object(map)
         })
         .clone()
+}
+
+/// `tools/list` 的分页与按名拉取（T-FIX-832）。
+///
+/// `params` 缺省或 `{}` ⇒ 第一页；`{"cursor": "<nextCursor>"}` ⇒ 下一页；
+/// `{"name": "<工具名>"}` ⇒ 只要该工具的完整描述符（与 [`catalog()`] 里那一条
+/// 逐字节相同——按名拉取就是从整表里切片，不另造 schema）。`name` 与 `cursor`
+/// 不可同给；未知键、非法 `cursor`、未知工具名均响亮拒绝（`Err` 的文本由分发层
+/// 按 `-32602` 回）。
+///
+/// 形状：分页响应 `{"tools": […], "nextCursor": "…"}`（最后一页不带 `nextCursor`）；
+/// 按名响应 `{"tools": [描述符]}`（不带 `nextCursor`）。工具顺序恒等于 [`catalog()`]。
+pub fn tools_list(params: Option<&Value>) -> Result<Value, String> {
+    let mut name: Option<&str> = None;
+    let mut cursor: Option<&str> = None;
+    if let Some(params) = params {
+        let Value::Object(map) = params else {
+            return Err("tools/list 的 params 必须是对象".to_owned());
+        };
+        for (key, value) in map {
+            match key.as_str() {
+                "name" => {
+                    let Some(text) = value.as_str() else {
+                        return Err("tools/list 的 name 必须是字符串".to_owned());
+                    };
+                    name = Some(text);
+                }
+                "cursor" => {
+                    // 显式 null 按缺省处理（JSON-RPC 惯例：null = 未提供）。
+                    if value.is_null() {
+                        continue;
+                    }
+                    let Some(text) = value.as_str() else {
+                        return Err("tools/list 的 cursor 必须是字符串".to_owned());
+                    };
+                    cursor = Some(text);
+                }
+                other => {
+                    return Err(format!(
+                        "tools/list 不认识参数 `{other}`（只认 name / cursor）"
+                    ));
+                }
+            }
+        }
+    }
+    if name.is_some() && cursor.is_some() {
+        return Err("tools/list 的 name 与 cursor 不可同传：按名拉取时不要给 cursor".to_owned());
+    }
+    let tools = catalog()["tools"]
+        .as_array()
+        .expect("catalog().tools 是数组")
+        .clone();
+    if let Some(name) = name {
+        let Some(descriptor) = tools.iter().find(|tool| tool["name"] == name) else {
+            return Err(format!(
+                "tools/list 未知工具名 `{name}`（共 {TOOL_COUNT} 个工具）"
+            ));
+        };
+        let mut result = Map::new();
+        result.insert("tools".to_owned(), Value::Array(vec![descriptor.clone()]));
+        return Ok(Value::Object(result));
+    }
+    let offset = match cursor {
+        None => 0,
+        Some(text) => parse_tools_list_cursor(text)?,
+    };
+    let end = (offset + TOOLS_LIST_PAGE_SIZE).min(TOOL_COUNT);
+    let mut result = Map::new();
+    result.insert(
+        "tools".to_owned(),
+        Value::Array(tools[offset..end].to_vec()),
+    );
+    if end < TOOL_COUNT {
+        result.insert(
+            "nextCursor".to_owned(),
+            Value::from(format!("{TOOLS_LIST_CURSOR_PREFIX}{end}")),
+        );
+    }
+    Ok(Value::Object(result))
+}
+
+/// 解析 `tools/list` 的分页游标（T-FIX-832）：只接受服务端发出的 `nextCursor`
+///（`tools-list:<页边界偏移>`）；其余一律响亮拒绝。
+fn parse_tools_list_cursor(cursor: &str) -> Result<usize, String> {
+    let Some(rest) = cursor.strip_prefix(TOOLS_LIST_CURSOR_PREFIX) else {
+        return Err(format!(
+            "tools/list 的 cursor 非法：`{cursor}`（应为服务端发出的 nextCursor）"
+        ));
+    };
+    let offset: usize = rest
+        .parse()
+        .map_err(|_| format!("tools/list 的 cursor 非法：`{cursor}`（偏移必须是十进制整数）"))?;
+    if offset >= TOOL_COUNT || !offset.is_multiple_of(TOOLS_LIST_PAGE_SIZE) {
+        return Err(format!(
+            "tools/list 的 cursor 越界或不在页边界：`{cursor}`（共 {TOOL_COUNT} 个工具，每页 {TOOLS_LIST_PAGE_SIZE} 条）"
+        ));
+    }
+    Ok(offset)
 }
 
 impl ToolSpec {

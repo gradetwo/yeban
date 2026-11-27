@@ -199,10 +199,12 @@ mod tests {
 
         let first: serde_json::Value = serde_json::from_str(&lines[0]).expect("JSON");
         assert_eq!(first["id"], 1);
+        // T-FIX-832：`tools/list` 默认分页 —— 无参只回第一页。
         assert_eq!(
             first["result"]["tools"].as_array().expect("tools").len(),
-            crate::tools::TOOL_COUNT
+            crate::tools::TOOLS_LIST_PAGE_SIZE
         );
+        assert_eq!(first["result"]["nextCursor"], "tools-list:5");
 
         let second: serde_json::Value = serde_json::from_str(&lines[1]).expect("JSON");
         assert_eq!(second["id"], "two");

@@ -279,20 +279,39 @@ fn both_edit_tools_state_their_commit_model_in_the_description() {
 fn the_three_new_tools_are_discoverable() {
     let mut dispatcher = dispatcher_with_project(filled_project());
     let auth = bearer(&dispatcher);
-    let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#;
-    let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), line);
-    let listed = outcome
-        .response
-        .expect("响应")
-        .result_value()
-        .expect("result")["tools"]
-        .as_array()
-        .expect("tools 数组")
-        .clone();
+    // T-FIX-832：`tools/list` 默认分页 —— 翻页收齐后再断言全部工具可发现。
+    let mut listed: Vec<serde_json::Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let line = match &cursor {
+            None => r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#.to_owned(),
+            Some(cursor) => format!(
+                r#"{{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{{"cursor":"{cursor}"}}}}"#
+            ),
+        };
+        let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
+        let page = outcome
+            .response
+            .expect("响应")
+            .result_value()
+            .expect("result")
+            .clone();
+        listed.extend(
+            page["tools"]
+                .as_array()
+                .expect("tools 数组")
+                .iter()
+                .cloned(),
+        );
+        match page.get("nextCursor") {
+            Some(next) => cursor = Some(next.as_str().expect("游标是字符串").to_owned()),
+            None => break,
+        }
+    }
     assert_eq!(
         listed.len(),
         tools::TOOL_COUNT,
-        "tools/list 必须列出全部工具"
+        "翻页收齐的 tools/list 必须列出全部工具"
     );
     for name in [
         "yeban_edit_automation",

@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
-use yeban_mcp::tools::TOOL_COUNT;
 
 // ---------------------------------------------------------------------------
 // 脚手架（与 `tests/song_overview.rs` 同款，不跨测试文件引用）
@@ -124,13 +123,20 @@ fn snapshot_json(tension_1: f64, tension_2: f64, lufs_1: f64, band0_1: f64) -> V
     })
 }
 
-/// 判据 ①：注册可发现 —— `tools/list` 里有本工具，`inputSchema` 要求两个对象实参。
+/// 判据 ①：注册可发现 —— `tools/list` 按名拉取里有本工具，
+/// `inputSchema` 要求两个对象实参（T-FIX-832：默认 `tools/list` 分页，
+/// 单工具改走 `{"name": …}` 拉取完整描述符）。
 #[test]
 fn compare_is_discoverable_in_tools_list() {
     let (mut dispatcher, auth) = dispatcher();
-    let listed = request(&mut dispatcher, &auth, "tools/list", json!({}));
+    let listed = request(
+        &mut dispatcher,
+        &auth,
+        "tools/list",
+        json!({"name": "compare_song_snapshots"}),
+    );
     let tools = listed["tools"].as_array().expect("tools");
-    assert_eq!(tools.len(), TOOL_COUNT, "工具面条数必须等于 TOOL_COUNT");
+    assert_eq!(tools.len(), 1, "按名拉取必须恰好回 1 条");
     let tool = tools
         .iter()
         .find(|tool| tool["name"] == "compare_song_snapshots")

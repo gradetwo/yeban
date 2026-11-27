@@ -836,17 +836,24 @@ fn audio_with_an_unknown_take_is_entity_not_found() {
 fn both_new_tools_are_discoverable_in_tools_list() {
     let mut dispatcher = dispatcher_with_project(filled_project());
     let auth = bearer(&dispatcher);
-    let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#;
-    let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), line);
-    let listed = outcome
-        .response
-        .expect("响应")
-        .result_value()
-        .expect("result")["tools"]
-        .as_array()
-        .expect("tools 数组")
-        .clone();
-    assert_eq!(listed.len(), yeban_mcp::tools::TOOL_COUNT);
+    // T-FIX-832：`tools/list` 默认分页 —— 按名逐个拉取完整描述符。
+    let mut listed: Vec<serde_json::Value> = Vec::new();
+    for name in ["synthesize_singing", "svs_job"] {
+        let line = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{{"name":"{name}"}}}}"#
+        );
+        let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), &line);
+        let page = outcome
+            .response
+            .expect("响应")
+            .result_value()
+            .expect("result")["tools"]
+            .as_array()
+            .expect("tools 数组")
+            .clone();
+        assert_eq!(page.len(), 1, "按名拉取必须恰好回 1 条");
+        listed.extend(page);
+    }
     for name in ["synthesize_singing", "svs_job"] {
         let descriptor = listed
             .iter()

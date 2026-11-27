@@ -6231,9 +6231,21 @@ fn the_tool_surface_binds_two_different_samplers_and_query_reads_them_back() {
     let rhythm = id(3).to_canonical_string();
     let (mut dispatcher, auth) = dispatcher_with(&project, &scratch.join("bind.yeban"));
 
-    // ---- ① tools/list：46 个工具，逐字 ----
-    let listed = request(&mut dispatcher, &auth, "tools/list", json!({}));
-    let tools = listed["tools"].as_array().expect("tools");
+    // ---- ① tools/list：46 个工具，逐字（T-FIX-832：默认分页，翻页收齐） ----
+    let mut tools: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let params = match &cursor {
+            None => json!({}),
+            Some(cursor) => json!({"cursor": cursor}),
+        };
+        let page = request(&mut dispatcher, &auth, "tools/list", params);
+        tools.extend(page["tools"].as_array().expect("tools").iter().cloned());
+        match page.get("nextCursor") {
+            Some(next) => cursor = Some(next.as_str().expect("游标是字符串").to_owned()),
+            None => break,
+        }
+    }
     println!(
         "### tools/list 条数（逐字）: {} (TOOL_COUNT={TOOL_COUNT})",
         tools.len()

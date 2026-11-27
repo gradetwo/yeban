@@ -443,7 +443,9 @@ fn a_rejected_recording_leaves_no_file_behind() {
 fn the_tool_is_discoverable_and_declares_d25_codes() {
     let mut dispatcher = dispatcher_with_project();
     let auth = bearer(&dispatcher);
-    let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#;
+    // T-FIX-832：`tools/list` 默认分页 —— 按名拉取完整描述符。
+    let line =
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"name":"yeban_record_wav"}}"#;
     let outcome = dispatcher.handle_line(Channel::Http, Some(&auth), line);
     let listed = outcome
         .response
@@ -453,10 +455,10 @@ fn the_tool_is_discoverable_and_declares_d25_codes() {
         .as_array()
         .expect("tools")
         .clone();
-    assert_eq!(listed.len(), yeban_mcp::tools::TOOL_COUNT);
+    assert_eq!(listed.len(), 1, "按名拉取必须恰好回 1 条");
     let descriptor = listed
-        .iter()
-        .find(|entry| entry["name"] == "yeban_record_wav")
+        .into_iter()
+        .next()
         .expect("tools/list 里必须有 yeban_record_wav");
     let spec = yeban_mcp::tools::tool("yeban_record_wav").expect("注册表");
     assert_eq!(descriptor["annotations"]["specId"], spec.spec_id);

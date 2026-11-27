@@ -463,7 +463,14 @@ impl Dispatcher {
                 {
                     return denied(&denial);
                 }
-                (200, Ok(tools::catalog()))
+                // T-FIX-832：默认分页（首响应只含前 5 条）+ 按名拉取；非法参数走 -32602。
+                match tools::tools_list(request.params.as_ref()) {
+                    Ok(result) => (200, Ok(result)),
+                    Err(detail) => {
+                        let error = ErrorObject::invalid_params(detail);
+                        (http_status_for(&error), Err(error))
+                    }
+                }
             }
             METHOD_TOOLS_CALL => self.evaluate_tool_call(context, request),
             METHOD_INITIALIZE => {
@@ -841,8 +848,11 @@ mod tests {
         );
     }
 
+    /// T-FIX-832：`tools/list` 默认分页 —— 鉴权仍在分页之前；翻页收齐的
+    /// 工具数必须等于 [`TOOL_COUNT`]（顺序与 `catalog()` 一致由
+    /// `tests/tools_list_pagination.rs` 钉）。
     #[test]
-    fn tools_list_requires_a_valid_token_and_returns_all_ten_tools() {
+    fn tools_list_requires_a_valid_token_and_pages_through_all_tools() {
         let mut dispatcher = dispatcher();
         let auth = bearer(&dispatcher);
         let request =
@@ -858,15 +868,42 @@ mod tests {
         let outcome = dispatcher.handle(Channel::Http, Some("Bearer deadbeef"), &request);
         assert_eq!(outcome.http_status, 401);
 
-        // 对 token ⇒ 200 + 10 个工具。
+        // 对 token ⇒ 200 + 第一页（5 条）+ nextCursor；翻页收齐 = 全部工具。
         let outcome = dispatcher.handle(Channel::Http, Some(&auth), &request);
         assert_eq!(outcome.http_status, 200);
         let response = outcome.response.expect("响应");
-        let tools = response.result_value().expect("result")["tools"]
-            .as_array()
-            .expect("tools 数组")
-            .len();
-        assert_eq!(tools, crate::tools::TOOL_COUNT);
+        let first = response.result_value().expect("result");
+        let first_tools = first["tools"].as_array().expect("tools 数组");
+        assert_eq!(
+            first_tools.len(),
+            crate::tools::TOOLS_LIST_PAGE_SIZE,
+            "无参 tools/list 必须只回第一页"
+        );
+        let mut cursor = first["nextCursor"]
+            .as_str()
+            .expect("第一页必须带 nextCursor")
+            .to_owned();
+        let mut total = first_tools.len();
+        loop {
+            let page_request = Request::parse(&format!(
+                r#"{{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{{"cursor":"{cursor}"}}}}"#
+            ))
+            .expect("解析");
+            let outcome = dispatcher.handle(Channel::Http, Some(&auth), &page_request);
+            assert_eq!(outcome.http_status, 200);
+            let page = outcome
+                .response
+                .expect("响应")
+                .result_value()
+                .expect("result")
+                .clone();
+            total += page["tools"].as_array().expect("tools 数组").len();
+            match page.get("nextCursor") {
+                Some(next) => cursor = next.as_str().expect("游标是字符串").to_owned(),
+                None => break,
+            }
+        }
+        assert_eq!(total, crate::tools::TOOL_COUNT, "翻页收齐必须是全部工具");
     }
 
     #[test]

@@ -181,27 +181,26 @@ fn without_hardware_the_probe_reports_a_structured_unavailability_and_never_a_fa
         "不可用响应里⛔ 不得出现 `events` 读数（那会把\"没有硬件\"谎报成\"有端口但静默\"）: {response}"
     );
     // 且工具**仍在** `tools/list` 里（工具集固定，⛔ 不因不可用而消失）。
+    // T-FIX-832：`tools/list` 默认分页 —— 按名拉取该工具的完整描述符。
     let auth = bearer(&dispatcher);
     let list = dispatcher.handle_line(
         Channel::Http,
         Some(&auth),
-        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string(),
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"name": "yeban_midi_input_probe"}}).to_string(),
     );
-    let names: Vec<String> = list
+    let tools = list
         .response
         .expect("tools/list 响应")
         .result
         .expect("result")["tools"]
         .as_array()
         .expect("tools 数组")
-        .iter()
-        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
-        .collect();
-    assert!(
-        names.iter().any(|name| name == "yeban_midi_input_probe"),
+        .clone();
+    assert_eq!(tools.len(), 1, "按名拉取必须恰好回 1 条");
+    assert_eq!(
+        tools[0]["name"], "yeban_midi_input_probe",
         "不可用也要在 tools/list 里可见（工具集固定）"
     );
-    assert_eq!(names.len(), TOOL_COUNT, "tools/list 必须与 TOOL_COUNT 一致");
 }
 
 /// 判据 ③：**与硬件无关**的参数校验（两档都完整覆盖，⛔ 不碰硬件）。
