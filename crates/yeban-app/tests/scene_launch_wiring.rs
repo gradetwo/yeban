@@ -10,11 +10,11 @@
 //!
 //! | 判据 | 答的问题 | 证什么 / **不**证什么 |
 //! | :--- | :--- | :--- |
-//! | [`a_real_click_on_the_scene_button_launches_it_in_the_engine`] | 产品路径的点击真的到引擎了吗 | 证 `.slint` 的 `TouchArea.clicked` → 宿主回调 → `queue_scene_launch` → 到点生效；⛔ 不证听感 |
-//! | [`without_a_click_nothing_launches`] | "≥1" 会不会来自别处 | **正对照**：同一夹具不点 ⇒ `scene_launches_applied == 0`、没有 pending |
-//! | [`the_off_quantisation_from_the_projection_is_honoured`] | 产品路径用的是工程配置的量化档吗 | 把投影的 `launch_quantization` 改成 `Off` ⇒ **一个量子内**生效（⛔ 不是写死 `Bar`） |
-//! | [`the_current_scene_is_a_session_readout_not_a_projection_product`] | "当前场景"读数的归属对不对 | 投影恒 `None`；点击后变了；再投影 ⇒ 回到 `None`（换工程不带着旧场景） |
-//! | [`the_scene_button_is_really_clickable_and_the_actionless_list_is_honest`] | 场景按钮移出清单有没有说谎 | `.slint` 里那一个按钮**同时**有 `clicked` 与同落点的 `accessible-action-default`；清单条目数与声明长度一致且不再含 `scene-launch-` |
+//! | [`a_real_click_on_the_scene_button_launches_it_in_the_engine`] | 产品路径的点击真的到引擎了吗 | 真指针点击 → `scene_launches_applied` 0→1、pending 清空、tempo 变成场景覆盖值；⛔ 不证听感 |
+//! | [`without_a_click_nothing_launches`] | "≥1" 会不会来自别处 | **正对照**：同一夹具不点、推两小节 ⇒ `scene_launches_applied == 0`、没有 pending |
+//! | [`the_off_quantisation_from_the_projection_is_honoured`] | 产品路径用的是工程配置的量化档吗 | 投影 `Off` ⇒ **第一个量子内**生效（⛔ 不是写死 `Bar`） |
+//! | [`the_bar_quantisation_from_the_projection_waits_for_the_bar_line`] | `Bar` 会不会被偷换成立即生效 | 投影 `Bar` ⇒ 第一量子后仍未生效，推到小节线才 applied=1 |
+//! | [`a_stop_cancels_a_pending_scene_launch`] | 停止后 pending 会不会偷偷生效 | 停住态武装的 pending 在停止命令后清空，推两小节仍 applied=0 |
 //!
 //! ## 无头可判（判据 ⑧）
 //!
@@ -29,7 +29,6 @@
 //! 本文件只证到"事件已经写进既有 SPSC"这一层由 `yeban-engine` 自己的判据覆盖）；
 //! ⛔ 不证绘制时间（那要 GPU 档，本机纪律不允许）。
 
-#![allow(unused)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -172,23 +171,50 @@ impl Fixture {
 /// 红在 `left: 0 / right: 1`。
 #[test]
 fn a_real_click_on_the_scene_button_launches_it_in_the_engine() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let mut fx = Fixture::new(LaunchQuantization::Bar);
     assert!(
-        aether_app.contains("callback scene-launch("),
-        "新 UI 契约面必须声明 callback scene-launch("
+        !fx.scene_name.is_empty(),
+        "夹具必须给出场景名（点击目标来自同一张表）"
     );
+    assert_eq!(
+        fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .stats()
+            .scene_launches_applied,
+        0,
+        "装配后不能有任何场景已生效"
+    );
+    fx.click_first_scene();
     assert!(
-        aether_host.contains("on_scene_launch"),
-        "宿主接线层必须注册 on_scene_launch"
+        fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .has_pending_scene_launch(),
+        "⭐ 真点击后必须有待生效项（否则按钮没接到引擎）"
     );
+    let (used, bpm) = fx.pump_until_applied(QUANTA_FOR_TWO_BARS);
+    assert!(
+        used > 0 && used <= QUANTA_FOR_TWO_BARS,
+        "⭐ 生效必须发生在两小节预算内，实测 {used} 块"
+    );
+    {
+        let mut engine = fx.engine.borrow_mut();
+        let runtime = engine.runtime_for_criteria().expect("控制驱动档");
+        assert_eq!(runtime.stats().scene_launches_applied, 1, "⭐ 恰好一次");
+        assert!(
+            !runtime.has_pending_scene_launch(),
+            "⭐ 生效后 pending 必须清空（幂等）"
+        );
+    }
+    assert!(
+        (bpm - fx.scene_bpm).abs() < 1e-9,
+        "⭐ tempo 必须变成场景覆盖值 {}，实测 {bpm}",
+        fx.scene_bpm
+    );
+    // 红对照：把 session_view.slint 的 TouchArea.clicked 摘掉 ⇒ pending 恒 None，红在上一断言。
 }
 
 /// ⭐ 判据 ②（**正对照**）：同一夹具、**不点击** ⇒ `scene_launches_applied == 0`。
@@ -196,23 +222,33 @@ fn a_real_click_on_the_scene_button_launches_it_in_the_engine() {
 /// 没有它，"≥ 1" 可能来自夹具装配（例如 `reload` 自己发过一次启动）。
 #[test]
 fn without_a_click_nothing_launches() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback scene-launch("),
-        "新 UI 契约面必须声明 callback scene-launch("
+    let fx = Fixture::new(LaunchQuantization::Bar);
+    let (used, bpm) = fx.pump_until_applied(QUANTA_FOR_TWO_BARS);
+    assert_eq!(used, QUANTA_FOR_TWO_BARS, "无点击时应推满预算");
+    assert_eq!(
+        fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .stats()
+            .scene_launches_applied,
+        0,
+        "⭐ 没点击 ⇒ 一例都不能生效"
     );
     assert!(
-        aether_host.contains("on_scene_launch"),
-        "宿主接线层必须注册 on_scene_launch"
+        (bpm - fx.base_bpm).abs() < 1e-9,
+        "没有点击时 tempo 必须仍是工程速度 {}，实测 {bpm}",
+        fx.base_bpm
     );
+    assert!(
+        !fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .has_pending_scene_launch(),
+        "无点击则无 pending"
+    );
+    // 红对照：把 reload 改成自带一次启动 ⇒ applied=1，红在第一条断言。
 }
 
 /// ⭐ 判据 ③：**投影里的量化档真的被产品路径用了**（`Off` ⇒ 一个量子内生效）。
@@ -221,23 +257,29 @@ fn without_a_click_nothing_launches() {
 /// `Bar` ⇒ 本判据红在"第一块必须生效，实测 750 块"。
 #[test]
 fn the_off_quantisation_from_the_projection_is_honoured() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback scene-launch("),
-        "新 UI 契约面必须声明 callback scene-launch("
+    let mut fx = Fixture::new(LaunchQuantization::Off);
+    assert_eq!(
+        fx.view.borrow().launch_quantization,
+        LaunchQuantization::Off,
+        "夹具必须把 Off 写进产品回调读的投影"
+    );
+    fx.click_first_scene();
+    let (used, bpm) = fx.pump_until_applied(1);
+    assert_eq!(used, 1, "⭐ Off ⇒ 第一个量子内必须生效");
+    assert_eq!(
+        fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .stats()
+            .scene_launches_applied,
+        1
     );
     assert!(
-        aether_host.contains("on_scene_launch"),
-        "宿主接线层必须注册 on_scene_launch"
+        (bpm - fx.scene_bpm).abs() < 1e-9,
+        "Off 到点后 tempo 必须是场景覆盖值，实测 {bpm}"
     );
+    // 红对照：把 wire_scene_launch 的 quantization 写死成 Bar ⇒ used=750，红在 used==1。
 }
 
 /// ⭐ 判据 ④：**"当前场景"是会话读数**，⛔ 不是投影产物。
@@ -245,24 +287,42 @@ fn the_off_quantisation_from_the_projection_is_honoured() {
 /// 前后值逐字给出：点击前 `None`，点击后 `Some(场景 0)`；完整重投影之后回到 `None`
 /// （换工程 ⇒ 不带着旧场景），同时界面属性 `current-scene-index` 也回到 `-1`。
 #[test]
-fn the_current_scene_is_a_session_readout_not_a_projection_product() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+fn the_bar_quantisation_from_the_projection_waits_for_the_bar_line() {
+    let mut fx = Fixture::new(LaunchQuantization::Bar);
+    fx.click_first_scene();
+    // 排队瞬间不得改速度、也不得生效：Bar 必须等下一小节线。
+    {
+        let mut engine = fx.engine.borrow_mut();
+        let runtime = engine.runtime_for_criteria().expect("控制驱动档");
+        assert!(runtime.has_pending_scene_launch());
+        assert_eq!(runtime.stats().scene_launches_applied, 0);
+        assert!(
+            (runtime.transport().bpm() - fx.base_bpm).abs() < 1e-9,
+            "⭐ Bar 排队后不得立刻改速度"
+        );
+    }
+    let (used, _bpm) = fx.pump_until_applied(1);
+    assert_eq!(used, 1, "第一量子必须还没到小节线");
+    assert_eq!(
+        fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .stats()
+            .scene_launches_applied,
+        0,
+        "⭐ Bar 不能在第一个量子就生效"
+    );
+    let (used, bpm) = fx.pump_until_applied(QUANTA_FOR_TWO_BARS.saturating_sub(1));
     assert!(
-        aether_app.contains("callback scene-launch("),
-        "新 UI 契约面必须声明 callback scene-launch("
+        used > 0,
+        "⭐ 小节线到了必须生效（累计预算内），实测第二程 {used} 块"
     );
     assert!(
-        aether_host.contains("on_scene_launch"),
-        "宿主接线层必须注册 on_scene_launch"
+        (bpm - fx.scene_bpm).abs() < 1e-9,
+        "Bar 到点后 tempo 必须是场景覆盖值，实测 {bpm}"
     );
+    // 红对照：把 quantization 写死成 Off ⇒ 第一量子就生效，红在 `used == 1` 的 applied==0。
 }
 
 /// ⭐ 判据 ⑤：**场景按钮移出清单没有说谎** —— 那一个按钮**同时**有 `clicked` 与同落点的
@@ -274,22 +334,47 @@ fn the_current_scene_is_a_session_readout_not_a_projection_product() {
 /// `controls_without_any_click_source_are_exactly_the_known_empty_ones` 同一份事实的
 /// **正面**一侧）：那条证"清单外的都没有"，这条证"移出去的那一个真的有动作"。
 #[test]
-fn the_scene_button_is_really_clickable_and_the_actionless_list_is_honest() {
-    // 新 UI 重构: 旧组件树的视觉元素不再进控件树; 核对同一条宿主接线的契约面。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+fn a_stop_cancels_a_pending_scene_launch() {
+    let mut fx = Fixture::new(LaunchQuantization::Bar);
+    fx.click_first_scene();
+    {
+        let mut engine = fx.engine.borrow_mut();
+        let runtime = engine.runtime_for_criteria().expect("控制驱动档");
+        assert!(
+            runtime.has_pending_scene_launch(),
+            "停住态点击后必须有 pending，且 start_transport=true"
+        );
+        assert_eq!(runtime.stats().scene_launches_applied, 0);
+        assert!(
+            (runtime.transport().bpm() - fx.base_bpm).abs() < 1e-9,
+            "⭐ 停住态的 pending 不生效：tempo 不得提前变"
+        );
+    }
+    // 停止命令取消尚未生效的启动（控制腿立刻出队应用）。
+    fx.engine.borrow_mut().stop();
     assert!(
-        aether_app.contains("callback scene-launch("),
-        "新 UI 契约面必须声明 callback scene-launch("
+        !fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .has_pending_scene_launch(),
+        "⭐ 停止后 pending 必须清空"
+    );
+    let (used, bpm) = fx.pump_until_applied(QUANTA_FOR_TWO_BARS);
+    assert_eq!(used, QUANTA_FOR_TWO_BARS, "取消后推满预算");
+    assert_eq!(
+        fx.engine
+            .borrow_mut()
+            .runtime_for_criteria()
+            .expect("控制驱动档")
+            .stats()
+            .scene_launches_applied,
+        0,
+        "⭐ 取消后推两小节也不得偷偷生效"
     );
     assert!(
-        aether_host.contains("on_scene_launch"),
-        "宿主接线层必须注册 on_scene_launch"
+        (bpm - fx.base_bpm).abs() < 1e-9,
+        "取消后 tempo 必须保持工程速度，实测 {bpm}"
     );
+    // 红对照：删掉 rt.rs 里 Stop 臂的 cancel_scene_launch ⇒ pending 保留并在小节线生效，红在 applied==0。
 }
