@@ -1946,6 +1946,123 @@ export component ArrangementViewport inherits Rectangle {
                                 }
                             }
 
+                            // ⭐ T-FIX-968：本轨自动化泳道的**折线 + 手势面**。
+                            //   必须在片段循环之前声明 ⇒ 曲线画在片段**之下**（不再横穿
+                            //   片段观感），片段拖动面在命中顺序上高于本面（片段本体点击
+                            //   优先选中）；只有未被片段覆盖的泳道热区才落回自动化点编辑。
+                            //   `y` 与 `track-ys` 同帧（投影的 `band_y` 由同一份行几何算出），
+                            //   ⛔ 不减 `rows-top`（那是死文件的结构差异）。
+                            for _lane[lane_index] in root.automation-lane-target-keys : Rectangle {
+                                visible: root.automation-visible
+                                    && root.automation-lane-track-indexes[lane_index] == idx;
+                                x: 0px;
+                                y: root.automation-lane-band-ys[lane_index] - root.track-ys[idx];
+                                width: parent.width;
+                                height: root.automation-lane-band-heights[lane_index];
+                                background: transparent;
+                                clip: true;
+                                accessible-role: image;
+                                // 与 `elements.rs` 注册表 / `automation::lane_element_id` 逐字同形。
+                                accessible-id: "track-" + root.automation-lane-track-indexes[lane_index] + "-automation-" + root.automation-lane-target-keys[lane_index] + "-lane";
+                                // 标签带单位与**当前值**（跟随播放头，见 `automation_labels_follow_playhead`）。
+                                accessible-label: root.automation-lane-labels[lane_index];
+
+                                Path {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    // 顶点是绝对像素（投影的 `path_commands`）⇒ 与剪辑同格用
+                                    // `viewbox-x` 滑窗口（移元素 x 会把右半曲线裁在 bounds 外）。
+                                    viewbox-x: root.scroll-x / 1px;
+                                    viewbox-y: 0;
+                                    viewbox-width: parent.width / 1px;
+                                    viewbox-height: parent.height / 1px;
+                                    fit: ImageFit.fill;
+                                    commands: root.automation-path-commands[lane_index];
+                                    stroke: root.automation-lane-read-enabled[lane_index] ? Tokens.gold-bright : Tokens.ink-2;
+                                    stroke-width: 1.5px;
+                                    fill: transparent;
+                                }
+
+                                // T-FIX-968：泳道自身接单击 —— 只在**未被片段覆盖**的泳道热区生效。
+                                // 片段拖动面在片段循环之后声明 ⇒ 命中顺序高于本面；片段本体点击优先选中，
+                                // 不再被这条透明命中面吞掉。泳道隐藏时 `visible:false` 不接指针。
+                                // 坐标：mouse-x 已在时间轴像素帧（宿主内部再加 scroll-x）；
+                                //       band_y 是内容帧的带顶沿，宿主按 `band_y - 42px` 还原局部 y。
+                                // T-FIX-888：泳道自身接手势 —— 单击仍是自动化点编辑，拖拽改走框选。
+                                // 按下先落到本面（命中层级在上，Slint 只把手势发给最上层那面）；
+                                // 按下即写 marquee 起点（与空白车道 TouchArea 同款坐标换算：x 同帧，
+                                // y = band_y + mouse-y），越过 4px 阈值才置 marquee-active（橡皮筋
+                                // 现身），松手时若已激活才报同一份 clip-marquee-select；未越阈值松
+                                // 手 = 单击，仍走 select-track + automation-lane-click。
+                                // 带外区域仍走原框选/选轨状态机；橡皮筋矩形（marquee-active）照常画。
+                                // ⚠ 本面判据只读**本面局部手势态**（gesture-pressed/active），不读
+                                // 共享 root.marquee-pressed：共享状态机是空白车道 TouchArea 的，
+                                // 两面都写它（本面写它只为供橡皮筋与另一面报选区）；本面自己的
+                                // 单击/拖拽判决只认本面落下的按下——不依赖另一面的写时序。
+                                // 共享 marquee-* 只写不读（供橡皮筋与另一面报选区）。
+                                TouchArea {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    property <bool> gesture-pressed: false;
+                                    property <bool> gesture-active: false;
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                            root.marquee-x0 = self.mouse-x + root.timeline-origin-x;
+                                            root.marquee-y0 = self.mouse-y + root.automation-lane-band-ys[lane_index];
+                                            root.marquee-x1 = root.marquee-x0;
+                                            root.marquee-y1 = root.marquee-y0;
+                                            root.marquee-additive = event.modifiers.shift;
+                                            root.marquee-subtractive = event.modifiers.control || event.modifiers.meta;
+                                            root.marquee-pressed = true;
+                                            root.marquee-active = false;
+                                            self.gesture-pressed = true;
+                                            self.gesture-active = false;
+                                        } else if event.kind == PointerEventKind.move && self.gesture-pressed {
+                                            root.marquee-x1 = self.mouse-x + root.timeline-origin-x;
+                                            root.marquee-y1 = self.mouse-y + root.automation-lane-band-ys[lane_index];
+                                            if !self.gesture-active
+                                                && (Math.abs(root.marquee-x1 - root.marquee-x0) > 4px
+                                                    || Math.abs(root.marquee-y1 - root.marquee-y0) > 4px) {
+                                                self.gesture-active = true;
+                                                root.marquee-active = true;
+                                            }
+                                        } else if event.kind == PointerEventKind.up {
+                                            if self.gesture-pressed && self.gesture-active {
+                                                // 拖拽：按下起于本面，Slint 只把手势发给最上层那面，
+                                                // 空白车道那面收不到这组事件 —— 本面是唯一报选区的
+                                                // 那面；同一矩形再报一次是幂等的（同一命中集 ⇒
+                                                // 同一选区）。
+                                                root.clip-marquee-select(
+                                                    root.marquee-x0 - root.timeline-origin-x + root.scroll-x,
+                                                    root.marquee-y0,
+                                                    root.marquee-x1 - root.timeline-origin-x + root.scroll-x,
+                                                    root.marquee-y1,
+                                                    root.marquee-additive,
+                                                    root.marquee-subtractive);
+                                            } else if self.gesture-pressed {
+                                                // 未越阈值 = 单击：自动化点编辑（T-FIX-714 语义不变）。
+                                                root.select-track(trk.id);
+                                                root.automation-lane-click(
+                                                    self.mouse-x,
+                                                    root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);
+                                            }
+                                            self.gesture-pressed = false;
+                                            self.gesture-active = false;
+                                            root.marquee-pressed = false;
+                                            root.marquee-active = false;
+                                        } else if event.kind == PointerEventKind.cancel {
+                                            self.gesture-pressed = false;
+                                            self.gesture-active = false;
+                                            root.marquee-pressed = false;
+                                            root.marquee-active = false;
+                                        }
+                                    }
+                                }
+                            }
                             // Timeline Clips for this track
                             for blk[blk_idx] in root.timeline-blocks : Rectangle {
                                 // ⭐ 视口裁剪（2026-11-19 实测修复）：片段块宽度 = 片段真实长度，
@@ -2213,11 +2330,10 @@ export component ArrangementViewport inherits Rectangle {
                                     }
                                 }
                             }
-                            // ⭐ T-FIX-227 / T-FIX-714：本轨的自动化泳道（覆盖模式）。绘制顺序 =
-                            //   片段在前、泳道在后 ⇒ **曲线可见**；泳道带内单击由泳道自身 TouchArea
-                            //   接收（含片段覆盖区），泳道隐藏时片段命中逐字节不变。
-                            //   `y` 与 `track-ys` 同帧（投影的 `band_y` 由同一份行几何算出），
-                            //   ⛔ 不减 `rows-top`（那是死文件的结构差异）。
+
+                            // ⭐ T-FIX-968：自动化泳道的**标签层**（折线/手势面已移到片段循环之前）。
+                            //   本层没有 TouchArea、没有 accessible-id：只让轴标签与角标继续可见，
+                            //   ⛔ 不再吞片段命中（同一棵树里也不重复登记泳道 ID）。
                             for _lane[lane_index] in root.automation-lane-target-keys : Rectangle {
                                 visible: root.automation-visible
                                     && root.automation-lane-track-indexes[lane_index] == idx;
@@ -2227,29 +2343,6 @@ export component ArrangementViewport inherits Rectangle {
                                 height: root.automation-lane-band-heights[lane_index];
                                 background: transparent;
                                 clip: true;
-                                accessible-role: image;
-                                // 与 `elements.rs` 注册表 / `automation::lane_element_id` 逐字同形。
-                                accessible-id: "track-" + root.automation-lane-track-indexes[lane_index] + "-automation-" + root.automation-lane-target-keys[lane_index] + "-lane";
-                                // 标签带单位与**当前值**（跟随播放头，见 `automation_labels_follow_playhead`）。
-                                accessible-label: root.automation-lane-labels[lane_index];
-
-                                Path {
-                                    x: 0px;
-                                    y: 0px;
-                                    width: parent.width;
-                                    height: parent.height;
-                                    // 顶点是绝对像素（投影的 `path_commands`）⇒ 与剪辑同格用
-                                    // `viewbox-x` 滑窗口（移元素 x 会把右半曲线裁在 bounds 外）。
-                                    viewbox-x: root.scroll-x / 1px;
-                                    viewbox-y: 0;
-                                    viewbox-width: parent.width / 1px;
-                                    viewbox-height: parent.height / 1px;
-                                    fit: ImageFit.fill;
-                                    commands: root.automation-path-commands[lane_index];
-                                    stroke: root.automation-lane-read-enabled[lane_index] ? Tokens.gold-bright : Tokens.ink-2;
-                                    stroke-width: 1.5px;
-                                    fill: transparent;
-                                }
 
                                 // 轴标签（单位 + 量程；自适应时带「自适应」）
                                 UiMonoText {
@@ -2275,87 +2368,11 @@ export component ArrangementViewport inherits Rectangle {
                                     font-size: Tokens.font-size-xs;
                                     overflow: elide;
                                 }
-
-                                // T-FIX-714：泳道自身接单击 —— 含片段覆盖区。
-                                // 整条带都在 TouchArea 内，绘制顺序在片段之后 ⇒ 命中层级在片段之上；
-                                // 泳道隐藏时 `visible:false` 的 Rectangle 不接指针，片段命中回归原样。
-                                // 坐标：mouse-x 已在时间轴像素帧（宿主内部再加 scroll-x）；
-                                //       band_y 是内容帧的带顶沿，宿主按 `band_y - 42px` 还原局部 y。
-                                // T-FIX-888：泳道自身接手势 —— 单击仍是自动化点编辑，拖拽改走框选。
-                                // 按下先落到本面（命中层级在上，Slint 只把手势发给最上层那面）；
-                                // 按下即写 marquee 起点（与空白车道 TouchArea 同款坐标换算：x 同帧，
-                                // y = band_y + mouse-y），越过 4px 阈值才置 marquee-active（橡皮筋
-                                // 现身），松手时若已激活才报同一份 clip-marquee-select；未越阈值松
-                                // 手 = 单击，仍走 select-track + automation-lane-click。
-                                // 带外区域仍走原框选/选轨状态机；橡皮筋矩形（marquee-active）照常画。
-                                // ⚠ 本面判据只读**本面局部手势态**（gesture-pressed/active），不读
-                                // 共享 root.marquee-pressed：共享状态机是空白车道 TouchArea 的，
-                                // 两面都写它（本面写它只为供橡皮筋与另一面报选区）；本面自己的
-                                // 单击/拖拽判决只认本面落下的按下——不依赖另一面的写时序。
-                                // 共享 marquee-* 只写不读（供橡皮筋与另一面报选区）。
-                                TouchArea {
-                                    x: 0px;
-                                    y: 0px;
-                                    width: parent.width;
-                                    height: parent.height;
-                                    property <bool> gesture-pressed: false;
-                                    property <bool> gesture-active: false;
-                                    pointer-event(event) => {
-                                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                                            root.marquee-x0 = self.mouse-x + root.timeline-origin-x;
-                                            root.marquee-y0 = self.mouse-y + root.automation-lane-band-ys[lane_index];
-                                            root.marquee-x1 = root.marquee-x0;
-                                            root.marquee-y1 = root.marquee-y0;
-                                            root.marquee-additive = event.modifiers.shift;
-                                            root.marquee-subtractive = event.modifiers.control || event.modifiers.meta;
-                                            root.marquee-pressed = true;
-                                            root.marquee-active = false;
-                                            self.gesture-pressed = true;
-                                            self.gesture-active = false;
-                                        } else if event.kind == PointerEventKind.move && self.gesture-pressed {
-                                            root.marquee-x1 = self.mouse-x + root.timeline-origin-x;
-                                            root.marquee-y1 = self.mouse-y + root.automation-lane-band-ys[lane_index];
-                                            if !self.gesture-active
-                                                && (Math.abs(root.marquee-x1 - root.marquee-x0) > 4px
-                                                    || Math.abs(root.marquee-y1 - root.marquee-y0) > 4px) {
-                                                self.gesture-active = true;
-                                                root.marquee-active = true;
-                                            }
-                                        } else if event.kind == PointerEventKind.up {
-                                            if self.gesture-pressed && self.gesture-active {
-                                                // 拖拽：按下起于本面，Slint 只把手势发给最上层那面，
-                                                // 空白车道那面收不到这组事件 —— 本面是唯一报选区的
-                                                // 那面；同一矩形再报一次是幂等的（同一命中集 ⇒
-                                                // 同一选区）。
-                                                root.clip-marquee-select(
-                                                    root.marquee-x0 - root.timeline-origin-x + root.scroll-x,
-                                                    root.marquee-y0,
-                                                    root.marquee-x1 - root.timeline-origin-x + root.scroll-x,
-                                                    root.marquee-y1,
-                                                    root.marquee-additive,
-                                                    root.marquee-subtractive);
-                                            } else if self.gesture-pressed {
-                                                // 未越阈值 = 单击：自动化点编辑（T-FIX-714 语义不变）。
-                                                root.select-track(trk.id);
-                                                root.automation-lane-click(
-                                                    self.mouse-x,
-                                                    root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);
-                                            }
-                                            self.gesture-pressed = false;
-                                            self.gesture-active = false;
-                                            root.marquee-pressed = false;
-                                            root.marquee-active = false;
-                                        } else if event.kind == PointerEventKind.cancel {
-                                            self.gesture-pressed = false;
-                                            self.gesture-active = false;
-                                            root.marquee-pressed = false;
-                                            root.marquee-active = false;
-                                        }
-                                    }
-                                }
                             }
 
+
                         }
+
 
                         // Splitter Divider between Timeline Lane and Right Track Header
                         if Theme.track-headers-on-right : Rectangle {

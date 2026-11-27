@@ -13,7 +13,7 @@
 //! | ③（单击不变） | 空白处单击（按下即松手、未越 4px 阈值）**不**改剪辑选区 —— 原来的单击选轨语义保留，框选不许吞掉它 |
 //! | ④（加选与清空） | Shift 框选（回调层）= 并入现有选区且主选中保住；无修饰框选空命中 = 清空选区 |
 //! | ⑤（T-FIX-858 三态） | Cmd/Ctrl 框选 = 差集，主选中被减则回退剩余首元；Shift 并集与无修饰替换不回归 |
-//! | ⑥（泳道可见仍框选） | 自动化通道可见（默认态）下空白拖拽仍框选（T-FIX-888）；泳道带内单击仍是自动化点编辑 |
+//! | ⑥（泳道可见仍框选） | 自动化通道可见（默认态）下空白拖拽仍框选（T-FIX-888）；片段本体内单击选中片段（T-FIX-968），片段外泳道热区单击仍是自动化点编辑 |
 //!
 //! ## 平台约束
 //!
@@ -325,9 +325,9 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
 /// 与主判据同款拖拽，唯一差别：**不关泳道**。基线红：按下点落在起始轨的泳道带内，
 /// 泳道 TouchArea 抢走按下，框选进不了状态机，松手后选区为空。
 /// 修复后：泳道自身 TouchArea 接手势——拖拽改走同一份框选状态机（与空白车道
-/// TouchArea 同款坐标换算、同一份 `clip-marquee-select`），单击仍是自动化点
-/// 编辑（T-FIX-714 语义不变）。
-/// ⑤ 回归：泳道带内单击仍新增一个自动化点（泳道自身的编辑手势）。
+/// TouchArea 同款坐标换算、同一份 `clip-marquee-select`）。
+/// ⑤ 回归（T-FIX-968）：片段本体单击优先选中片段（REGION 显示片段名/位置、
+/// 自动化点数不变）；片段外泳道热区单击仍新增一个自动化点。
 #[test]
 fn blank_drag_selects_clips_with_automation_lanes_visible() {
     let project = demo_project();
@@ -343,6 +343,9 @@ fn blank_drag_selects_clips_with_automation_lanes_visible() {
     ));
     let live_view = Rc::new(RefCell::new(view.clone()));
     host::wire_clip_scope(port.ui(), Rc::clone(&live_view), Some(Rc::clone(&undo)));
+    // 片段本体 `up` 只有在 `clip-drag-grab` 返回 true（未拖动）时才报 clip-select；
+    // 产品进程同样接这个端口，测试不接就会把「点击没选中」误判成泳道吞点击。
+    host::wire_clip_drag(port.ui(), &undo);
     // T-FIX-888：泳道单击的宿主落点 —— 本文件只接了 wire_clip_scope（框选），
     // `automation-lane-click` 的宿主接线须另接 wire_automation_lane_click，
     // 与产品进程（main.rs 的 wire_callbacks）与 build_live_ui_with 同款，
@@ -417,40 +420,105 @@ fn blank_drag_selects_clips_with_automation_lanes_visible() {
         .collect();
     assert_eq!(selected, expected, "通道可见时松手后选区集必须 == 命中集");
 
-    // ⑤ 回归：泳道带内单击仍归泳道 —— 取 tick 960（x = 32px，落在起始轨片段
-    // 覆盖区内，正是 T-FIX-714「含片段覆盖区」的那格）、带中线单击。
-    // 起始轨第一条泳道（音量）在 tick 0/1920/3840 有点，960 与两端都相隔
-    // 960 ticks，超出 8px × ticks_per_pixel = 240 ticks 的容差 ⇒ 新增一点。
-    // ⚠ 不断言 select-track 的选轨：`select-track` 的宿主落点只在产品进程
-    // 接线（app.slint:1940-1941），测试装配里不跑，旧 `clicked` 处理器在
-    // 同一装配里同样选不上轨 —— 该断言判不出新旧差异；生产里 select-track
-    // 调用逐字未变。点数 +1 才是泳道自身编辑手势的活证据。
+    // ⑤ 回归（T-FIX-968）：片段本体单击优先选中片段；片段外泳道热区仍加点。
+    let clip = view
+        .clips
+        .iter()
+        .find(|clip| {
+            if clip.track_index != start_track {
+                return false;
+            }
+            let (x, _, w, _) = block_rect(&view, clip);
+            x + w / 2.0 < visible_tx_max
+        })
+        .expect("起始轨必须有可见片段作为片段本体点击目标");
+    let (cx, cy, cw, ch) = block_rect(&view, clip);
+    let clip_click_x = cx + cw / 2.0;
+    let clip_click_y = cy + ch / 2.0;
     let lane = view
         .automation_lanes
         .iter()
         .find(|lane| lane.track_index == start_track)
         .expect("起始轨必须有一条泳道");
-    let click_tick = 960u64;
-    let click_x = click_tick as f32 / view.ticks_per_pixel.max(1) as f32;
-    let click_y = lane.band_y + lane.band_height / 2.0;
+    // 片段本体中心必须真的落在起始轨的一条泳道带内（否则本判据测不到
+    // 「自动化泳道可见时片段点击被吞」的缺陷路径）。
     assert!(
-        click_x + 20.0 < visible_tx_max,
-        "单击点必须在可见宽内：click_x {click_x} vs {visible_tx_max}"
+        view.automation_lanes.iter().any(|lane| {
+            lane.track_index == start_track
+                && clip_click_y >= lane.band_y
+                && clip_click_y < lane.band_y + lane.band_height
+        }),
+        "片段本体中心必须落在泳道带内：track {start_track} y {clip_click_y}"
     );
-    let points_before = lane_point_count(&undo, &lane.target);
+    let points_before_clip_click = lane_point_count(&undo, &lane.target);
+    let clip_body_id = format!("clip-{}-body", clip.placement_id);
+    let clip_body_bounds = port
+        .tree()
+        .find_by_id(&clip_body_id)
+        .and_then(|node| node.bounds)
+        .expect("片段本体必须进控件树");
     port.dispatch_pointer_down(
-        FLICKABLE,
-        origin_x + f64::from(click_x),
-        f64::from(click_y),
+        &clip_body_id,
+        f64::from(clip_body_bounds.width) / 2.0,
+        f64::from(clip_body_bounds.height) / 2.0,
         PointerButton::Left,
     )
-    .expect("泳道带内必须可按下");
+    .expect("片段本体必须可按下");
+    port.dispatch_pointer_up(PointerButton::Left)
+        .expect("释放必须送达");
+    let selected_after_clip_click: Vec<String> = port
+        .ui()
+        .get_selected_clip_ulids()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+    assert_eq!(
+        selected_after_clip_click,
+        vec![clip.placement_id.clone()],
+        "自动化泳道可见时单击片段本体必须选中该片段"
+    );
+    assert_eq!(
+        port.ui().get_selected_clip_ulid().as_str(),
+        clip.placement_id.as_str(),
+        "主选中必须切换到被点的片段"
+    );
+    assert_eq!(
+        port.ui().get_region_title().as_str(),
+        clip.clip_name.as_str(),
+        "Channel Inspector 的 REGION 必须显示片段名"
+    );
+    assert!(
+        port.ui().get_region_detail().contains("第 1 小节"),
+        "REGION 位置必须显示片段起始小节：{}",
+        port.ui().get_region_detail()
+    );
+    assert_eq!(
+        lane_point_count(&undo, &lane.target),
+        points_before_clip_click,
+        "片段本体点击不得被泳道当成加点（点数必须不变）"
+    );
+
+    // 片段外（空白_start 的 x 已在片段右侧）的泳道热区单击仍归泳道。
+    // 起点轨第一卷片段覆盖 0..cw，sx = cw + 20 落在片段外、同一泳道带内。
+    assert!(
+        sx >= cx + cw,
+        "泳道加点必须落在片段外：sx {sx} vs clip right {}",
+        cx + cw
+    );
+    let points_before_lane_click = lane_point_count(&undo, &lane.target);
+    port.dispatch_pointer_down(
+        FLICKABLE,
+        origin_x + f64::from(sx),
+        f64::from(sy),
+        PointerButton::Left,
+    )
+    .expect("片段外泳道必须可按下");
     port.dispatch_pointer_up(PointerButton::Left)
         .expect("释放必须送达");
     assert_eq!(
         lane_point_count(&undo, &lane.target),
-        points_before + 1,
-        "泳道带内单击必须新增一个自动化点"
+        points_before_lane_click + 1,
+        "片段外泳道热区单击必须新增一个自动化点"
     );
 }
 
