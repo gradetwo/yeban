@@ -9024,6 +9024,21 @@ pub(crate) fn apply_propose(
     // "将要新建哪些实体"的派生清单：与 `dryRun` 预览同源（同一个 `summarize_ops`），
     // 因此"预览说的"与"提交的"不可能漂移。
     let will_create = section_build::summarize_ops(&draft.ops);
+    // T-FIX-725：`yeban_edit_notes` 的 `placement.add` 在 `autoMerge:true` 落地后，
+    // 顶层回传新建摆放身份，供调用方不查 project 就继续 move/fade。只接受**恰好一条**
+    // `AddClipPlacement`（本工具的 `placement` 每次只产一条）；未合并 / dryRun 不报
+    // `createdPlacementId` —— 那一步只有 `willCreate.placements[0].id` 这份计划身份。
+    // 其他提案类工具（section/macro）不在此列：它们的响应 schema 不声明该字段。
+    let auto_merged_placement_id = if draft.kind == "notes" {
+        let mut ids = draft.ops.iter().filter_map(|op| match op {
+            Op::AddClipPlacement { placement, .. } => Some(placement.id.to_canonical_string()),
+            _ => None,
+        });
+        let first = ids.next();
+        if ids.next().is_some() { None } else { first }
+    } else {
+        None
+    };
     let stamped: Vec<StampedOp> = draft
         .ops
         .iter()
@@ -9189,6 +9204,12 @@ pub(crate) fn apply_propose(
                         }
                     });
             object.insert("proposal".to_owned(), updated_projection);
+            if let Some(placement_id) = &auto_merged_placement_id {
+                object.insert(
+                    "createdPlacementId".to_owned(),
+                    Value::from(placement_id.clone()),
+                );
+            }
         }
     }
     // ⭐ 预制初始 CC 的播种登记（`yeban_apply_preset` 带 `cc` 段、或
@@ -12730,7 +12751,141 @@ mod tests {
         assert_eq!(undone, project, "model 的 invert 必须能回到合并前的字节");
     }
 
-    /// `removeRoutingNode` 走**真**工具路径：两步（断开引用边 → 取走节点）各自成一次
+    /// T-FIX-725：`placement.add` 的顶层身份回执。
+    ///
+    /// 验收判据：(①) `autoMerge:true` 落地后，顶层 `createdPlacementId` 不查工程就能拿到；
+    /// (②) 该值逐字等于 `willCreate.placements[0].id`，并可直接用于下一步 `move` 成功；
+    /// (③) 未合并提案 / `dryRun` **不**冒充“已创建”，只给 `willCreate` 的计划身份。
+    ///
+    /// 红对照：删掉 `apply_propose` 里 `createdPlacementId` 的插入 ⇒ ① 立刻红。
+    #[test]
+    fn edit_notes_auto_merged_placement_reports_created_id_and_supports_move() {
+        let mut domain = domain();
+        let track = fixture_track(&domain);
+        let clip = clip_id(&domain);
+        let placement_id = EntityId::new();
+        let start_tick = 960;
+        let argued = |placement_id: EntityId, start_tick: u64, auto_merge: bool| {
+            serde_json::json!({
+                "trackId": track.to_canonical_string(),
+                "clipId": clip.to_canonical_string(),
+                "ops": [],
+                "autoMerge": auto_merge,
+                "placement": {
+                    "placementId": placement_id.to_canonical_string(),
+                    "startTick": start_tick,
+                    "durationTicks": 480,
+                },
+            })
+        };
+
+        // ③ dryRun：预览只报计划身份，不报“已创建”。
+        let previewed = preview(
+            &domain,
+            &call("yeban_edit_notes", {
+                let mut value = argued(placement_id, start_tick, true);
+                value["dryRun"] = Value::from(true);
+                value
+            }),
+        )
+        .expect("dryRun 预览");
+        assert_eq!(previewed["plan"], "propose");
+        assert_eq!(previewed["pendingMerge"], true);
+        assert_eq!(
+            previewed["willCreate"]["placements"][0]["id"],
+            placement_id.to_canonical_string()
+        );
+        assert!(
+            previewed.get("createdPlacementId").is_none(),
+            "dryRun 不能把计划身份说成已创建: {previewed}"
+        );
+
+        // ③ 未合并提案：同样只有计划身份。
+        let pending = execute(
+            &mut domain,
+            &call("yeban_edit_notes", argued(placement_id, start_tick, false)),
+        )
+        .expect("未合并提案");
+        assert_eq!(pending["status"], "success");
+        assert!(
+            pending["data"].get("createdPlacementId").is_none(),
+            "未合并提案没有已创建摆放: {pending}"
+        );
+        assert_eq!(
+            pending["data"]["willCreate"]["placements"][0]["id"],
+            placement_id.to_canonical_string()
+        );
+        // 清掉这条 Open 提案，避免下一步 autoMerge 的工程基线混淆（工程本来没动）。
+        let proposal_id = pending["data"]["proposal"]["proposalId"]
+            .as_str()
+            .expect("proposalId")
+            .to_owned();
+        execute(
+            &mut domain,
+            &call(
+                "yeban_reject_proposal",
+                serde_json::json!({"proposalId": proposal_id, "reason": "T-FIX-725 fixture"}),
+            ),
+        )
+        .expect("拒绝夹具提案");
+
+        // ① + ② autoMerge:true 真落地，顶层身份与 willCreate 同值。
+        let merged = execute(
+            &mut domain,
+            &call("yeban_edit_notes", argued(placement_id, start_tick, true)),
+        )
+        .expect("autoMerge 摆放");
+        assert_eq!(merged["status"], "success");
+        let data = &merged["data"];
+        assert_eq!(data["autoMerged"], true);
+        assert_eq!(data["pendingMerge"], false);
+        let created = data["createdPlacementId"]
+            .as_str()
+            .expect("autoMerge 已落地必须带顶层 createdPlacementId");
+        assert_eq!(created, placement_id.to_canonical_string());
+        assert_eq!(
+            data["createdPlacementId"], data["willCreate"]["placements"][0]["id"],
+            "顶层身份必须与 willCreate.placements[0].id 逐字相等"
+        );
+
+        // ② 用顶层 id 继续 move（不查 project 拿 id）。
+        let moved_to = start_tick + 480;
+        let moved = execute(
+            &mut domain,
+            &call(
+                "yeban_edit_notes",
+                serde_json::json!({
+                    "trackId": track.to_canonical_string(),
+                    "clipId": clip.to_canonical_string(),
+                    "ops": [],
+                    "autoMerge": true,
+                    "placement": {
+                        "kind": "move",
+                        "placementId": created,
+                        "startTick": moved_to,
+                    },
+                }),
+            ),
+        )
+        .expect("用顶层身份 move");
+        assert_eq!(moved["status"], "success");
+        assert!(
+            moved["data"].get("createdPlacementId").is_none(),
+            "move 不是新建，不能再报 createdPlacementId: {moved}"
+        );
+        let after = domain.active_project().expect("工程");
+        assert_eq!(
+            after
+                .track(&track)
+                .expect("轨")
+                .clips
+                .get(&placement_id)
+                .expect("摆放")
+                .start_tick,
+            moved_to
+        );
+    }
+
     /// 提案，两次合并之后工程里那个节点真的没了，而每条提案自带的 `ops` 都能用模型
     /// 自己的 `apply_inverse` 逐步退回去。
     ///

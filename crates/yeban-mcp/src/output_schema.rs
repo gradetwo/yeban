@@ -1556,7 +1556,7 @@ fn edit_notes() -> Value {
     with_commit_model(finish(
         envelope(
             "yeban_edit_notes 成功响应的 data",
-            "缺省形状: `pendingMerge:true` / `projectUnchanged:true` (本调用永远先写隔离提案分支); `proposal` 是**摘要** (不含逐条 `ops`, 除非 `includeOps:true`)。⚠ **两种成功形状** (按 `autoMerge` 分支): `autoMerge:true` 时多出 `autoMerged` (恒 `true`) 与 `merge` (= `yeban_merge_proposal` 的全字段回执), 并翻值 `pendingMerge` / `projectUnchanged` → `false`、`mergeTool` → `\"applied-in-process:autoMerge\"` ⇒ 这三键不用 `const`, `autoMerged`/`merge` 不进 `required`。`warnings[]` 逐条报非阻断问题: `code:\"unrecognisedEffectParam\"` (引擎不认又不是拼错的参数名, 带 `knownParams` 全集, 可当场改拼写重发) / `code:\"deviceOnSilentTrack\"` (设备装到无可发声内容的源轨上); 两者都可能为空数组。`resolvedParams` 逐条回显批里 `setParam` 的命中 (恒带, 无写入时为空数组); `clip:{clipId,name,kind,noteCount,endTick}` 与 `placement:{trackId,placementId,clipId,startTick,durationTicks,loop}` 在涉及片段/摆放的调用上回显派生读数 (T-FIX-741, 与 dryRun 预览同一份)",
+            "缺省形状: `pendingMerge:true` / `projectUnchanged:true` (本调用永远先写隔离提案分支); `proposal` 是**摘要** (不含逐条 `ops`, 除非 `includeOps:true`)。⚠ **两种成功形状** (按 `autoMerge` 分支): `autoMerge:true` 时多出 `autoMerged` (恒 `true`) 与 `merge` (= `yeban_merge_proposal` 的全字段回执), 并翻值 `pendingMerge` / `projectUnchanged` → `false`、`mergeTool` → `\"applied-in-process:autoMerge\"` ⇒ 这三键不用 `const`, `autoMerged`/`merge` 不进 `required`。`warnings[]` 逐条报非阻断问题: `code:\"unrecognisedEffectParam\"` (引擎不认又不是拼错的参数名, 带 `knownParams` 全集, 可当场改拼写重发) / `code:\"deviceOnSilentTrack\"` (设备装到无可发声内容的源轨上); 两者都可能为空数组。`resolvedParams` 逐条回显批里 `setParam` 的命中 (恒带, 无写入时为空数组); `clip:{clipId,name,kind,noteCount,endTick}` 与 `placement:{trackId,placementId,clipId,startTick,durationTicks,loop}` 在涉及片段/摆放的调用上回显派生读数 (T-FIX-741, 与 dryRun 预览同一份)。⭐ `placement.add` 且 `autoMerge:true` 真的落地后，顶层另带 `createdPlacementId`（逐字等于 `willCreate.placements[0].id`），可立即拿它 move/fade；未合并提案或 `dryRun` **不带**该字段（此时唯一身份读数是 `willCreate.placements[0].id` 的计划值，不是已创建）。",
         ),
         &[
             "created",
@@ -1586,6 +1586,10 @@ fn edit_notes() -> Value {
             "samplerWarnings": {"type": "array", "items": missing_sample_items()},
             "autoMerged": {"type": "boolean"},
             "merge": merge_shape_roster(),
+            "createdPlacementId": {
+                "type": "string",
+                "description": "仅当 `placement.add` 且 `autoMerge:true` 已落地时出现：逐字等于 `willCreate.placements[0].id`，可直接用于 `placement.move` / `setClipPlacementFade`。未合并 / dryRun 不带本字段。"
+            },
             "resolvedParams": {
                 "type": "array",
                 "items": {
