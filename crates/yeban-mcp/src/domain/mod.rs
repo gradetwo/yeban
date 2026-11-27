@@ -8285,7 +8285,10 @@ fn apply_undo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> 
                 Value::from(store::digest_of(json.as_bytes()))
             })
     });
-    Ok(ToolResponse::success(serde_json::json!({
+    // T-FIX-864：钳位语义不变，但请求步数 ≠ 实际步数必须**响亮**回执 ——
+    // `steps:10000` 撤空全部历史却只回一句 success 是静默吞掉用户的输入。
+    // ⚠ 只在真钳位时带 `clamped` 键：正常步数逐字保持既有回执形状。
+    let mut data = serde_json::json!({
         "undone": true,
         "requestedSteps": steps,
         "steps": outcome.steps,
@@ -8296,7 +8299,11 @@ fn apply_undo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> 
         "cursorPersisted": false,
         "before": undo_display_value(&display_before),
         "after": undo_display_value(&display_after),
-    })))
+    });
+    if steps != outcome.steps {
+        data["clamped"] = serde_json::Value::from(true);
+    }
+    Ok(ToolResponse::success(data))
 }
 
 /// `yeban_redo` 的施加 [ADR-0001 **D45**]：按**正向** `Op::apply` 把刚撤销的 op 再打一次。
@@ -8321,7 +8328,9 @@ fn apply_redo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> 
                 Value::from(store::digest_of(json.as_bytes()))
             })
     });
-    Ok(ToolResponse::success(serde_json::json!({
+    // T-FIX-864：与 `apply_undo` 同口径 —— `plan_redo` 同样会 clamp（含
+    // 请求 0 步被抬到 1 步），钳位时响亮回 `clamped:true`，正常步数不带该键。
+    let mut data = serde_json::json!({
         "redone": true,
         "requestedSteps": steps,
         "steps": outcome.steps,
@@ -8332,7 +8341,11 @@ fn apply_redo(domain: &mut Domain, steps: usize) -> Result<ToolResponse, Fault> 
         "cursorPersisted": false,
         "before": undo_display_value(&display_before),
         "after": undo_display_value(&display_after),
-    })))
+    });
+    if steps != outcome.steps {
+        data["clamped"] = serde_json::Value::from(true);
+    }
+    Ok(ToolResponse::success(data))
 }
 
 /// `yeban_render_master` 的施加：把**已经渲染好**的容器字节原子落盘。

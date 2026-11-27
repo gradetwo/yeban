@@ -678,6 +678,18 @@ fn envelope_summary(value: &Value) -> String {
                     if data.len() > 16 {
                         summary.push_str(", …");
                     }
+                    // T-FIX-864：钳位不能只躺在 data 的一个布尔键里 —— 只读
+                    // `content` 的标准客户端也要**一眼看见**请求被改小了。
+                    // 只对真钳位的回执加这一句，普通回执的摘要逐字节不变。
+                    if data.get("clamped").and_then(Value::as_bool) == Some(true) {
+                        let requested = data
+                            .get("requestedSteps")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0);
+                        let actual = data.get("steps").and_then(Value::as_u64).unwrap_or(0);
+                        summary
+                            .push_str(&format!(" ⚠ 步数已钳位: 请求 {requested} -> 实际 {actual}"));
+                    }
                     summary
                 }
             }
