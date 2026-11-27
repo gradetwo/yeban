@@ -84,8 +84,8 @@ fn a_written_save_reports_a_null_durability_warning() {
         .open_in_memory_with_assets(
             project_path.clone(),
             filled_project(),
-            filled_project_assets().into_iter().collect(),
             false,
+            filled_project_assets(),
         )
         .expect("注入夹具工程");
 
@@ -125,8 +125,8 @@ fn a_skipped_save_reports_a_null_durability_warning() {
         .open_in_memory_with_assets(
             project_path,
             filled_project(),
-            filled_project_assets().into_iter().collect(),
             false,
+            filled_project_assets(),
         )
         .expect("注入夹具工程");
 
