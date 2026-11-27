@@ -524,6 +524,290 @@ fn rename_editor_escape_and_empty_name_leave_the_track_unchanged() {
     );
 }
 
+/// 判据（T-FIX-843）：进入重命名即全选旧名；组字/编辑中点另一条轨道头，
+/// 编辑态退出、草稿不提交、原轨名不变。左置轨道头分支。
+#[test]
+fn rename_editor_selects_all_and_clicking_another_track_cancels() {
+    use slint::ComponentHandle as _;
+    use yeban_ui_test_port::inspect::find_by_accessible_id;
+
+    let (window, port, mut plane) = assemble();
+    let index = 1usize;
+    let track_id = window.get_track_ids().row_data(index).expect("第二轨 ID");
+    let old_name = window
+        .get_tracks()
+        .row_data(index)
+        .expect("第二轨")
+        .name
+        .to_string();
+    let (popup_x, popup_y) = right_click_header(&mut plane, 1, &window, index);
+    click_menu_item(
+        &mut plane,
+        10,
+        popup_x,
+        popup_y,
+        "arrangement-track-context-rename",
+    );
+    let input =
+        find_by_accessible_id(&window, "arrangement-track-rename-input").expect("重命名输入");
+    assert_eq!(input.accessible_value().as_deref(), Some(old_name.as_str()));
+
+    // 全选语义的行为判据：首键必须**替换**旧名，而不是拼到旧名前/后。
+    press_key(&mut plane, 20, "x");
+    let input =
+        find_by_accessible_id(&window, "arrangement-track-rename-input").expect("首键后输入框仍在");
+    assert_eq!(
+        input.accessible_value().as_deref(),
+        Some("x"),
+        "进入重命名必须全选旧名：首键应得到纯新名 `x`，不是 `x{old_name}` 或 `{old_name}x`"
+    );
+
+    // 点另一条轨道头：选中身份改变 ⇒ 编辑态退出、草稿丢弃。
+    let lanes = node_bounds(&mut plane, 30, LANES);
+    let ys = window.get_track_ys();
+    let heights = window.get_track_heights();
+    let row_y = ys.row_data(0).expect("首轨顶") + heights.row_data(0).expect("首轨高") / 2.0;
+    move_to(
+        &mut plane,
+        31,
+        lanes["x"].as_f64().expect("x") + 20.0,
+        lanes["y"].as_f64().expect("y") + f64::from(row_y),
+    );
+    pointer_down_at(&mut plane, 32, LANES, 20.0, f64::from(row_y), "left");
+    pointer_up(&mut plane, 33, "left");
+
+    assert_eq!(
+        window.get_selected_track_index(),
+        1,
+        "点击首轨头必须切到 1-based 下标 1（否则本判据没有覆盖失焦路径）"
+    );
+    assert!(
+        !tree_has(&mut plane, 34, "arrangement-track-rename-input"),
+        "选中身份改变后重命名输入框必须消失"
+    );
+    let id = track_id
+        .as_str()
+        .parse::<yeban_model::EntityId>()
+        .expect("ID");
+    assert_eq!(
+        port.project().tracks.get(&id).expect("轨道仍在").name,
+        old_name,
+        "失焦取消不得把草稿提交给原轨道"
+    );
+}
+
+/// 判据（T-FIX-843）：点窗口内其它区域（车道空白）同样取消编辑态，且不提交。
+#[test]
+fn rename_editor_clicking_blank_lane_area_cancels_without_commit() {
+    use slint::ComponentHandle as _;
+    use yeban_ui_test_port::inspect::find_by_accessible_id;
+
+    let (window, port, mut plane) = assemble();
+    let index = 1usize;
+    let track_id = window.get_track_ids().row_data(index).expect("第二轨 ID");
+    let old_name = window
+        .get_tracks()
+        .row_data(index)
+        .expect("第二轨")
+        .name
+        .to_string();
+    let (popup_x, popup_y) = right_click_header(&mut plane, 1, &window, index);
+    click_menu_item(
+        &mut plane,
+        10,
+        popup_x,
+        popup_y,
+        "arrangement-track-context-rename",
+    );
+    let _ = find_by_accessible_id(&window, "arrangement-track-rename-input").expect("重命名输入");
+    press_key(&mut plane, 20, "y");
+    assert_eq!(
+        find_by_accessible_id(&window, "arrangement-track-rename-input")
+            .expect("输入框仍在")
+            .accessible_value()
+            .as_deref(),
+        Some("y"),
+        "首键替换旧名（全选）"
+    );
+
+    // 末轨行的最右时间线空白：既不落在轨道头，也不落在片段上。
+    let lanes = node_bounds(&mut plane, 30, LANES);
+    let ys = window.get_track_ys();
+    let heights = window.get_track_heights();
+    let last = ys.row_count() - 1;
+    let blank_y =
+        ys.row_data(last).expect("末轨顶") + heights.row_data(last).expect("末轨高") / 2.0;
+    let headers = f64::from(window.get_track_headers_width());
+    let blank_x = lanes["width"].as_f64().expect("lanes 宽") - headers - 50.0;
+    assert!(
+        blank_x > headers + 20.0,
+        "空白落点必须落在时间线而非包头（x={blank_x}）"
+    );
+    move_to(
+        &mut plane,
+        31,
+        lanes["x"].as_f64().expect("x") + blank_x,
+        lanes["y"].as_f64().expect("y") + f64::from(blank_y),
+    );
+    pointer_down_at(&mut plane, 32, LANES, blank_x, f64::from(blank_y), "left");
+    pointer_up(&mut plane, 33, "left");
+
+    assert!(
+        !tree_has(&mut plane, 34, "arrangement-track-rename-input"),
+        "点击窗口其它区域后重命名输入框必须消失"
+    );
+    let id = track_id
+        .as_str()
+        .parse::<yeban_model::EntityId>()
+        .expect("ID");
+    assert_eq!(
+        port.project().tracks.get(&id).expect("轨道仍在").name,
+        old_name,
+        "失焦取消不得提交草稿"
+    );
+    assert_eq!(
+        window.get_tracks().row_data(index).expect("第二轨").name,
+        old_name,
+        "界面上的轨道名也不得变成草稿"
+    );
+}
+
+/// 判据（T-FIX-843）：**右置**轨道头镜像实例同样全选旧名、失焦取消。
+///
+/// 两处 `arrangement-track-rename-input` 的条件分支各只有一份实例；翻转
+/// `Theme.track-headers-on-right` 后才走另一份。本判据不只看源码串，而是在
+/// 同一棵树里实际进入右置分支并键入首键。
+#[test]
+fn right_placed_headers_share_select_all_and_blur_cancel() {
+    use slint::ComponentHandle as _;
+    use yeban_ui_test_port::inspect::find_by_accessible_id;
+
+    let (window, port, mut plane) = assemble();
+    window
+        .global::<yeban_app::ui::Theme<'_>>()
+        .set_track_headers_on_right(true);
+    window.window().request_redraw();
+
+    let index = 1usize;
+    let track_id = window.get_track_ids().row_data(index).expect("第二轨 ID");
+    let old_name = window
+        .get_tracks()
+        .row_data(index)
+        .expect("第二轨")
+        .name
+        .to_string();
+    let lanes = node_bounds(&mut plane, 1, LANES);
+    let headers = f64::from(window.get_track_headers_width());
+    let right_x = lanes["width"].as_f64().expect("lanes 宽") - headers / 2.0;
+    let ys = window.get_track_ys();
+    let heights = window.get_track_heights();
+    let row_y =
+        ys.row_data(index).expect("二轨顶") + heights.row_data(index).expect("二轨高") / 2.0;
+    move_to(
+        &mut plane,
+        2,
+        lanes["x"].as_f64().expect("x") + right_x,
+        lanes["y"].as_f64().expect("y") + f64::from(row_y),
+    );
+    pointer_down_at(&mut plane, 3, LANES, right_x, f64::from(row_y), "right");
+    pointer_up(&mut plane, 4, "right");
+    let popup_x = lanes["x"].as_f64().expect("x") + right_x;
+    let popup_y = lanes["y"].as_f64().expect("y") + f64::from(row_y);
+    // 右置头的菜单原点可能被右缘夹到 `root.width - 250`，不再等于点击点；
+    // 用条目的无障碍默认动作进入重命名，落点与鼠标点击同一条 `activate()`。
+    find_by_accessible_id(&window, "arrangement-track-context-rename")
+        .expect("右置菜单的重命名条目")
+        .invoke_accessible_default_action();
+    assert_eq!(
+        find_by_accessible_id(&window, "arrangement-track-rename-input")
+            .expect("右置重命名输入")
+            .accessible_value()
+            .as_deref(),
+        Some(old_name.as_str())
+    );
+    press_key(&mut plane, 20, "z");
+    assert_eq!(
+        find_by_accessible_id(&window, "arrangement-track-rename-input")
+            .expect("右置首键后输入框")
+            .accessible_value()
+            .as_deref(),
+        Some("z"),
+        "右置实例也必须全选旧名"
+    );
+
+    // 点另一条右置轨道头 ⇒ 取消。
+    let row0_y = ys.row_data(0).expect("首轨顶") + heights.row_data(0).expect("首轨高") / 2.0;
+    move_to(
+        &mut plane,
+        30,
+        lanes["x"].as_f64().expect("x") + right_x,
+        lanes["y"].as_f64().expect("y") + f64::from(row0_y),
+    );
+    pointer_down_at(&mut plane, 31, LANES, right_x, f64::from(row0_y), "left");
+    pointer_up(&mut plane, 32, "left");
+    assert!(
+        !tree_has(&mut plane, 33, "arrangement-track-rename-input"),
+        "右置实例失焦后输入框必须消失"
+    );
+    let id = track_id
+        .as_str()
+        .parse::<yeban_model::EntityId>()
+        .expect("ID");
+    assert_eq!(
+        port.project().tracks.get(&id).expect("轨道仍在").name,
+        old_name,
+        "右置实例失焦不得提交草稿"
+    );
+}
+
+/// 判据（T-FIX-843，源串）：两处镜像输入都必须接全选 + 失焦取消，且
+/// `ImeAwareTextInput` 的失焦语义是**可选回调**（其余调用点不受影响）。
+#[test]
+fn both_rename_inputs_are_wired_for_select_all_and_focus_loss() {
+    let arrangement = include_str!("../ui/arrangement.slint");
+    assert_eq!(
+        arrangement.matches("self.select-all();").count(),
+        2,
+        "左 / 右两处重命名输入都必须进入编辑即全选"
+    );
+    assert_eq!(
+        arrangement
+            .matches("focus-loss-action => { root.cancel-track-rename(); }")
+            .count(),
+        2,
+        "左 / 右两处重命名输入都必须接失焦取消"
+    );
+    assert_eq!(
+        arrangement.matches("cancel-on-focus-loss: true;").count(),
+        2,
+        "左 / 右两处重命名输入都必须开启失焦取消开关"
+    );
+    assert_eq!(
+        arrangement
+            .matches("clear-selection-on-composition: true;")
+            .count(),
+        2,
+        "左 / 右两处重命名输入都必须开启首次组字清旧名"
+    );
+    let tokens = include_str!("../ui/tokens.slint");
+    assert!(
+        tokens.contains("callback focus-loss-action();"),
+        "ImeAwareTextInput 必须提供可选失焦动作"
+    );
+    assert!(
+        tokens.contains("root.focus-loss-action();"),
+        "失焦时必须触发 focus-loss-action"
+    );
+    assert!(
+        tokens.contains("in property <bool> clear-selection-on-composition: false;"),
+        "ImeAwareTextInput 必须提供可选的首次组字清旧名开关"
+    );
+    assert!(
+        tokens.contains("root.ime-restore-pending = true;"),
+        "组字取消时必须安排旧名恢复"
+    );
+}
+
 /// 证据：菜单打开态截图（1:1）与 3x 最近邻裁切；只在设了 `T_FIX_166_SHOTS` 时落盘。
 #[test]
 fn capture_menu_open_evidence_when_requested() {

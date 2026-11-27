@@ -1188,13 +1188,96 @@ export global ImeState {
 // 同样会走 false 这一边 —— 这正是 `host.rs` 里"死控件 ②③"（焦点留在输入框里、
 // 此后所有单键热键失效）需要的兜底。
 export component ImeAwareTextInput inherits TextInput {
+    // T-FIX-843：可选的**失焦动作**。空连接 = 不做事（其余 28 个调用点保持原样）。
+    // 重命名输入把它接到 `cancel-track-rename()`：焦点离开编辑框就丢弃草稿，
+    // 不提交到已经不再选中的轨道。取消语义留在调用点，`ImeAwareTextInput`
+    // 不因此变成通用状态机（`ImeState` 仍只搬运合成态 / 焦点）。
+    callback focus-loss-action();
+    // T-FIX-843：可选的**失焦取消**开关（默认关）。焦点翻转有瞬态：弹出菜单
+    // 关闭 / IME 候选窗接管时 `has-focus` 可能先 false 再 true；立刻取消会把
+    // 刚开的编辑框误杀。开启后走 120ms 去抖，只有焦点真的没回来才发
+    // `focus-loss-action`。其余输入面保持默认 false。
+    in property <bool> cancel-on-focus-loss: false;
+    property <bool> focus-loss-pending: false;
+    // T-FIX-843：可选的**聚焦动作**（默认关）。重命名用它把“每次真正拿到焦点”
+    // 都重新全选一遍：Windows 上从弹出菜单切回主窗口时，`TextInput` 会重设光标
+    // 到末尾，只在 `init` 里选一次会被这步覆盖。其余输入面保持默认 false。
+    in property <bool> select-all-on-focus: false;
+    // T-FIX-843：Slint 1.18.1 的 IME `UpdateComposition` 把 preedit 追加在
+    // `cursor_position` 上；Windows 输入法开始组字时会把选区折叠到末尾，
+    // 于是仅仅 `select-all()` 挡不住旧名被拼在 preedit 前。重命名在**第一次**
+    // 组字时把已全选的旧名整体清掉（等提交后草稿里只剩新名）；组字被 Escape
+    // 取消时用一个短 Timer 把旧名回来，不改变“Esc 只取消 preedit”的行为。
+    // 其余输入点默认 false，不参与这条 IME 兼容路径。
+    in property <bool> clear-selection-on-composition: false;
+    property <string> ime-base-text: "";
+    property <bool> ime-cleared: false;
+    property <bool> ime-restore-pending: false;
+    property <bool> select-all-pending: true;
     changed preedit-text => {
+        if (root.clear-selection-on-composition) {
+            if (root.preedit-text != "" && !root.ime-cleared && root.text == root.ime-base-text) {
+                root.text = "";
+                root.ime-cleared = true;
+            } else if (root.preedit-text == "" && root.ime-cleared) {
+                root.ime-restore-pending = true;
+            }
+        }
         ImeState.composing = self.preedit-text != "";
         ImeState.composition-changed(ImeState.composing);
     }
     changed has-focus => {
         ImeState.text-focused = self.has-focus;
         ImeState.focus-changed(self.has-focus);
+        if (self.has-focus && self.select-all-on-focus) {
+            self.select-all();
+            self.select-all-pending = true;
+        }
+        if (!self.has-focus) {
+            if (self.cancel-on-focus-loss) {
+                self.focus-loss-pending = true;
+            }
+        } else {
+            self.focus-loss-pending = false;
+        }
+    }
+    // 失焦去抖：焦点在 120ms 内回来（弹出菜单关闭 / 候选窗接管）不算离开；
+    // 真离开才发取消动作。只有显式开启 `cancel-on-focus-loss` 的调用点参与。
+    Timer {
+        interval: 120ms;
+        running: root.cancel-on-focus-loss && root.focus-loss-pending;
+        triggered => {
+            if (!root.has-focus) {
+                root.focus-loss-action();
+            }
+            root.focus-loss-pending = false;
+        }
+    }
+    // Windows 的弹出菜单关闭和输入框拿焦点发生在同一轮事件里：`init` / `changed
+    // has-focus` 里的 `select-all()` 会被随后的 click / focus 复位清掉。延后一拍
+    // 再选一次，等事件队列稳定后选区才真正留在旧名上；只对显式开启该开关的
+    // 调用点生效，不影响其余输入面。
+    Timer {
+        interval: 20ms;
+        running: root.select-all-on-focus && root.has-focus && root.select-all-pending;
+        triggered => {
+            root.ime-base-text = root.text;
+            root.select-all();
+            root.select-all-pending = false;
+        }
+    }
+    // 组字被取消（preedit 变空、text 也空）时，等 IME 提交/取消事件走完再把
+    // 旧名放回；若提交已经写进 `text`，这个 Timer 不动它。
+    Timer {
+        interval: 20ms;
+        running: root.ime-restore-pending;
+        triggered => {
+            if (root.text == "") {
+                root.text = root.ime-base-text;
+            }
+            root.ime-cleared = false;
+            root.ime-restore-pending = false;
+        }
     }
 }
 

@@ -240,7 +240,7 @@ export component ArrangementViewport inherits Rectangle {
             }
             return accept;
         }
-        return reject;
+        return EventResult.reject;
     }
     /// 点击时间线块：只报**摆放身份**（`host::wire_clip_scope` 用它把卷帘作用域切到该片段）。
     in-out property <int> local-menu-track-id: 0;
@@ -285,13 +285,32 @@ export component ArrangementViewport inherits Rectangle {
     }
     function commit-track-rename() {
         let index = root.rename-track-index;
-        if index >= 0 && index < root.tracks.length && root.rename-draft != "" {
+        // T-FIX-843：只提交给**仍在选中**的那条轨。组字中点另一轨时，选中的
+        // 身份可能先变、输入框随后才销毁；这里再挡一次，避免旧草稿静默落到
+        // 已经不再选中的轨道。
+        if index >= 0 && index < root.tracks.length
+            && root.tracks[index].id == root.selected-track-id
+            && root.rename-draft != "" {
             root.track-rename(index, root.rename-draft);
         }
         root.rename-track-index = -1;
     }
     function cancel-track-rename() {
         root.rename-track-index = -1;
+    }
+    // T-FIX-843：轨道 / 片段选中身份一变，重命名编辑态立即取消（不提交）。
+    // 这是“点另一条轨道 / 点片段”路径的兜底：轨道头 `TouchArea` 只负责选中，
+    // 原先不会把焦点从输入框拿走；靠这条变化把编辑态收掉，和 `focus-loss-action`
+    // 构成两条互补的失焦出口。`begin-track-rename` 不改选中身份，因此不会自取消。
+    changed selected-track-id => {
+        if (root.rename-track-index >= 0) {
+            root.cancel-track-rename();
+        }
+    }
+    changed selected-clip-ulid => {
+        if (root.rename-track-index >= 0) {
+            root.cancel-track-rename();
+        }
     }
 
     function activate-track-context-item(kind: string, action: string) {
@@ -725,9 +744,16 @@ export component ArrangementViewport inherits Rectangle {
                             TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
                                 pointer-event(event) => {
+                                    // T-FIX-843：标尺也是“窗口其它区域”；按下即取消重命名，
+                                    // 再按原逻辑 seek（不提交旧草稿）。
+                                    if event.kind == PointerEventKind.down
+                                        && root.rename-track-index >= 0 {
+                                        root.cancel-track-rename();
+                                    }
                                     if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                                         root.ruler-seek(self.mouse-x);
                                     }
+                                    return EventResult.reject;
                                 }
                                 moved => {
                                     if self.pressed {
@@ -1324,6 +1350,15 @@ export component ArrangementViewport inherits Rectangle {
                     y: 0px;
                     width: parent.width;
                     height: arr_tracks_flickable.content-height;
+                    pointer-event(event) => {
+                        // T-FIX-843：车道空白/末尾空白同样是“窗口其它区域”。
+                        // 只取消编辑态并放行（reject），滚轮与既有框选/选轨状态机不动。
+                        if event.kind == PointerEventKind.down
+                            && root.rename-track-index >= 0 {
+                            root.cancel-track-rename();
+                        }
+                        return EventResult.reject;
+                    }
                     scroll-event(event) => {
                         root.handle-arr-scroll(event.delta-x, event.delta-y, event.modifiers.shift, event.modifiers.alt, true)
                     }
@@ -1468,8 +1503,28 @@ export component ArrangementViewport inherits Rectangle {
                                         accessible-label: @tr("轨道重命名");
                                         accessible-value: root.rename-draft;
                                         accessible-read-only: false;
-                                        init => { self.focus(); }
+                                        // T-FIX-843：Windows 从弹出菜单切回主窗口时
+                                        // `TextInput` 会把光标重设到末尾；每次真正拿到焦点
+                                        // 都重选一遍，保证首键仍然替换旧名。
+                                        select-all-on-focus: true;
+                                        // Slint IME 把 preedit 追加在光标上；首次组字先清掉已全选的旧名。
+                                        clear-selection-on-composition: true;
+                                        // 焦点瞬态（菜单关闭）不取消；真失焦 120ms 后取消。
+                                        cancel-on-focus-loss: true;
+                                        // T-FIX-843：进入编辑即全选旧名。Microsoft Pinyin
+                                        // 直接输入 `ceshi` 时首字替换旧名，不再拼成 `ce'shi鼓`。
+                                        // `select-all()` 是 Slint 1.18.1 `TextInput` 的公开函数
+                                        // （`builtin_elements.rs` 的 `SetSelectionOffsets`），
+                                        // 不另造选区状态。
+                                        init => {
+                                            self.focus();
+                                            self.select-all();
+                                        }
                                         accepted => { root.commit-track-rename(); }
+                                        // T-FIX-843：失焦一律取消编辑态、不提交草稿。
+                                        // 与根属性 `changed selected-track-id` 互补：点另一轨走
+                                        // 选中变化，点窗口其它区域走焦点丢失。
+                                        focus-loss-action => { root.cancel-track-rename(); }
                                         key-pressed(event) => {
                                             if event.text == Key.Escape {
                                                 root.cancel-track-rename();
@@ -2382,8 +2437,28 @@ export component ArrangementViewport inherits Rectangle {
                                         accessible-label: @tr("轨道重命名");
                                         accessible-value: root.rename-draft;
                                         accessible-read-only: false;
-                                        init => { self.focus(); }
+                                        // T-FIX-843：Windows 从弹出菜单切回主窗口时
+                                        // `TextInput` 会把光标重设到末尾；每次真正拿到焦点
+                                        // 都重选一遍，保证首键仍然替换旧名。
+                                        select-all-on-focus: true;
+                                        // Slint IME 把 preedit 追加在光标上；首次组字先清掉已全选的旧名。
+                                        clear-selection-on-composition: true;
+                                        // 焦点瞬态（菜单关闭）不取消；真失焦 120ms 后取消。
+                                        cancel-on-focus-loss: true;
+                                        // T-FIX-843：进入编辑即全选旧名。Microsoft Pinyin
+                                        // 直接输入 `ceshi` 时首字替换旧名，不再拼成 `ce'shi鼓`。
+                                        // `select-all()` 是 Slint 1.18.1 `TextInput` 的公开函数
+                                        // （`builtin_elements.rs` 的 `SetSelectionOffsets`），
+                                        // 不另造选区状态。
+                                        init => {
+                                            self.focus();
+                                            self.select-all();
+                                        }
                                         accepted => { root.commit-track-rename(); }
+                                        // T-FIX-843：失焦一律取消编辑态、不提交草稿。
+                                        // 与根属性 `changed selected-track-id` 互补：点另一轨走
+                                        // 选中变化，点窗口其它区域走焦点丢失。
+                                        focus-loss-action => { root.cancel-track-rename(); }
                                         key-pressed(event) => {
                                             if event.text == Key.Escape {
                                                 root.cancel-track-rename();
