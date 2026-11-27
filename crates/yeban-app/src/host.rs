@@ -26481,17 +26481,20 @@ pub fn clip_split_ops_for(
     // T-FIX-488：音频片段切分后，右半段必须从**切点对应的素材帧**继续读，而不是
     // 从素材第 0 帧重放。`source_start_samples` 是素材内起点（帧），与
     // `offset_samples`（整段沿时间轴平移）分工不同；MIDI 不使用该字段。
-    // `ticks_to_frames` 与引擎/离线渲染同一条 tick→帧口径（48 kHz、工程 BPM、960 PPQ）。
+    // `TempoMap::frames_between_ticks` 与引擎/离线渲染同一条 tick→帧口径，
+    // 按 `tempo_map` 分段积分；用**两个绝对 tick** 相减，不能把 `delta_ticks`
+    // 从 0 起算（那会漏掉片段起点之前的变速段）。空表逐位等于旧 `ticks_to_frames`。
     let right_source_start = match &clip_entry.content {
         yeban_model::project::ClipContent::Audio { .. } => {
-            let split_delta_ticks = split_tick.saturating_sub(placement.start_tick);
-            let split_delta_frames = yeban_model::time_math::ticks_to_frames(
-                split_delta_ticks,
-                project.bpm,
-                yeban_model::PPQ,
-                project.audio_config.sample_rate.hz(),
-            )
-            .unwrap_or(0);
+            let split_delta_frames = project
+                .tempo()
+                .frames_between_ticks(
+                    placement.start_tick,
+                    split_tick,
+                    yeban_model::PPQ,
+                    project.audio_config.sample_rate.hz(),
+                )
+                .unwrap_or(0);
             let source = placement
                 .source_start_samples
                 .unwrap_or(0)

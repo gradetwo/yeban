@@ -104,6 +104,19 @@ pub struct TempoMap {
     points: BTreeMap<u64, f64>,
 }
 
+/// 帧数 → tick 跨度时尾部取整的口径。
+///
+/// 不同调用方有**承重**的既有口径：录音落点用 `Ceil`（最后几帧不能丢），
+/// Logic 音频区域导入用 `Round`（`#152` 的长度读数）。口径集中在这里，
+/// 调用方不再各写一份算式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameToTickRounding {
+    /// 四舍五入（0.5 远离零），下界 1。
+    Round,
+    /// 向上取整，下界 1（保护摆放时值尾部）。
+    Ceil,
+}
+
 impl TempoMap {
     /// 由基准速度与映射点构造。不校验 —— 病态值在换算时返回 `None`。
     #[must_use]
@@ -173,6 +186,164 @@ impl TempoMap {
         }
         frames += tick_span_frames(tick - cursor, bpm, ppq, sample_rate)?;
         round_units(frames)
+    }
+
+    /// 两个 tick 之间真实经过的帧数（分段常速积分；`end_tick >= start_tick`）。
+    ///
+    /// 空表 ⇒ 逐位等于 [`ticks_to_frames`]`(end_tick - start_tick)`（兼容性承诺）。
+    /// 非空表 ⇒ 用两个**绝对**帧位置相减，与引擎 `TickTimebase` 的
+    /// `frames_at_tick(anchor + local) - frames_at_tick(anchor)` 同一口径；
+    /// 不能直接把 `delta_ticks` 从 tick 0 起算 —— 那会忽略起点之前的变速段。
+    ///
+    /// `end_tick < start_tick`、病态速度/采样率 ⇒ `None`。
+    #[must_use]
+    pub fn frames_between_ticks(
+        &self,
+        start_tick: u64,
+        end_tick: u64,
+        ppq: u64,
+        sample_rate: u32,
+    ) -> Option<u64> {
+        let delta_ticks = end_tick.checked_sub(start_tick)?;
+        if self.points.is_empty() {
+            return ticks_to_frames(delta_ticks, self.base_bpm, ppq, sample_rate);
+        }
+        let start_frame = self.frames_at_tick(start_tick, ppq, sample_rate)?;
+        let end_frame = self.frames_at_tick(end_tick, ppq, sample_rate)?;
+        end_frame.checked_sub(start_frame)
+    }
+
+    /// 从 `start_tick` 起、持续 `frames` 帧的跨度对应多少 tick。
+    ///
+    /// 空表 ⇒ `Round` 走 `#152` 的四舍五入、`Ceil` 走
+    /// [`frames_to_ticks_ceil`]；两条都与旧实现逐位相同。
+    /// 非空表 ⇒ 在 `[0, upper]` 上二分最小 `delta` 使
+    /// [`frames_between_ticks`](Self::frames_between_ticks)`(start, start + delta) >= frames`；
+    /// `Round` 再在 `delta` 与 `delta - 1` 之间选帧差更接近 `frames` 的一侧。
+    ///
+    /// `ppq == 0`、`sample_rate == 0`、任一经过的速度病态 ⇒ `None`。
+    #[must_use]
+    pub fn ticks_for_frames_from(
+        &self,
+        start_tick: u64,
+        frames: u64,
+        ppq: u64,
+        sample_rate: u32,
+        rounding: FrameToTickRounding,
+    ) -> Option<u64> {
+        if ppq == 0 || sample_rate == 0 || !valid_bpm(self.base_bpm) {
+            return None;
+        }
+        if self.points.is_empty() {
+            return match rounding {
+                FrameToTickRounding::Ceil => {
+                    frames_to_ticks_ceil(frames, ppq, self.base_bpm, sample_rate)
+                }
+                FrameToTickRounding::Round => {
+                    let ticks = (frames as f64) * (ppq as f64) * self.base_bpm
+                        / (f64::from(sample_rate) * 60.0);
+                    if !ticks.is_finite() || ticks < 0.0 {
+                        return None;
+                    }
+                    if ticks >= u64::MAX as f64 {
+                        return Some(u64::MAX);
+                    }
+                    Some((ticks.round() as u64).max(1))
+                }
+            };
+        }
+
+        let min_bpm = self.points.values().copied().fold(self.base_bpm, f64::min);
+        if !valid_bpm(min_bpm) {
+            return None;
+        }
+        let mut high = frames_to_ticks_ceil(frames, ppq, min_bpm, sample_rate)?.saturating_add(4);
+        // 极端帧数/进位边界：确保上界真的覆盖目标帧数。
+        while self.frames_between_ticks(
+            start_tick,
+            start_tick.saturating_add(high),
+            ppq,
+            sample_rate,
+        )? < frames
+        {
+            if high == u64::MAX {
+                return None;
+            }
+            high = high.saturating_mul(2).max(1);
+        }
+        let mut low = 0u64;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if self.frames_between_ticks(
+                start_tick,
+                start_tick.saturating_add(mid),
+                ppq,
+                sample_rate,
+            )? >= frames
+            {
+                high = mid;
+            } else {
+                low = mid.saturating_add(1);
+            }
+        }
+        if rounding == FrameToTickRounding::Round && low > 0 {
+            let below = low - 1;
+            let above_frames = self.frames_between_ticks(
+                start_tick,
+                start_tick.saturating_add(low),
+                ppq,
+                sample_rate,
+            )?;
+            let below_frames = self.frames_between_ticks(
+                start_tick,
+                start_tick.saturating_add(below),
+                ppq,
+                sample_rate,
+            )?;
+            let above_diff = above_frames.abs_diff(frames);
+            let below_diff = below_frames.abs_diff(frames);
+            if below_diff < above_diff {
+                return Some(below.max(1));
+            }
+        }
+        Some(low.max(1))
+    }
+
+    /// `offset_samples` 个采样在 `tick` 所在速度段对应多少 tick（可正可负）。
+    ///
+    /// 空表 ⇒ 与 `T-FIX-584` 的既有算式逐位相同
+    /// （`round(offset × base_bpm × ppq / (60 × rate))`）。
+    /// 非空表 ⇒ 用 `tick` 所在段的局部速度；采样偏移本身很小（相位对齐），
+    /// 不跨段积分。`offset == 0` ⇒ `Some(0)`。
+    #[must_use]
+    pub fn tick_delta_for_samples_at(
+        &self,
+        tick: u64,
+        offset_samples: i64,
+        ppq: u64,
+        sample_rate: u32,
+    ) -> Option<i64> {
+        if offset_samples == 0 {
+            return Some(0);
+        }
+        if ppq == 0 || sample_rate == 0 {
+            return None;
+        }
+        let bpm = self.bpm_at_tick(tick);
+        if !valid_bpm(bpm) {
+            return None;
+        }
+        let ticks = (offset_samples as f64) * bpm * (ppq as f64) / (60.0 * f64::from(sample_rate));
+        if !ticks.is_finite() {
+            return None;
+        }
+        if ticks >= i64::MAX as f64 {
+            return Some(i64::MAX);
+        }
+        if ticks <= i64::MIN as f64 {
+            return Some(i64::MIN);
+        }
+        Some(ticks.round() as i64)
     }
 
     /// 帧 → tick（**向下取整**；[`frames_at_tick`](Self::frames_at_tick) 的逆方向）。
@@ -524,7 +695,8 @@ pub fn frames_to_ticks_ceil(frames: u64, ppq: u64, bpm: f64, sample_rate: u32) -
 #[cfg(test)]
 mod tests {
     use super::{
-        TempoMap, frames_to_ticks_ceil, samples_per_tick, tick_to_sample, ticks_to_frames,
+        FrameToTickRounding, TempoMap, frames_to_ticks_ceil, samples_per_tick, tick_to_sample,
+        ticks_to_frames,
     };
     use crate::PPQ;
 
@@ -834,5 +1006,97 @@ mod tests {
         assert_eq!(tempo.micros_at_tick(1_920, PPQ), None);
         // 反向（µs → tick）走查时逐点校验：坏点存在即没有答案（与帧域反向同口径）。
         assert_eq!(tempo.ticks_at_micros(500_000, PPQ), None);
+    }
+
+    /// 两段速度夹具：120 BPM 到 tick 960，之后 240 BPM。
+    fn two_speed_map() -> TempoMap {
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960u64, 240.0);
+        TempoMap::new(120.0, points)
+    }
+
+    /// 分段积分：从 tick 0 到 1920 经过 24000 + 12000 = 36000 帧，不是 48000。
+    #[test]
+    fn frames_between_ticks_integrates_across_tempo_points() {
+        let tempo = two_speed_map();
+        assert_eq!(
+            tempo.frames_between_ticks(0, 1_920, PPQ, 48_000),
+            Some(36_000)
+        );
+        assert_eq!(
+            tempo.frames_between_ticks(960, 1_920, PPQ, 48_000),
+            Some(12_000)
+        );
+        assert_eq!(
+            tempo.frames_between_ticks(0, 960, PPQ, 48_000),
+            Some(24_000)
+        );
+        // 空表兼容性：与旧 `ticks_to_frames(delta)` 逐位相同。
+        let constant = TempoMap::constant(120.0);
+        assert_eq!(
+            constant.frames_between_ticks(0, 1_920, PPQ, 48_000),
+            ticks_to_frames(1_920, 120.0, PPQ, 48_000)
+        );
+        // 起点不是 0 时也必须按绝对位置相减（不能把 delta 从 0 起算）。
+        let mut points = std::collections::BTreeMap::new();
+        points.insert(960u64, 240.0);
+        let tempo = TempoMap::new(120.0, points);
+        assert_eq!(
+            tempo.frames_between_ticks(480, 1_920, PPQ, 48_000),
+            Some(24_000)
+        );
+    }
+
+    /// 帧 → tick 跨度：36000 帧从 0 起 ⇒ 1920 tick（旧按 120 BPM 得 2880）。
+    #[test]
+    fn ticks_for_frames_from_integrates_across_tempo_points() {
+        let tempo = two_speed_map();
+        assert_eq!(
+            tempo.ticks_for_frames_from(0, 36_000, PPQ, 48_000, FrameToTickRounding::Ceil),
+            Some(1_920)
+        );
+        assert_eq!(
+            tempo.ticks_for_frames_from(960, 12_000, PPQ, 48_000, FrameToTickRounding::Ceil),
+            Some(960)
+        );
+        // 空表兼容性：录音/导入两条旧算式逐位不变。
+        let constant = TempoMap::constant(120.0);
+        assert_eq!(
+            constant.ticks_for_frames_from(7, 24_000, PPQ, 48_000, FrameToTickRounding::Ceil),
+            frames_to_ticks_ceil(24_000, PPQ, 120.0, 48_000)
+        );
+        let rounded = constant
+            .ticks_for_frames_from(0, 12_345, PPQ, 48_000, FrameToTickRounding::Round)
+            .expect("合法输入必须有答案");
+        let old = (12_345.0 * 960.0 * 120.0 / (60.0 * 48_000f64)).round() as u64;
+        assert_eq!(rounded, old.max(1), "Round 空表必须逐位等于旧 #152 算式");
+    }
+
+    /// 采样偏移：同一 0.5 s 偏移在 120/240 段分别换 960/1920 tick。
+    #[test]
+    fn sample_offset_uses_the_local_tempo_at_the_anchor_tick() {
+        let tempo = two_speed_map();
+        assert_eq!(
+            tempo.tick_delta_for_samples_at(0, 24_000, PPQ, 48_000),
+            Some(960)
+        );
+        assert_eq!(
+            tempo.tick_delta_for_samples_at(960, 24_000, PPQ, 48_000),
+            Some(1_920)
+        );
+        assert_eq!(
+            tempo.tick_delta_for_samples_at(960, -24_000, PPQ, 48_000),
+            Some(-1_920)
+        );
+        assert_eq!(
+            tempo.tick_delta_for_samples_at(960, 0, PPQ, 48_000),
+            Some(0)
+        );
+        // 空表逐位等于 T-FIX-584 旧算式。
+        let constant = TempoMap::constant(128.0);
+        assert_eq!(
+            constant.tick_delta_for_samples_at(0, 2_400, PPQ, 48_000),
+            Some(((2_400.0f64 * 128.0 * 960.0 / (60.0 * 48_000.0)).round()) as i64)
+        );
     }
 }

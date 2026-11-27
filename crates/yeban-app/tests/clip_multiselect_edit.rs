@@ -752,3 +752,60 @@ fn splitting_audio_clip_resumes_from_cut_frame_not_zero() {
         old_out[0]
     );
 }
+
+/// T-FIX-833：音频切分右半素材起点必须按 `tempo_map` 分段积分，不能按基准 BPM。
+///
+/// 夹具：120 BPM 起、tick 960 后 240 BPM；音频摆放 `[0, 3840)`，在 1920 切分。
+/// 切点素材帧 = 960 tick@120（24 000 帧）+ 960 tick@240（12 000 帧）= 36 000；
+/// 旧实现按 120 BPM 一整段算得 48 000 ⇒ 本判据红。
+#[test]
+fn splitting_audio_clip_uses_tempo_map_segment_not_base_bpm() {
+    let mut project = filled_project();
+    project.bpm = 120.0;
+    project.tempo_map.insert(960, 240.0);
+    let (track_id, placement_id) = project
+        .tracks
+        .iter()
+        .find_map(|(track_id, track)| {
+            track.clips.iter().find_map(|(placement_id, placement)| {
+                let entry = project.clip_pool.get(&placement.clip_id)?;
+                matches!(&entry.content, ClipContent::Audio { .. })
+                    .then_some((*track_id, *placement_id))
+            })
+        })
+        .expect("filled_project 必须有一条音频摆放");
+    {
+        let placement = project
+            .tracks
+            .get_mut(&track_id)
+            .expect("音频轨必须存在")
+            .clips
+            .get_mut(&placement_id)
+            .expect("音频摆放必须存在");
+        placement.start_tick = 0;
+        placement.duration_ticks = 3_840;
+        placement.loop_config = yeban_model::LoopConfig::default();
+        placement.offset_samples = None;
+        placement.fade_in_ticks = None;
+        placement.fade_out_ticks = None;
+        placement.source_start_samples = None;
+    }
+    let (ops, right_id) = clip_split_ops_for(&project, &placement_id.to_canonical_string(), 1_920)
+        .expect("切分必须可构造");
+    for op in &ops {
+        op.apply(&mut project).expect("切分 op 必须可应用");
+    }
+    let right_id: EntityId = right_id.parse().expect("右半身份必须是合法 ULID");
+    let right = project
+        .tracks
+        .get(&track_id)
+        .expect("音频轨必须存在")
+        .clips
+        .get(&right_id)
+        .expect("右半摆放必须存在");
+    assert_eq!(
+        right.source_start_samples,
+        Some(36_000),
+        "右半素材内起点必须按 120→240 分段积分得 36000，旧常量 BPM 会得 48000"
+    );
+}

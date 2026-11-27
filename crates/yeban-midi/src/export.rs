@@ -311,17 +311,21 @@ fn track_is_audible(mute: bool, solo: bool, solo_safe: bool, any_solo: bool) -> 
 /// ⭐ T-FIX-584：把片段采样偏移 `offset_samples` 换算成 tick。
 ///
 /// 口径与 WAV「tick→帧后加偏移」（`export_wav::shift_note_span`）同一听感：
-/// `offset_ticks = round(offset_samples × bpm × PPQ / (60 × sample_rate_hz))`，
-/// sample_rate 取工程 `audio_config.sample_rate`（唯一来源），bpm 取工程基准 BPM
-/// （与 `time_math::ticks_to_frames` 在 WAV 侧的入参一致）。四舍五入、可正可负；
-/// 调用方用饱和加减并入 NoteOn 起点（负偏移夹到 0），与 WAV 起点夹 0 对齐。
-fn offset_samples_to_ticks(offset_samples: i32, project: &YebanProjectV1) -> i64 {
-    if offset_samples == 0 {
-        return 0;
-    }
-    let rate = f64::from(project.sample_rate().hz());
-    let ticks = f64::from(offset_samples) * project.bpm * (PPQ as f64) / (60.0 * rate);
-    ticks.round() as i64
+/// sample_rate 取工程 `audio_config.sample_rate`（唯一来源），速度取
+/// **`start_tick` 所在段**的 `TempoMap::bpm_at_tick`：空表逐位等于旧
+/// `round(offset × base_bpm × PPQ / (60 × rate))`，非空表用局部速度。
+/// 四舍五入、可正可负；调用方用饱和加减并入 NoteOn 起点（负偏移夹到 0），
+/// 与 WAV 起点夹 0 对齐。
+fn offset_samples_to_ticks(offset_samples: i32, project: &YebanProjectV1, start_tick: u64) -> i64 {
+    project
+        .tempo()
+        .tick_delta_for_samples_at(
+            start_tick,
+            i64::from(offset_samples),
+            PPQ,
+            project.sample_rate().hz(),
+        )
+        .unwrap_or(0)
 }
 
 fn track_notes(
@@ -346,7 +350,11 @@ fn track_notes(
         // ⭐ T-FIX-584：片段采样偏移换算成 tick 后并入起点（饱和、可正可负、夹 0），
         // 与 WAV 侧 `shift_note_span(ticks_to_frames(...), offset)` 同一听感。
         // offset=0 / None 时增量为 0 ⇒ 既有导出逐位不变。
-        let offset_ticks = offset_samples_to_ticks(placement.offset_samples.unwrap_or(0), project);
+        let offset_ticks = offset_samples_to_ticks(
+            placement.offset_samples.unwrap_or(0),
+            project,
+            placement.start_tick,
+        );
         for note in pool.values() {
             let base = placement.start_tick.saturating_add(note.start_tick);
             let start_tick = if offset_ticks >= 0 {
@@ -2550,6 +2558,61 @@ mod tests {
         }
     }
 
+    /// T-FIX-833：`offset_samples` 换 tick 必须读 `start_tick` 所在的速度段。
+    ///
+    /// 工程 120 BPM、tick 1920 后 240 BPM；摆放起点 1920，offset=+2400 采样
+    /// （50 ms @48k）⇒ 局部 240 BPM 下 192 tick；旧常量 120 BPM 得 96 tick。
+    #[test]
+    fn placement_offset_samples_walk_the_tempo_map_at_the_placement_start() {
+        let mut project = filled_project();
+        project.bpm = 120.0;
+        project.tempo_map.insert(1_920, 240.0);
+        let track_id = project
+            .tracks
+            .values()
+            .find(|t| t.id != project.master_bus_track_id)
+            .map(|t| t.id)
+            .expect("非主总线轨");
+        let placement_id = *project.tracks[&track_id]
+            .clips
+            .keys()
+            .next()
+            .expect("有 MIDI 摆放");
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨在")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放在")
+            .start_tick = 1_920;
+
+        let base = export_from_project(&project).expect("基线导出");
+        let base_ticks: Vec<u64> = base.tracks[0].notes.iter().map(|n| n.start_tick).collect();
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨在")
+            .clips
+            .get_mut(&placement_id)
+            .expect("摆放在")
+            .offset_samples = Some(2_400);
+        let shifted = export_from_project(&project).expect("带 offset 导出");
+        let shifted_ticks: Vec<u64> = shifted.tracks[0]
+            .notes
+            .iter()
+            .map(|n| n.start_tick)
+            .collect();
+        let expected_delta = ((2_400.0f64 * 240.0 * 960.0) / (60.0 * 48_000.0)).round() as u64;
+        assert_eq!(expected_delta, 192, "240 BPM 下 50 ms 必须是 192 tick");
+        for (i, (b, sh)) in base_ticks.iter().zip(shifted_ticks.iter()).enumerate() {
+            assert_eq!(
+                *sh,
+                b.saturating_add(expected_delta),
+                "第 {i} 颗音符必须按摆放起点的局部 240 BPM 偏移 192 tick，旧 120 BPM 会偏 96"
+            );
+        }
+    }
     /// ⭐ T-FIX-584 零回归：offset_samples = 0（或 None）时导出逐位不变。
     #[test]
     fn zero_offset_samples_export_is_byte_identical() {

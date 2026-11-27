@@ -76,9 +76,10 @@
 use std::path::{Path, PathBuf};
 
 use yeban_model::project::{AssetMetadata, MediaKind};
+use yeban_model::time_math::FrameToTickRounding;
 use yeban_model::{
     AssetHash, ClipPlacement, ClipPoolEntry, EntityId, LoopConfig, Op, OpOrigin, PPQ, TrackKind,
-    YebanProjectV1, frames_to_ticks_ceil,
+    YebanProjectV1,
 };
 
 use crate::import_audio::{
@@ -531,7 +532,7 @@ pub fn land_recording_at(
 ///   其实听不见"的假成功。
 /// - **起点**：调用方给的 `start_tick`（T-FIX-239：起录时捕获的
 ///   `起录播放头 + 预备拍 tick`；⛔ 不是停录时播放头在哪）。
-/// - **长度**：`frames_to_ticks_ceil(frames, PPQ, project.bpm, facts.sample_rate)`。
+/// - **长度**：`project.tempo().ticks_for_frames_from(start_tick, frames, PPQ, sample_rate, Ceil)`。
 ///   用**素材自己的**采样率（`facts.sample_rate`）—— `frames` 是它数出来的帧；
 ///   产品路径上它与工程采样率同为 48 kHz（`RecordOptions::default().sample_rate`，
 ///   工程缺省 48 kHz）。⚠ 票面写"用工程采样率"：两者同值时读数逐字相同；
@@ -559,14 +560,20 @@ fn plan_placement(
         RecordTarget::NoAudioTrack => return Ok(None),
         RecordTarget::NoSelection => return Err(RecordLandingError::NoTargetTrack),
     };
-    let duration_ticks =
-        frames_to_ticks_ceil(plan.facts.frames, PPQ, project.bpm, plan.facts.sample_rate).ok_or(
-            RecordLandingError::Ticks {
-                bpm: project.bpm,
-                sample_rate: plan.facts.sample_rate,
-                frames: plan.facts.frames,
-            },
-        )?;
+    let duration_ticks = project
+        .tempo()
+        .ticks_for_frames_from(
+            start_tick,
+            plan.facts.frames,
+            PPQ,
+            plan.facts.sample_rate,
+            FrameToTickRounding::Ceil,
+        )
+        .ok_or(RecordLandingError::Ticks {
+            bpm: project.bpm,
+            sample_rate: plan.facts.sample_rate,
+            frames: plan.facts.frames,
+        })?;
     Ok(Some(PlacedRecording {
         track_id,
         placement: ClipPlacement {
@@ -767,5 +774,30 @@ mod tests {
             RecordTarget::Track(only),
             "⭐ 主总线永远不是目标"
         );
+    }
+
+    /// T-FIX-833：录音落点长度按 `tempo_map` 从起录 tick 起分段积分。
+    ///
+    /// 120 BPM 起、tick 960 后 240 BPM；起录 tick 0、录 36 000 帧（48 kHz）：
+    /// 前 24 000 帧 @120 = 960 tick，后 12 000 帧 @240 = 960 tick ⇒ 1 920 tick。
+    /// 旧实现按 120 BPM 一整段算得 1 440 tick ⇒ 本判据红。
+    #[test]
+    fn recording_duration_walks_the_tempo_map_from_the_start_tick() {
+        let mut project = yeban_model::samples::filled_project();
+        project.bpm = 120.0;
+        project.tempo_map.insert(960, 240.0);
+        let track = audio_track_ids(&project)[0];
+        let dir = scratch_dir();
+        let path = dir.join("tempo-take.wav");
+        write_wav(&path, &vec![0i16; 36_000]);
+        let plan = plan_recording(&path, &project).expect("规划");
+        let placed = plan_placement(&project, &plan, 0, RecordTarget::Track(track))
+            .expect("落点必须可计算")
+            .expect("有目标轨 ⇒ 必须摆");
+        assert_eq!(
+            placed.placement.duration_ticks, 1_920,
+            "36 000 帧跨 120→240 必须得 1920 tick，旧常量 BPM 会得 1440"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

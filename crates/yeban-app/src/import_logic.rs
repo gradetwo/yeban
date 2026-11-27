@@ -94,6 +94,7 @@ use yeban_model::project::{
     ProjectMetadata, RoutingEdge, RoutingGraph, RoutingKind, SCHEMA_VERSION, SampleRate,
     TimeSignature, TrackKind, TrackV3, TransportConfig, YebanProjectV1,
 };
+use yeban_model::time_math::{FrameToTickRounding, TempoMap};
 use yeban_render::logic_read::{
     LOGIC_REGION_LENGTH_MAX, LOGIC_REGION_LENGTH_MIN, LogicImport, import_bundle,
 };
@@ -1104,7 +1105,19 @@ fn resolve_audio_slot(
             );
         }
     };
-    let ticks = frames_to_ticks(decoded.frames(), decoded.sample_rate(), data.bpm).max(1);
+    // Logic 导入的目标工程在下方固定 `tempo_map: BTreeMap::new()`（本模块尚不解析
+    // Logic 的变速事件），因此这里用常量 `TempoMap` 走与旧 `#152` 完全相同的
+    // `Round` 分支；换成真正带映射的 `TempoMap` 时无需再改这一处。
+    let ticks = TempoMap::constant(data.bpm)
+        .ticks_for_frames_from(
+            0,
+            decoded.frames(),
+            960,
+            decoded.sample_rate(),
+            FrameToTickRounding::Round,
+        )
+        .unwrap_or(1)
+        .max(1);
     sink.used_bytes = sink.used_bytes.saturating_add(metadata.len());
     // 内容寻址：同一份字节（可能被两个槽位引用）在容器里只有一条。
     if sink.assets.insert(hash.clone(), bytes).is_none() {
@@ -1119,27 +1132,6 @@ fn resolve_audio_slot(
         name: region.name.clone(),
         duration_ticks: ticks,
     })
-}
-
-/// 帧数 ⇒ 960 PPQ tick（按**素材自身采样率**）：`round(frames × 960 × bpm / (60 × rate))`。
-///
-/// 这是 `#152` 的长度口径：`AuRg +0x16` 是帧数，不是 tick。`round` 是**四舍五入**
-/// （0.5 向上），`rate` 为 0 时返回 1（⛔ 除零）。
-fn frames_to_ticks(frames: u64, rate: u32, bpm: f64) -> u64 {
-    if rate == 0 || !bpm.is_finite() || bpm <= 0.0 {
-        return 1;
-    }
-    let numerator = (frames as f64) * 960.0 * bpm;
-    let denominator = 60.0 * f64::from(rate);
-    let ticks = (numerator / denominator).round();
-    if !ticks.is_finite() || ticks <= 0.0 {
-        1
-    } else {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            ticks.min(u64::MAX as f64) as u64
-        }
-    }
 }
 
 fn notes_count(clip_pool: &BTreeMap<EntityId, ClipPoolEntry>, clip_id: EntityId) -> usize {
