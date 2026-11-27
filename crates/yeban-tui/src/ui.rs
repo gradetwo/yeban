@@ -351,7 +351,7 @@ fn pitch_name(pitch: u8) -> String {
 /// 位置是片段内相对 tick 换算的小节.拍+余数。
 fn draw_notes_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(ListView::Notes {
-        clip_id, selected, ..
+        clip_id, anchor, ..
     }) = app.list_view
     else {
         return;
@@ -367,11 +367,15 @@ fn draw_notes_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let beat_ticks = app.ticks_per_beat().max(1);
     let mut items: Vec<ListItem<'_>> = Vec::with_capacity(notes.len() + 1);
     items.push(ListItem::new(Line::from(Span::styled(
-        format!("  「{clip_name}」共 {} 个音符", notes.len()),
+        format!(
+            "  「{clip_name}」共 {} 个音符 · 选中 {}",
+            notes.len(),
+            app.note_selection.len()
+        ),
         Style::default().fg(theme::INK2),
     ))));
-    for (index, note) in notes.iter().enumerate() {
-        let is_selected = index == selected;
+    for note in &notes {
+        let is_selected = app.note_selection.contains(&note.id);
         let cursor = if is_selected { "▸" } else { " " };
         let bar = note.start_tick / bar_ticks;
         let beat = (note.start_tick % bar_ticks) / beat_ticks;
@@ -403,7 +407,12 @@ fn draw_notes_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
     let list = List::new(items);
     let mut state = ListState::default();
-    state.select(Some(selected + 1));
+    let row = if notes.is_empty() {
+        0
+    } else {
+        anchor.min(notes.len().saturating_sub(1)) + 1
+    };
+    state.select(Some(row));
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -879,7 +888,7 @@ fn draw_bottom(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .unwrap_or_default();
             let text = match app.list_view {
                 Some(ListView::Notes { .. }) => format!(
-                    "-- 音符视图 -- j/k 选 · h/l 移时 · J/K 移高 · a 加 · Del 删 · <> 时值 · -/+ 力度 · Esc 返回{count}"
+                    "-- 音符视图 -- j/k 选 · Ctrl+A 全选 · h/l 移时 · J/K 移高 · a 加 · Del 删选区 · <> 时值 · -/+ 力度 · Esc 返回{count}"
                 ),
                 Some(ListView::Pool { .. }) => format!(
                     "-- 片段池 -- j/k 选 · Del 删条目（被引用会被模型拒绝） · Esc 返回{count}"

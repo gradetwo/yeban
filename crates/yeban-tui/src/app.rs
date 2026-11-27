@@ -11,7 +11,7 @@
 //! （`port.project()`），本地 `project` 只是它的镜像。保存时把提交图谱写回
 //! 归档的 `history.dag`，重开后历史可恢复（`session_from_archive`）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -344,8 +344,9 @@ pub enum ListView {
         placement_id: EntityId,
         /// 池条目身份（音符住在条目的 content 里）。
         clip_id: EntityId,
-        /// 选中音符的下标。
-        selected: usize,
+        /// 选中音符的锚点下标（按 (起点, 音高, 身份) 排序后的行号；多选时用于
+        /// 渲染当前行与 `j/k` 的起点，真正选区见 [`App::note_selection`]）。
+        anchor: usize,
     },
     /// 片段池列表：`selected` 是按 (名, 身份) 排序后的下标。
     Pool {
@@ -573,6 +574,9 @@ pub struct App {
     pub clipboard: Option<(ClipPoolEntry, ClipPlacement)>,
     /// 片段网格的列表视图（三期；`None` = 普通网格）。
     pub list_view: Option<ListView>,
+    /// 音符视图的身份选区（T-FIX-801）：`Ctrl+A` 全选 / `Delete` 批量删除 /
+    /// 批量微移的共同事实源。只含当前音符视图对象片段里的音符身份。
+    pub note_selection: BTreeSet<EntityId>,
     /// 最近一次 `:sessions` 列出的已存工程路径（按显示顺序），供 `:sessions open <n>` 按序号打开。
     /// 不另存第二套状态源：来源只有 `yeban_app::settings::recent_projects`。
     session_search: Vec<PathBuf>,
@@ -761,6 +765,7 @@ impl App {
             rename_target: None,
             clipboard: None,
             list_view: None,
+            note_selection: BTreeSet::new(),
             session_search: Vec::new(),
             log: Vec::new(),
             dirty: false,
@@ -1007,6 +1012,16 @@ impl App {
             && !self.project.clip_pool.contains_key(&clip_id)
         {
             self.list_view = None;
+            self.note_selection.clear();
+        }
+        // 音符身份选区随工程刷新：撤销/重做删掉的音符不能留在选区里，
+        // 否则下一次 Delete/微移会拿失效身份去撞模型。
+        if matches!(self.list_view, Some(ListView::Notes { .. })) {
+            let live: BTreeSet<EntityId> =
+                self.view_notes().into_iter().map(|note| note.id).collect();
+            self.note_selection.retain(|id| live.contains(id));
+        } else {
+            self.note_selection.clear();
         }
         // 自动化视图同理：泳道所属音轨没了（撤销删轨），视图一并关掉。
         if let Some(ListView::Automation { track_id, .. }) = self.list_view
@@ -1432,9 +1447,34 @@ impl App {
             track_id,
             placement_id,
             clip_id: placement.clip_id,
-            selected: 0,
+            anchor: 0,
         });
+        self.note_selection.clear();
+        self.select_note_at(0);
         self.log_line(format!("音符视图「{name}」：Esc 返回片段网格"));
+    }
+
+    /// 音符视图内全选当前作用域（`Ctrl+A` / `SelectAllNotes` 的 TUI 落点）。
+    ///
+    /// 作用域 = 当前音符视图的对象片段（TUI 的可见音符集就是它），⛔ 不跨片段
+    /// 偷偷选用户没看到的音符。空片段 ⇒ 清空选区并消费这一键（语义是“选中全部”，
+    /// 全部为空就是空集），但日志如实说“没有可选的音符”。
+    pub fn select_all_notes(&mut self) {
+        if !matches!(self.list_view, Some(ListView::Notes { .. })) {
+            self.log_line("全选音符只在音符视图内接入（片段网格里按 n 打开）".to_owned());
+            return;
+        }
+        let ids: Vec<EntityId> = self.view_notes().into_iter().map(|note| note.id).collect();
+        let count = ids.len();
+        self.note_selection = ids.into_iter().collect();
+        if let Some(ListView::Notes { anchor, .. }) = &mut self.list_view {
+            *anchor = 0;
+        }
+        if count == 0 {
+            self.log_line("音符视图内没有可选的音符".to_owned());
+        } else {
+            self.log_line(format!("已全选当前片段的 {count} 个音符"));
+        }
     }
 
     /// 打开片段池视图（`:pool` 的落点）。
@@ -1450,6 +1490,7 @@ impl App {
     /// 关掉列表视图，回到普通片段网格（`Esc` 的视图内落点）。
     pub fn close_list_view(&mut self) {
         self.list_view = None;
+        self.note_selection.clear();
     }
 
     /// 音符视图的对象片段的音符快照（按 (起点, 音高, 身份) 排序）。
@@ -1491,15 +1532,10 @@ impl App {
     }
 
     /// 列表视图内的选中下标移动（Vi `j/k` 与 `gg/G` 按视图分流到这里）。
+    /// 音符视图把“移动”落到单选：新行成为唯一选中项，锚点随行。
     fn view_move_selection(&mut self, delta: i32) {
-        let (len, selected) = match self.list_view {
-            Some(ListView::Notes { .. }) => {
-                let len = self.view_notes().len();
-                let Some(ListView::Notes { selected, .. }) = self.list_view else {
-                    return;
-                };
-                (len, selected)
-            }
+        let (len, anchor) = match self.list_view {
+            Some(ListView::Notes { anchor, .. }) => (self.view_notes().len(), anchor),
             Some(ListView::Pool { selected }) => (self.pool_rows().len(), selected),
             Some(ListView::Automation { selected, .. }) => {
                 (self.automation_points().len(), selected)
@@ -1509,15 +1545,25 @@ impl App {
         let next = if len == 0 {
             0
         } else {
-            usize::try_from((selected as i32 + delta).clamp(0, len as i32 - 1)).unwrap_or(0)
+            usize::try_from((anchor as i32 + delta).clamp(0, len as i32 - 1)).unwrap_or(0)
+        };
+        let note_id = if matches!(self.list_view, Some(ListView::Notes { .. })) {
+            self.view_notes().get(next).map(|note| note.id)
+        } else {
+            None
         };
         match &mut self.list_view {
-            Some(ListView::Notes { selected, .. })
-            | Some(ListView::Pool { selected })
-            | Some(ListView::Automation { selected, .. }) => {
+            Some(ListView::Notes { anchor, .. }) => *anchor = next,
+            Some(ListView::Pool { selected }) | Some(ListView::Automation { selected, .. }) => {
                 *selected = next;
             }
             None => {}
+        }
+        if matches!(self.list_view, Some(ListView::Notes { .. })) {
+            self.note_selection.clear();
+            if let Some(note_id) = note_id {
+                self.note_selection.insert(note_id);
+            }
         }
         self.automation_follow_selection();
     }
@@ -1531,15 +1577,37 @@ impl App {
             None => return,
         };
         let next = if last { len.saturating_sub(1) } else { 0 };
+        let note_id = if matches!(self.list_view, Some(ListView::Notes { .. })) {
+            self.view_notes().get(next).map(|note| note.id)
+        } else {
+            None
+        };
         match &mut self.list_view {
-            Some(ListView::Notes { selected, .. })
-            | Some(ListView::Pool { selected })
-            | Some(ListView::Automation { selected, .. }) => {
+            Some(ListView::Notes { anchor, .. }) => *anchor = next,
+            Some(ListView::Pool { selected }) | Some(ListView::Automation { selected, .. }) => {
                 *selected = next;
             }
             None => {}
         }
+        if matches!(self.list_view, Some(ListView::Notes { .. })) {
+            self.note_selection.clear();
+            if let Some(note_id) = note_id {
+                self.note_selection.insert(note_id);
+            }
+        }
         self.automation_follow_selection();
+    }
+
+    /// 把音符视图锚点落到第 `index` 行，并把它设为唯一选中项。
+    fn select_note_at(&mut self, index: usize) {
+        let note_id = self.view_notes().get(index).map(|note| note.id);
+        if let Some(ListView::Notes { anchor, .. }) = &mut self.list_view {
+            *anchor = index;
+        }
+        self.note_selection.clear();
+        if let Some(note_id) = note_id {
+            self.note_selection.insert(note_id);
+        }
     }
 
     /// 自动化视图的选中点决定 `-`/`+` 的落点：选中那一行 ⇒ 小节光标跟到它的 tick。
@@ -1554,47 +1622,53 @@ impl App {
         self.cursor_bar = usize::try_from(point.tick / bar_ticks).unwrap_or(usize::MAX);
     }
 
-    /// 当前选中的音符（音符视图内）：(轨道, 池条目, 音符快照)。
+    /// 当前选中音符（音符视图内，按视图顺序；多选取第一颗）。
     fn selected_note(&self) -> Option<(EntityId, EntityId, MidiNote)> {
-        let Some(ListView::Notes {
-            track_id,
-            clip_id,
-            selected,
-            ..
-        }) = self.list_view
-        else {
-            return None;
-        };
-        self.view_notes()
-            .get(selected)
-            .map(|note| (track_id, clip_id, note.clone()))
+        self.selected_notes().into_iter().next()
     }
 
-    /// 移动选中音符（`MoveNote` 增量；起点不为负、音高夹 0..=127，
-    /// 夹紧后无变化就不提交）。方向键与 `h/l`、`J/K` 的共同落点，
-    /// 换算走 GUI 同一函数 `nudge_delta_for` 的调用方在这里组装增量。
-    pub fn move_selected_note(&mut self, delta_tick: i64, delta_pitch: i8) {
-        let Some((track_id, clip_id, note)) = self.selected_note() else {
-            return;
+    /// 当前身份选区里的全部音符（音符视图内，按 (起点, 音高, 身份) 排序）。
+    fn selected_notes(&self) -> Vec<(EntityId, EntityId, MidiNote)> {
+        let Some(ListView::Notes {
+            track_id, clip_id, ..
+        }) = self.list_view
+        else {
+            return Vec::new();
         };
-        let delta_tick = delta_tick.max(-i64::try_from(note.start_tick).unwrap_or(i64::MAX));
-        let new_pitch = (i16::from(note.pitch) + i16::from(delta_pitch)).clamp(0, 127);
-        let delta_pitch = i8::try_from(new_pitch - i16::from(note.pitch)).unwrap_or(0);
-        if delta_tick == 0 && delta_pitch == 0 {
-            self.log_line("音符已在边界，无变化".to_owned());
+        self.view_notes()
+            .into_iter()
+            .filter(|note| self.note_selection.contains(&note.id))
+            .map(|note| (track_id, clip_id, note))
+            .collect()
+    }
+
+    /// 当前身份选区的规范身份串（交给 GUI 同一批纯函数 `delete_ops_for` /
+    /// `nudge_ops_for` / `resize_duration_ops_for` 用）。
+    fn selected_note_ulids(&self) -> Vec<String> {
+        self.selected_notes()
+            .iter()
+            .map(|(_, _, note)| note.id.to_canonical_string())
+            .collect()
+    }
+
+    /// 批量移动身份选区（`MoveNote` 增量；起点不为负、音高夹 0..=127）。
+    ///
+    /// 走 GUI 的同一个纯函数 `yeban_app::host::nudge_ops_for`：整组共用一个位移，
+    /// 夹到所有选中音符都合法的区间（不是逐音符各挪各的）。空批（没有选区 /
+    /// 整块在边界）⇒ 不提交、如实记日志，⛔ 不写空 op。
+    pub fn move_selected_note(&mut self, delta_tick: i64, delta_pitch: i8) {
+        let ids = self.selected_note_ulids();
+        if ids.is_empty() {
             return;
         }
-        self.commit_edit(
-            "tui: move note",
-            vec![Op::MoveNote {
-                track_id,
-                clip_id,
-                note_id: note.id,
-                delta_tick,
-                delta_pitch,
-            }],
-            "移动音符",
-        );
+        let ops = yeban_app::host::nudge_ops_for(&self.project, &ids, delta_tick, delta_pitch);
+        if ops.is_empty() {
+            self.log_line(format!(
+                "选区已到边界：无法再移动（{delta_tick} tick / {delta_pitch} 半音）"
+            ));
+            return;
+        }
+        self.commit_edit("tui: move note selection", ops, "移动音符");
     }
 
     /// 改选中音符的时值（`Shift+←/→`，`[UI-NOTE-005]` 项 3）。
@@ -1609,16 +1683,13 @@ impl App {
             self.log_line("改时值只在音符视图内接入（片段网格里按 n 打开）".to_owned());
             return;
         }
-        let Some((_, _, note)) = self.selected_note() else {
+        let ids = self.selected_note_ulids();
+        if ids.is_empty() {
             self.log_line("音符视图内无选中音符".to_owned());
             return;
-        };
+        }
         let delta = yeban_app::host::resize_duration_delta_for(direction);
-        let ops = yeban_app::host::resize_duration_ops_for(
-            &self.project,
-            &[note.id.to_canonical_string()],
-            delta,
-        );
+        let ops = yeban_app::host::resize_duration_ops_for(&self.project, &ids, delta);
         if ops.is_empty() {
             self.log_line("音符已在 1 tick 下限，无变化".to_owned());
             return;
@@ -1660,53 +1731,67 @@ impl App {
             }],
             "加音符",
         );
-        // 选中新加的音符（按排序后的位置回填下标）。
+        // 选中新加的音符（按排序后的位置回填锚点与唯一选区）。
         let position = self.view_notes().iter().position(|n| n.id == note_id);
-        if let (Some(ListView::Notes { selected, .. }), Some(index)) =
-            (&mut self.list_view, position)
-        {
-            *selected = index;
+        if let Some(index) = position {
+            self.select_note_at(index);
         }
     }
 
-    /// 删除选中音符（音符视图内 `Delete` 的落点；`DeleteNote` 自带撤销载荷）。
+    /// 删除当前身份选区（音符视图内 `Delete` 的落点；一次提交 = 一步撤销）。
+    ///
+    /// 走 GUI 同一纯函数 `yeban_app::host::delete_ops_for`：把选区身份解析成
+    /// `Op::DeleteNote` 集合（自带 `previous_note` 撤销载荷）。空批（没有选区 /
+    /// 身份都已不存在）⇒ 如实记日志，⛔ 不猜一个对象去删。
     pub fn delete_selected_note(&mut self) {
-        let Some((track_id, clip_id, note)) = self.selected_note() else {
+        let ids = self.selected_note_ulids();
+        if ids.is_empty() {
             self.log_line("音符视图内无选中音符".to_owned());
             return;
-        };
-        self.commit_edit(
-            "tui: delete note",
-            vec![Op::DeleteNote {
-                track_id,
-                clip_id,
-                note_id: note.id,
-                previous_note: note,
-            }],
-            "删除音符",
-        );
-        self.clamp_view_selection();
+        }
+        let ops = yeban_app::host::delete_ops_for(&self.project, &ids);
+        if ops.is_empty() {
+            self.log_line("选区音符在工程里已不存在：无可删除对象".to_owned());
+            return;
+        }
+        self.commit_edit("tui: delete note selection", ops, "删除音符");
+        let remaining: Vec<EntityId> = self.view_notes().into_iter().map(|note| note.id).collect();
+        let removed = ids
+            .iter()
+            .filter(|id| {
+                id.parse::<EntityId>()
+                    .ok()
+                    .is_some_and(|id| !remaining.contains(&id))
+            })
+            .count();
+        if removed == 0 {
+            self.log_line("删除未生效：模型拒绝或选区身份已失效".to_owned());
+            return;
+        }
+        self.note_selection.clear();
+        if let Some(ListView::Notes { anchor, .. }) = &mut self.list_view {
+            *anchor = 0;
+        }
+        self.select_note_at(0);
+        self.log_line(format!("已删除 {removed} 个选中音符"));
     }
 
     /// 改选中音符的时值（音符视图内 `<`/`>`）：一步 = 一拍，
     /// 下限 = 一个吸附网格（240 tick，与 GUI 微移网格同值），走 `SetNoteTiming`。
     pub fn resize_selected_note(&mut self, beats: i32) {
-        let Some((track_id, clip_id, note)) = self.selected_note() else {
-            return;
-        };
         let step = i64::try_from(self.ticks_per_beat()).unwrap_or(i64::MAX) * i64::from(beats);
-        let new_duration = i64::try_from(note.duration_ticks)
-            .unwrap_or(i64::MAX)
-            .saturating_add(step)
-            .max(i64::try_from(yeban_app::host::ROLL_SNAP_GRID_TICKS).unwrap_or(240));
-        let new_duration = u64::try_from(new_duration).unwrap_or(note.duration_ticks);
-        if new_duration == note.duration_ticks {
-            self.log_line("时值已在下限，无变化".to_owned());
-            return;
-        }
-        self.commit_edit(
-            "tui: set note timing",
-            vec![Op::SetNoteTiming {
+        let minimum = i64::try_from(yeban_app::host::ROLL_SNAP_GRID_TICKS).unwrap_or(240);
+        let mut ops = Vec::new();
+        for (track_id, clip_id, note) in self.selected_notes() {
+            let new_duration = i64::try_from(note.duration_ticks)
+                .unwrap_or(i64::MAX)
+                .saturating_add(step)
+                .max(minimum);
+            let new_duration = u64::try_from(new_duration).unwrap_or(note.duration_ticks);
+            if new_duration == note.duration_ticks {
+                continue;
+            }
+            ops.push(Op::SetNoteTiming {
                 track_id,
                 clip_id,
                 note_id: note.id,
@@ -1714,33 +1799,37 @@ impl App {
                 old_duration_ticks: note.duration_ticks,
                 new_start_tick: note.start_tick,
                 new_duration_ticks: new_duration,
-            }],
-            "改音符时值",
-        );
+            });
+        }
+        if ops.is_empty() {
+            self.log_line("时值已在下限，无变化".to_owned());
+            return;
+        }
+        self.commit_edit("tui: set note timing", ops, "改音符时值");
     }
 
     /// 改选中音符的力度（音符视图内 `-`/`+` 分流）：±10，夹 1..=127，
     /// 走 `ModifyNoteVelocity`。
     pub fn nudge_selected_note_velocity(&mut self, delta: i32) {
-        let Some((track_id, clip_id, note)) = self.selected_note() else {
-            return;
-        };
-        let new_vel = (i32::from(note.velocity) + delta).clamp(1, 127);
-        if new_vel == i32::from(note.velocity) {
-            self.log_line("力度已在边界，无变化".to_owned());
-            return;
-        }
-        self.commit_edit(
-            "tui: set note velocity",
-            vec![Op::ModifyNoteVelocity {
+        let mut ops = Vec::new();
+        for (track_id, clip_id, note) in self.selected_notes() {
+            let new_vel = (i32::from(note.velocity) + delta).clamp(1, 127);
+            if new_vel == i32::from(note.velocity) {
+                continue;
+            }
+            ops.push(Op::ModifyNoteVelocity {
                 track_id,
                 clip_id,
                 note_id: note.id,
                 old_vel: note.velocity,
                 new_vel: u8::try_from(new_vel).unwrap_or(note.velocity),
-            }],
-            &format!("力度 {} → {new_vel}", note.velocity),
-        );
+            });
+        }
+        if ops.is_empty() {
+            self.log_line("力度已在边界，无变化".to_owned());
+            return;
+        }
+        self.commit_edit("tui: set note velocity", ops, "改音符力度");
     }
 
     /// 删除选中的片段池条目（池视图内 `Delete` 的落点；`Op::RemoveClip`）。
@@ -3378,6 +3467,7 @@ impl App {
     fn dispatch_gui_action(&mut self, action: Action) {
         match action {
             Action::PlayPause => self.toggle_play(),
+            Action::SelectAllNotes => self.select_all_notes(),
             Action::ResumeFromCursor => {
                 // GUI 是「从光标处续播」；TUI 的小节光标即其对应物：定位后播放。
                 let ticks = u64::try_from(self.cursor_bar).unwrap_or(0) * self.bar_ticks();
