@@ -813,6 +813,19 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
     assert_ne!(fingerprint_a, fingerprint_c, "夹具：A 与 C 必须是两份工程");
 
     // ---- 4. 从模板新建：行模型分组正确，选中后会话回到 A -----------------
+    // T-FIX-811：注入一个非 UTF-8 文件名，选择器仍须列出四条正常行，
+    // 同时把“有条目未列出”的警告送到可见 toast。
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        let mut bad = std::ffi::OsString::from_vec(vec![b'b', 0xFF, b'a', b'd']);
+        bad.push(".yeban");
+        std::fs::write(
+            roots.user.join("流行").join("摇滚").join(bad),
+            b"not a template",
+        )
+        .expect("写非 UTF-8 文件名的坏模板");
+    }
     ui.invoke_new_from_template();
     assert!(ui.get_template_chooser_open(), "菜单回调必须打开模板选择器");
     let rows = ui.get_template_chooser_rows();
@@ -831,6 +844,14 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
         "选择器行模型必须按 来源 → 曲风 → 子曲风 → 模板名 分组"
     );
     assert_eq!(ui.get_template_chooser_hidden_rows(), 0, "四行不得有截断");
+    #[cfg(unix)]
+    {
+        let toast = ui.get_toast_message().to_string();
+        assert!(
+            toast.contains("未列出") && toast.contains("不是 UTF-8"),
+            "非 UTF-8 模板名必须进可见警告，实际 toast: {toast:?}"
+        );
+    }
     let entry_index = rows
         .iter()
         .find(|row| row.kind == 3)

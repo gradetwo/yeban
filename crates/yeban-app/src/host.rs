@@ -12004,7 +12004,17 @@ pub fn wire_project_templates(
                 return;
             };
             let listing = crate::templates::list_templates(&roots_open);
-            *entries_open.borrow_mut() = listing;
+            *entries_open.borrow_mut() = listing.entries;
+            if !listing.diagnostics.is_empty() {
+                ui.set_toast_message(
+                    format!(
+                        "[模板] 有 {} 个条目未列出：{}",
+                        listing.diagnostics.len(),
+                        listing.diagnostics.join("；")
+                    )
+                    .into(),
+                );
+            }
             apply_template_chooser_rows(&ui, &entries_open.borrow(), &search_open.borrow());
             ui.set_template_chooser_open(true);
         });
@@ -12120,6 +12130,15 @@ pub fn wire_project_templates(
             }
             let listing = crate::templates::list_templates(&roots_save);
             let pairs = crate::templates::user_category_hint(&listing);
+            let scan_warning = if listing.diagnostics.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "模板扫描警告（{} 个条目未列出）：{}",
+                    listing.diagnostics.len(),
+                    listing.diagnostics.join("；")
+                )
+            };
             let hint = if pairs.is_empty() {
                 "已有分类：无（填入的名字将新建分类）".to_owned()
             } else {
@@ -12130,7 +12149,7 @@ pub fn wire_project_templates(
             ui.set_template_save_style(style.into());
             ui.set_template_save_substyle(substyle.into());
             ui.set_template_save_name(String::new().into());
-            ui.set_template_save_error(String::new().into());
+            ui.set_template_save_error(scan_warning.into());
             ui.set_template_save_exists(false);
             ui.set_template_save_open(true);
             // T-FIX-182：打开即取焦（与五只已修模态同一顺序：先置位、再同步取焦；

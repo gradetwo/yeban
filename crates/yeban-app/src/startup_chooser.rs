@@ -284,7 +284,7 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
         recent,
         demos,
         blocked_demos,
-        templates: list_templates(roots),
+        templates: list_templates(roots).entries,
     }
 }
 

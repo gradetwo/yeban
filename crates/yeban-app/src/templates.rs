@@ -269,55 +269,175 @@ pub struct TemplateEntry {
 /// 的文件、四级及更深的文件、非 `.yeban` 文件、非目录的一二级条目都被
 /// 跳过（它们不是按三级分类存放的模板）。根目录不存在 ⇒ 该来源为空
 /// （工厂目录随分发可缺席、用户目录在首次另存前可缺席，都是正常态）。
-#[must_use]
-pub fn list_templates(roots: &TemplateRoots) -> Vec<TemplateEntry> {
-    let mut out = Vec::new();
-    list_templates_in(&roots.factory, TemplateSource::Factory, &mut out);
-    list_templates_in(&roots.user, TemplateSource::User, &mut out);
-    out
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TemplateListing {
+    /// 成功识别的模板条目（顺序确定，同 [`list_templates`]）。
+    pub entries: Vec<TemplateEntry>,
+    /// 扫描时被跳过、无法安全进入清单的路径 / 原因（T-FIX-811）。
+    ///
+    /// 非空 ⇒ 调用方必须把它送进可见诊断（module-status / 选择器警告），
+    /// 不能把 `entries` 当完整清单静默打开。
+    pub diagnostics: Vec<String>,
 }
 
-fn list_templates_in(root: &Path, source: TemplateSource, out: &mut Vec<TemplateEntry>) {
-    let Ok(styles) = std::fs::read_dir(root) else {
-        return;
+impl std::ops::Deref for TemplateListing {
+    type Target = [TemplateEntry];
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+/// 扫描两个根目录，返回全部模板**和被跳过的诊断**。
+pub fn list_templates(roots: &TemplateRoots) -> TemplateListing {
+    let mut listing = TemplateListing::default();
+    list_templates_in(
+        &roots.factory,
+        TemplateSource::Factory,
+        &mut listing.entries,
+        &mut listing.diagnostics,
+    );
+    list_templates_in(
+        &roots.user,
+        TemplateSource::User,
+        &mut listing.entries,
+        &mut listing.diagnostics,
+    );
+    listing
+}
+
+fn list_templates_in(
+    root: &Path,
+    source: TemplateSource,
+    out: &mut Vec<TemplateEntry>,
+    diagnostics: &mut Vec<String>,
+) {
+    let styles = match std::fs::read_dir(root) {
+        Ok(styles) => styles,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            diagnostics.push(format!("无法读取模板目录 `{}`: {error}", root.display()));
+            return;
+        }
     };
-    let mut style_names: Vec<String> = styles
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect();
+    let mut style_names: Vec<String> = Vec::new();
+    for entry in styles {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                diagnostics.push(format!(
+                    "读取模板目录 `{}` 的条目失败: {error}",
+                    root.display()
+                ));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let is_dir = match entry.file_type() {
+            Ok(file_type) => file_type.is_dir(),
+            Err(error) => {
+                diagnostics.push(format!("无法检查模板路径 `{}`: {error}", path.display()));
+                continue;
+            }
+        };
+        if !is_dir {
+            continue;
+        }
+        match entry.file_name().into_string() {
+            Ok(name) => style_names.push(name),
+            Err(name) => diagnostics.push(format!(
+                "模板目录名不是 UTF-8，已跳过: `{}`",
+                Path::new(&name).display()
+            )),
+        }
+    }
     style_names.sort();
     for style in style_names {
-        let Ok(substyles) = std::fs::read_dir(root.join(&style)) else {
-            continue;
+        let substyles = match std::fs::read_dir(root.join(&style)) {
+            Ok(substyles) => substyles,
+            Err(error) => {
+                diagnostics.push(format!(
+                    "无法读取模板目录 `{}`: {error}",
+                    root.join(&style).display()
+                ));
+                continue;
+            }
         };
-        let mut substyle_names: Vec<String> = substyles
-            .flatten()
-            .filter(|entry| entry.path().is_dir())
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect();
+        let mut substyle_names: Vec<String> = Vec::new();
+        for entry in substyles {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    diagnostics.push(format!(
+                        "读取模板目录 `{}` 的条目失败: {error}",
+                        root.join(&style).display()
+                    ));
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let is_dir = match entry.file_type() {
+                Ok(file_type) => file_type.is_dir(),
+                Err(error) => {
+                    diagnostics.push(format!("无法检查模板路径 `{}`: {error}", path.display()));
+                    continue;
+                }
+            };
+            if !is_dir {
+                continue;
+            }
+            match entry.file_name().into_string() {
+                Ok(name) => substyle_names.push(name),
+                Err(name) => diagnostics.push(format!(
+                    "模板目录名不是 UTF-8，已跳过: `{}`",
+                    Path::new(&name).display()
+                )),
+            }
+        }
         substyle_names.sort();
         for substyle in substyle_names {
             let dir = root.join(&style).join(&substyle);
-            let Ok(files) = std::fs::read_dir(&dir) else {
-                continue;
+            let files = match std::fs::read_dir(&dir) {
+                Ok(files) => files,
+                Err(error) => {
+                    diagnostics.push(format!("无法读取模板目录 `{}`: {error}", dir.display()));
+                    continue;
+                }
             };
-            let mut names: Vec<String> = files
-                .flatten()
-                .filter(|entry| entry.path().is_file())
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    if path.extension().and_then(|ext| ext.to_str())
-                        == Some(TEMPLATE_FILE_EXTENSION)
-                    {
-                        path.file_stem()
-                            .and_then(|stem| stem.to_str())
-                            .map(str::to_owned)
-                    } else {
-                        None
+            let mut names: Vec<String> = Vec::new();
+            for entry in files {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        diagnostics.push(format!(
+                            "读取模板目录 `{}` 的条目失败: {error}",
+                            dir.display()
+                        ));
+                        continue;
                     }
-                })
-                .collect();
+                };
+                let path = entry.path();
+                let is_file = match entry.file_type() {
+                    Ok(file_type) => file_type.is_file(),
+                    Err(error) => {
+                        diagnostics.push(format!("无法检查模板文件 `{}`: {error}", path.display()));
+                        continue;
+                    }
+                };
+                if !is_file {
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some(TEMPLATE_FILE_EXTENSION) {
+                    continue;
+                }
+                match path.file_stem().and_then(|stem| stem.to_str()) {
+                    Some(name) => names.push(name.to_owned()),
+                    None => diagnostics.push(format!(
+                        "模板文件名不是 UTF-8，已跳过: `{}`",
+                        path.display()
+                    )),
+                }
+            }
             names.sort();
             for name in names {
                 out.push(TemplateEntry {
