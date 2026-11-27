@@ -1417,7 +1417,7 @@ export component TransportHeaderBar inherits Rectangle {
                 border-color: Tokens.line;
                 accessible-role: button;
                 accessible-id: "transport-save-button";
-                accessible-label: "保存工程 (Ctrl+S)";
+                accessible-label: @tr("保存工程 (Ctrl+S)");
                 // `[UI-A11Y-003]` §7.3：默认动作与指针点击逐字同源。
                 accessible-action-default => { root.save-project(); }
 
