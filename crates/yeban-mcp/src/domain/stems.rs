@@ -816,7 +816,39 @@ pub fn export(
     now_ms: u64,
     assets: &dyn render::AssetStore,
 ) -> Result<StemBatch, Fault> {
-    export_with_sink(project, project_path, request, now_ms, assets, None)
+    export_with_sink(
+        project,
+        project_path,
+        request,
+        now_ms,
+        assets,
+        None,
+        &mut |_| {},
+    )
+}
+
+/// 一次分轨进度采样（T-FIX-936：流式落盘的检查点发出；与
+/// SFZ Doctor 的 `DoctorProgress` 同一条"采样在产生数据的地方换算"
+/// 纪律 —— 调用方只拿到计数与轨名，人话读数由宿主侧按当前语言拼）。
+#[derive(Clone, Debug)]
+pub struct StemProgress {
+    /// 已完成并落盘的分轨数（基线渲染刚结束、逐轨循环未起时为 `0`）。
+    pub done: usize,
+    /// 本批计划导出的分轨总数（分类完成后才知道；循环起时已定）。
+    pub total: usize,
+    /// 刚完成的那条分轨的轨名（`done == 0` 的起始采样为 `None`）。
+    pub current: Option<String>,
+}
+
+impl StemProgress {
+    /// 本批百分比（`-1` = 总数为 0，无从算起；与下载读数同一口径）。
+    #[must_use]
+    pub fn percent(&self) -> i32 {
+        self.done
+            .checked_mul(100)
+            .and_then(|scaled| scaled.checked_div(self.total))
+            .map_or(-1, |value| value as i32)
+    }
 }
 
 /// ⭐ **流式落盘**：渲一条、写一条、立刻释放那条的字节。
@@ -849,6 +881,26 @@ pub fn export_streaming(
     now_ms: u64,
     assets: &dyn render::AssetStore,
 ) -> Result<StemBatch, Fault> {
+    export_streaming_with_progress(project, project_path, request, now_ms, assets, &mut |_| {})
+}
+
+/// 带进度的流式落盘（T-FIX-936）。
+///
+/// `progress` 在逐轨循环起时报一次起始采样（`done == 0`、总数已定），此后每条
+/// 分轨渲染＋落盘完成后报一次（`done` 逐条 +1、带刚完成那条的轨名）；基线渲染
+/// 本身没有单独的采样 —— 它在第一个可数单位之前，宿主侧的同步"正在导出"写态
+/// 覆盖那一段（见 `yeban-app` 的 `report_stems_progress`）。回调在调用线程
+/// （GUI 侧是工作线程）同步执行，⛔ 不得在里面阻塞或做 I/O —— 只记数、只投递。
+///
+/// 本函数是 [`export_streaming`] 的带进度版（历史调用点不动）。
+pub fn export_streaming_with_progress(
+    project: &YebanProjectV1,
+    project_path: &Path,
+    request: &StemRequest,
+    now_ms: u64,
+    assets: &dyn render::AssetStore,
+    progress: &mut dyn FnMut(&StemProgress),
+) -> Result<StemBatch, Fault> {
     // B6（2026-11-14）：写盘口建目录（[`validate`] 只读不建）。流式路径的
     // 第一笔写发生在本函数内，因此创建也在这里、且在任何渲染之前 ——
     // 目录建不出来就不必先付 `N + 1` 次渲染的代价。
@@ -862,6 +914,7 @@ pub fn export_streaming(
         assets,
         // T-FIX-691：走带持久化读数的入口（旧入口把第 3.5 步的警告静默吞掉）。
         Some(&mut |path, bytes| store::write_project_atomic_with_durability(path, bytes)),
+        progress,
     )
 }
 
@@ -878,6 +931,7 @@ fn export_with_sink(
     now_ms: u64,
     assets: &dyn render::AssetStore,
     mut sink: StemWriter<'_>,
+    progress: &mut dyn FnMut(&StemProgress),
 ) -> Result<StemBatch, Fault> {
     // 0. `trackIds` 里的陌生身份 ⇒ 响亮拒绝（⛔ 不静默忽略拼错的 ULID，`G1` 的教训）。
     if let Some(ids) = &request.track_ids {
@@ -1035,6 +1089,15 @@ fn export_with_sink(
     // 随批次带回（[`StemBatch::durability_warnings`]）。
     let mut durability_warnings: Vec<String> = Vec::new();
     let mut renders = 1_usize;
+    // T-FIX-936：逐轨循环起时报一次起始采样（总数已定）；此后每条分轨
+    // 渲染＋落盘完成后报一次。基线渲染本身没有单独的采样 —— 它在第一个
+    // 可数单位之前，宿主侧的同步"正在导出"写态覆盖那一段。
+    let total = planned.len();
+    progress(&StemProgress {
+        done: 0,
+        total,
+        current: None,
+    });
     for (position, (track_id, name, file_name, path, kind)) in planned.into_iter().enumerate() {
         let mut stem_project = project_without_audition(project);
         match &kind {
@@ -1148,6 +1211,12 @@ fn export_with_sink(
             //    "一条"而不是"一条 × 已出轨数"。
             row.artifact.bytes = Vec::new();
         }
+        // T-FIX-936：这条分轨渲染＋落盘完成，报一次进度（轨名带给宿主拼读数）。
+        progress(&StemProgress {
+            done: position + 1,
+            total,
+            current: Some(row.name.clone()),
+        });
         stems.push(row);
     }
     // ⛔ 不做隐式 ` (1)` 去重：文件名前缀的序号在**全部**非 master 轨上唯一，

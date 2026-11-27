@@ -14113,6 +14113,113 @@ pub fn stems_render_failure_message(lang: crate::cli::Language) -> &'static str 
     }
 }
 
+/// T-FIX-936：分轨导出在途进度的起始文案（九语闭集）。
+///
+/// 总数要等后端分类完成才知道 —— 起始采样没有计数，只有这一句；第一条
+/// 回调采样起由 [`stems_progress_text`] 带 `done/total`。与
+/// [`stems_no_project_message`] 同制式（Rust 侧表，⛔ 不进 `.slint` 的 `@tr`）。
+pub fn stems_progress_start_message(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => "正在导出分轨…",
+        EnUs => "Exporting stems…",
+        FrFr => "Export des stems en cours…",
+        EsEs => "Exportando stems…",
+        PtBr => "Exportando stems…",
+        JaJp => "ステムを書き出し中…",
+        KoKr => "스템을 내보내는 중…",
+        RuRu => "Экспорт стемов…",
+        DeDe => "Stem-Export läuft…",
+    }
+}
+
+/// T-FIX-936：分轨导出在途进度的计数读数（九语闭集；动态拼串）。
+///
+/// `done == 0` 是循环起时的起始采样（总数已定、尚未完成一条）；`done > 0`
+/// 时 `current` 是刚完成那条分轨的轨名（`None` 时不缀轨名）。计数与轨名只
+/// 在这里拼一次 —— 工作线程只传采样，⛔ 不在这里之外另拼一份。
+#[must_use]
+pub fn stems_progress_text(
+    lang: crate::cli::Language,
+    done: usize,
+    total: usize,
+    current: Option<&str>,
+) -> String {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    let base = match lang {
+        ZhCn => format!("正在导出分轨 {done}/{total}"),
+        EnUs => format!("Exporting stems {done}/{total}"),
+        FrFr => format!("Export des stems {done}/{total}"),
+        EsEs => format!("Exportando stems {done}/{total}"),
+        PtBr => format!("Exportando stems {done}/{total}"),
+        JaJp => format!("ステム書き出し中 {done}/{total}"),
+        KoKr => format!("스템 내보내기 {done}/{total}"),
+        RuRu => format!("Экспорт стемов {done}/{total}"),
+        DeDe => format!("Stem-Export {done}/{total}"),
+    };
+    match current {
+        Some(name) => format!("{base} · {name}"),
+        None => base,
+    }
+}
+
+/// T-FIX-936：分轨输出目录建不出来的主文案（九语闭集）。
+///
+/// 只写用户能判断的两件事：没开始、下一步可做什么。I/O 原文⛔ 不进这里 ——
+/// 由 [`report_module_failure`] 放进结构化回执的 `detail=` 字段与 stderr。
+pub fn stems_mkdir_failure_message(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => "分轨导出没有开始：无法创建分轨输出目录。请确认输出目录可写，或换一个位置再试。",
+        EnUs => {
+            "Stem export didn't start: the stems output folder couldn't be created. Make sure the output folder is writable, or try another location."
+        }
+        FrFr => {
+            "L'export des stems n'a pas démarré : impossible de créer le dossier de sortie des stems. Vérifiez que le dossier de sortie est accessible en écriture, ou essayez un autre emplacement."
+        }
+        EsEs => {
+            "La exportación de stems no comenzó: no se pudo crear la carpeta de salida de stems. Asegúrate de que la carpeta de salida tenga permiso de escritura o prueba otra ubicación."
+        }
+        PtBr => {
+            "A exportação de stems não começou: não foi possível criar a pasta de saída de stems. Confirme se a pasta de saída permite escrita ou tente outro local."
+        }
+        JaJp => {
+            "ステム書き出しは開始されませんでした：ステムの出力先フォルダーを作成できませんでした。出力先フォルダーに書き込み権限があるか確認するか、別の場所をお試しください。"
+        }
+        KoKr => {
+            "스템 내보내기가 시작되지 않았습니다. 스템 출력 폴더를 만들 수 없습니다. 출력 폴더에 쓰기 권한이 있는지 확인하거나 다른 위치를 시도하세요."
+        }
+        RuRu => {
+            "Экспорт стемов не начался: не удалось создать папку вывода стемов. Убедитесь, что папка вывода доступна для записи, или попробуйте другое место."
+        }
+        DeDe => {
+            "Stem-Export nicht gestartet: Der Stem-Ausgabeordner konnte nicht erstellt werden. Prüfe, ob der Ausgabeordner beschreibbar ist, oder versuche einen anderen Ort."
+        }
+    }
+}
+
+/// 分轨导出在途进度写点（T-FIX-936：常驻状态行 ＋ 结构化回执，⛔ 不走 toast）。
+///
+/// 与 [`report_module_failure`] 的差别只有一处：这不是终局 ——
+/// `module-status-succeeded` 取 `true`（中性显示，不是错误档）；`module-status`
+/// 写结构化在途回执 `module:action=export-stems:outcome=in-progress:done=…:total=…`，
+/// 判据据此读计数。`module-status-text` 是调用方按当前语言拼好的人话读数
+/// （起始采样只有"正在导出分轨…"，总数要等分类完成才知道；第一条回调采样起带
+/// `done/total`）。终局写点仍是 [`apply_module_receipt`] / [`report_module_failure`]。
+pub fn report_stems_progress(ui: &MainWindow, text: &str, done: usize, total: usize) {
+    let receipt = module_receipt(
+        "export-stems",
+        &[
+            "outcome=in-progress".to_owned(),
+            format!("done={done}"),
+            format!("total={total}"),
+        ],
+    );
+    ui.set_module_status(receipt.into());
+    ui.set_module_status_text(text.into());
+    ui.set_module_status_succeeded(true);
+}
+
 /// T-FIX-912：模块失败的**唯一写点**（结构化回执 ＋ 人话回执行 ＋ 常驻错误提示条）。
 ///
 /// 与 [`report_notice`] 的差别只有一处：`module-status` 保留
@@ -14209,8 +14316,10 @@ fn humanize_module_receipt(receipt: &str) -> String {
     let action_zh = match action.as_str() {
         "export-wav" => "导出 WAV",
         // ⭐ T-FIX-167：`export-midi` 此前不在表里 ⇒ 成功也只剩「上一步操作完成」、
-        // 失败也只剩「上一步操作没做成」，原因永不显示。`export-stems` 目前走 toast
-        // 通道不经过回执，仍先登记 —— 哪天它走回执，直接有人话，不用再补表。
+        // 失败也只剩「上一步操作没做成」，原因永不显示。`export-stems` 的回执
+        // 人话（T-FIX-912 失败臂先行、T-FIX-936 成功终局补齐）已登记在这里 ——
+        // 终局写点见 `apply_module_receipt` / `report_module_failure`，在途进度
+        // 另走 `report_stems_progress`（不经过 `humanize_module_receipt`）。
         "export-midi" => "导出 MIDI",
         "export-stems" => "导出分轨",
         "import-midi" => "导入 MIDI",
@@ -33871,15 +33980,22 @@ pub fn wire_aether_actions(
                     // （GUI 目录选择器属后续切片，见 ADR-0076 B5。）
                     "export-stems" => {
                         let out_dir = stems_output_dir();
+                        let lang = current_language();
                         if let Err(err) = std::fs::create_dir_all(&out_dir) {
-                            ui.set_toast_message(
-                                format!("[导出] 无法创建分轨目录 {}：{err}", out_dir.display())
-                                    .into(),
+                            // ⭐ T-FIX-936：同步失败也走常驻回执口径（与 worker 失败臂
+                            // 同一条 `report_module_failure`），⛔ 不再只留一条 4 秒
+                            // 就收走的信息级 toast。I/O 原文进 `detail=`，人话行给下一步。
+                            report_module_failure(
+                                &ui,
+                                "export-stems",
+                                "stems-create-output-dir-failed",
+                                stems_mkdir_failure_message(lang),
+                                Some(&err.to_string()),
                             );
                             return;
                         }
                         let Some(project) = port.try_project() else {
-                            let human = stems_no_project_message(current_language());
+                            let human = stems_no_project_message(lang);
                             report_module_failure(
                                 &ui,
                                 "export-stems",
@@ -33906,24 +34022,75 @@ pub fn wire_aether_actions(
                         //   （`yeban-tui` 的 `archive.assets.clone()`）同口径。⛔ 不写死空池。
                         let assets = port.assets();
                         let worker = w.clone();
+                        let weak_progress = w.clone();
                         let out_for_msg = out_dir.clone();
-                        let lang = current_language();
-                        let _ = std::thread::spawn(move || {
-                            let result = crate::export_stems::export_stems(
+                        // ⭐ T-FIX-936：spawn 之前**同步**写可见在途状态 —— 长操作在
+                        // 工作线程返回之前不能静默。总数要等后端分类完成才知道，起始
+                        // 采样只有"正在导出分轨…"；第一条回调采样起带 `done/total`。
+                        report_stems_progress(&ui, stems_progress_start_message(lang), 0, 0);
+                        let export_worker = std::thread::spawn(move || {
+                            let mut progress = |sample: &yeban_mcp::domain::stems::StemProgress| {
+                                let text = stems_progress_text(
+                                    lang,
+                                    sample.done,
+                                    sample.total,
+                                    sample.current.as_deref(),
+                                );
+                                let done = sample.done;
+                                let total = sample.total;
+                                let _ = weak_progress.upgrade_in_event_loop(move |ui| {
+                                    report_stems_progress(&ui, &text, done, total);
+                                });
+                            };
+                            let result = crate::export_stems::export_stems_with_progress(
                                 &project,
                                 &project_path,
                                 &out_dir,
                                 None,
                                 &assets,
+                                &mut progress,
                             );
                             let _ = worker.upgrade_in_event_loop(move |ui| match result {
-                                Ok(report) => ui.set_toast_message(
-                                    // T-FIX-418：文案判定收进 `export_stems::toast_message`
-                                    // —— 音频片段有未渲染时降级为"分轨警告"，零未渲染时
-                                    // 仍是原来的"分轨完成"；这里只拼、不再判。
-                                    crate::export_stems::toast_message(&report, &out_for_msg)
-                                        .into(),
-                                ),
+                                Ok(report) => {
+                                    // ⭐ T-FIX-936：成功终局进常驻回执面（与 export-wav
+                                    // 同一条 `apply_module_receipt` 口径：结构化回执 ＋
+                                    // 人话回执行），再补一条带输出目录的提示条
+                                    // （`report_export_success`，T-FIX-57）。⛔ 不再只留
+                                    // 一条 4 秒就收走的 toast。T-FIX-418 的文案判定仍在
+                                    // `export_stems::toast_message` 里，这里只拼、不再判。
+                                    let mut fields = vec![
+                                        "outcome=ok".to_owned(),
+                                        format!("dir={}", out_for_msg.display()),
+                                        format!("stems={}", report.stems.len()),
+                                        format!("skipped={}", report.skipped.len()),
+                                        format!("bytes={}", report.bytes_total),
+                                        format!("renders={}", report.renders),
+                                        format!("manifest={}", report.manifest_path.display()),
+                                        format!(
+                                            "audio_clips_rendered={}",
+                                            report.audio_clips_rendered
+                                        ),
+                                        format!(
+                                            "audio_clips_skipped={}",
+                                            report.audio_clips_skipped
+                                        ),
+                                    ];
+                                    if !report.durability_warnings.is_empty() {
+                                        fields.push(format!(
+                                            "durability_warnings={}",
+                                            report.durability_warnings.len()
+                                        ));
+                                    }
+                                    apply_module_receipt(
+                                        &ui,
+                                        &module_receipt("export-stems", &fields),
+                                        true,
+                                    );
+                                    report_export_success(
+                                        &ui,
+                                        &crate::export_stems::toast_message(&report, &out_for_msg),
+                                    );
+                                }
                                 Err(err) => {
                                     let human = stems_render_failure_message(lang);
                                     report_module_failure(
@@ -33936,6 +34103,12 @@ pub fn wire_aether_actions(
                                 }
                             });
                         });
+                        // ⭐ T-FIX-936：存句柄供 `wait_for_pending_export` 做确定性
+                        // 等待（与 export-wav 的 T-FIX-469 同一手法；并发导出时后者
+                        // 覆盖前者，⛔ 不改变导出行为）。
+                        if let Ok(mut pending) = PENDING_EXPORT_WORKER.lock() {
+                            *pending = Some(export_worker);
+                        }
                     }
                     // ⭐ 菜单「退出 Yeban」：先藏窗口再退事件循环。
                     // `main.rs` 走 `slint::ComponentHandle::run(&ui)` ⇒ `quit_event_loop()`

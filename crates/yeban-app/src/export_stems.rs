@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 use yeban_mcp::domain::error::Fault;
-use yeban_mcp::domain::stems::{self, StemBatch};
+use yeban_mcp::domain::stems::{self, StemBatch, StemProgress};
 use yeban_model::{AssetHash, YebanProjectV1};
 
 /// 回执前缀（稳定前缀，判据与脚本据此切片）。
@@ -277,6 +277,30 @@ pub fn export_stems(
     track_ids: Option<&[String]>,
     assets: &[(AssetHash, Vec<u8>)],
 ) -> Result<ExportStemsReport, ExportStemsError> {
+    export_stems_with_progress(
+        project,
+        project_path,
+        out_dir,
+        track_ids,
+        assets,
+        &mut |_| {},
+    )
+}
+
+/// 带进度的分轨导出（T-FIX-936）。
+///
+/// `progress` 在逐轨循环起时与每条分轨落盘后各报一次（见
+/// [`StemProgress`]）；本函数是 [`export_stems`] 的带进度版（历史调用点不动）。
+/// manifest 写盘在流式导出返回后发生，那一步没有单独的进度采样 —— 它是一次
+/// 小 JSON 写盘，终局回执紧随其后。
+pub fn export_stems_with_progress(
+    project: &YebanProjectV1,
+    project_path: &Path,
+    out_dir: &Path,
+    track_ids: Option<&[String]>,
+    assets: &[(AssetHash, Vec<u8>)],
+    progress: &mut dyn FnMut(&StemProgress),
+) -> Result<ExportStemsReport, ExportStemsError> {
     let mut arguments = Map::new();
     arguments.insert(
         "outDir".to_owned(),
@@ -294,12 +318,13 @@ pub fn export_stems(
     //   批处理没有 `dryRun`，没有理由把 N 条分轨全攒在内存里再统一写盘。
     //   实测读数不变（同一条渲染链、同一条容器编码），内存峰值从
     //   `N × 单轨字节` 降到 `1 × 单轨字节`。
-    let batch: StemBatch = stems::export_streaming(
+    let batch: StemBatch = stems::export_streaming_with_progress(
         project,
         project_path,
         &request,
         crate::host::now_ms(),
         &pool,
+        progress,
     )?;
     // manifest 在分轨全部落盘后写（失败 ⇒ 整批以 `Fault` 响亮失败，⛔ 不假装
     // 索引已落盘）；内容与 MCP 腿的 `stems::write` 写的那份同一实现。
