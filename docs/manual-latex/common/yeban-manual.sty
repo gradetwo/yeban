@@ -96,8 +96,9 @@
 \NewDocumentCommand{\term}{m g}{#1\IfValueTF{#2}{\index{#2}}{\index{#1}}}
 
 % Classical epigraph at the top right of the chapter opening:
-% right-aligned block (kai/large original, small source under it,
-% small gloss), then a clear blank gap before the body text.
+% right-aligned block (kai/large original, small source under it),
+% then a clear blank gap. The gloss is a left-aligned body lead-in,
+% not part of the epigraph block.
 % \classquote{original}{source}{gloss}; source and gloss may be
 % empty (chapter mottos use the same block).
 \newcommand{\classquote}[3]{%
@@ -107,11 +108,11 @@
       \@ifpackageloaded{ctex}{{\kaishu\Large #1}}{{\Large #1}}\par
       \def\yeban@cq@src{#2}\ifx\yeban@cq@src\empty\else
         \vspace{3pt}{\small\color{yebangrey}—— #2}\par\fi
-      \def\yeban@cq@gloss{#3}\ifx\yeban@cq@gloss\empty\else
-        \vspace{3pt}{\small #3}\par\fi
     \end{minipage}%
   \end{flushright}%
-  \vspace{1.2cm}\par}
+  \vspace{1.2cm}%
+  \def\yeban@cq@gloss{#3}\ifx\yeban@cq@gloss\empty\else
+    \par\noindent #3\par\fi}
 
 \newenvironment{exercise}{\par\smallskip\noindent\textbf{Exercise.}\ }{\par\smallskip}
 \newenvironment{helpmapping}{\par\smallskip\noindent\textbf{Help-topic mapping.}\par\smallskip}{\par\smallskip}
