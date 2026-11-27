@@ -11442,6 +11442,12 @@ impl PortOpenProject {
         let width = slint::ComponentHandle::window(ui).size().width as f32;
         ui.set_roll_scroll_x(scroll_x);
         apply_view(ui, &view, width, scroll_x);
+        // ⭐ ISS-MWY4XSFK-71563F：界面已经是新工程 ⇒ **立刻**按新工程重播缺失音源
+        // 面板。必须放在换代之前：SFZ 摊平时换代就可能失败，而那正是用户最需要
+        // 「哪条轨缺哪件、点哪里下载」的时候；面板不依赖引擎，只读工程与资产池。
+        self.port.with_project(|project| {
+            let _ = publish_missing_sounds_for_project(ui, project, project_dir);
+        });
         // ⑤ 引擎换代：新快照 / 新队列 / 新的电平消费端。
         //
         // ⚠ 边界（**既有的**，不是本单引入）：若 `reload` 失败，界面**已经是**新工程
@@ -11578,17 +11584,39 @@ impl PortOpenProject {
         // ⑥ 装配方自己的那一跳（心跳对齐基准 / 保存落点 / 静态快照）。
         // T-FIX-428：`after` 不再接 `&project` 参数 —— 它自己从端口取快照
         // （见 [`OpenProjectAfter`]）；这里只传落点与 ② 那一份投影。
-        (self.after)(
+        if let Err(error) = (self.after)(
             ui,
             source_path.unwrap_or_else(|| std::path::Path::new(label)),
             &view,
-        )?;
+        ) {
+            // 界面已经换了新工程；`after` 失败属于装配收尾，不能只写状态栏。
+            let message = format!(
+                "{OPEN_PROJECT_UI_SWAPPED_PREFIX}{label}`，但装配收尾失败（界面已是新工程，保存落点 / 走带 / 按键快照可能仍是上一版）：{error}。请重新打开这个工程；若仍失败，请打开「诊断」查看详情。"
+            );
+            ui.set_toast_message(message.clone().into());
+            ui.set_toast_is_error(true);
+            ui.set_show_floating_toast(true);
+            return Err(message);
+        }
         if let Some(error) = reload_error {
             // 界面已经换了新工程 ⇒ 这一句**如实**说明"播放侧还是上一版"（不静默）。
-            return Err(format!(
-                "{OPEN_PROJECT_UI_SWAPPED_PREFIX}{label}`，\
-                 但引擎换代失败（播放侧仍是上一版）: {error}"
-            ));
+            // ⭐ ISS-MWY4XSFK-71563F：不能只写 `module-status` 一行 —— 同时走既有
+            // 「引擎错误横幅」唯一写者 [`apply_engine_error`]，并把**恢复路径**写进
+            // 常驻提示条。SFZ 摊平失败时，缺失音源面板已在 ④ 之后摆出；横幅再把
+            // 用户指向「音源管理 / 诊断」。
+            let recovery = if error.contains("SFZ") || error.contains("sfz") {
+                "请先在缺失音源面板里「换成…」或「下载原音源」，装好 / 换好后重新打开这个工程。"
+            } else {
+                "请打开「诊断」查看详情并重新打开工程；若仍失败，请换回上一个工程。"
+            };
+            let message = format!(
+                "{OPEN_PROJECT_UI_SWAPPED_PREFIX}{label}`，但引擎换代失败（播放侧仍是上一版）。{recovery}错误：{error}"
+            );
+            apply_engine_error(ui, EnginePublishOutcome::Failed(&error));
+            ui.set_toast_message(message.clone().into());
+            ui.set_toast_is_error(true);
+            ui.set_show_floating_toast(true);
+            return Err(message);
         }
         Ok(())
     }
@@ -11617,8 +11645,10 @@ fn open_project_error_left_ui_swapped(message: &str) -> bool {
 /// 只有在没有 `--open` 启动时才由装配点打开，而菜单里的「打开工程」「新建工程」
 /// 「从模板新建」在启动器开着的时候同样是可点的——这些路径先前只写自己的回执、
 /// 不关启动器，于是出现「工程已经加载完、启动器窗口还盖在上面不消失」
-/// （2026-11-18 报的启动器问题）。打开失败时**不**关：选择器留着让用户换一条再试，
-/// 与 [`wire_startup_chooser`] 的失败口径一致。
+/// （2026-11-18 报的启动器问题）。**界面还没换**的失败不关：选择器留着让用户换一条
+/// 再试；但换代 / 收尾失败时界面**已经**是新工程 —— 那种失败也必须关（见
+/// [`OPEN_PROJECT_UI_SWAPPED_PREFIX`]），否则用户被卡在选择器后面、只能从状态栏
+/// 猜发生了什么（ISS-MWY4XSFK-71563F）。
 pub fn close_startup_chooser(ui: &MainWindow) {
     ui.set_startup_chooser_open(false);
 }
@@ -11872,11 +11902,13 @@ pub fn apply_pending_open_project(
     let Some(outcome) = state.slot.lock().ok().and_then(|mut slot| slot.take()) else {
         return false;
     };
+    let mut ui_swapped = false;
     let (receipt, ok) = match outcome {
         OpenProjectLoadOutcome::Loaded(document) => {
             let label = path.display().to_string();
             match runtime.open_archive(ui, &label, document.archive, path.parent(), Some(&path)) {
                 Ok(()) => {
+                    ui_swapped = true;
                     crate::settings::record_recent_project(
                         &path,
                         yeban_model::project::now_unix_ms(),
@@ -11898,13 +11930,18 @@ pub fn apply_pending_open_project(
                         true,
                     )
                 }
-                Err(message) => (
-                    module_receipt(
-                        "open-project",
-                        &module_error_fields("open-project", &message),
-                    ),
-                    false,
-                ),
+                Err(message) => {
+                    // 换代 / `after` 收尾失败发生在**界面已经换掉之后**：选择器必须
+                    // 关掉（否则用户被卡在旧弹窗后面），但回执仍是失败。
+                    ui_swapped = open_project_error_left_ui_swapped(&message);
+                    (
+                        module_receipt(
+                            "open-project",
+                            &module_error_fields("open-project", &message),
+                        ),
+                        false,
+                    )
+                }
             }
         }
         OpenProjectLoadOutcome::Failed(message) => (
@@ -11931,7 +11968,7 @@ pub fn apply_pending_open_project(
     ui.set_open_project_loading(false);
     ui.set_open_project_progress(if ok { 1.0 } else { 0.0 });
     ui.set_open_project_status(String::new().into());
-    if ok {
+    if ok || ui_swapped {
         close_startup_chooser(ui);
     }
     apply_module_receipt(ui, &receipt, ok);
@@ -13415,6 +13452,12 @@ pub fn wire_startup_chooser(
             let started = std::time::Instant::now();
             let category = ui.get_startup_category();
             let fail = |ui: &MainWindow, code: &str, message: &str| {
+                // 界面已经换成新工程、只是换代 / 收尾失败 ⇒ 选择器同样必须关；
+                // 缺失音源面板与引擎错误横幅已由 `open_archive_runtime` 那条**同一段**
+                // 固定动作摆好（ISS-MWY4XSFK-71563F）。
+                if open_project_error_left_ui_swapped(message) {
+                    ui.set_startup_chooser_open(false);
+                }
                 let receipt =
                     module_receipt("startup-chooser", &module_error_fields(code, message));
                 apply_module_receipt(ui, &receipt, false);
@@ -36602,6 +36645,50 @@ pub fn rescue_after_pack_installed(ui: &MainWindow, pack_id: &str) {
             false,
         );
     });
+}
+
+/// ⭐ **运行期换工程后重播缺失音源面板**（ISS-MWY4XSFK-71563F）。
+///
+/// 旧行为只在**启动**算一次 `missing_sounds::collect`，启动选择器 / 菜单打开 /
+/// 模板副本在运行期换工程时既不重算也不摆面板；若换代在 SFZ 摊平处失败，用户只看到
+/// 状态栏一行。本函数由 [`PortOpenProject::open_archive_runtime`] 在**换会话并注入
+/// 界面之后**调用，因此"界面已经换、播放侧没换"的那条失败路径也一定会摆出可操作
+/// 的救援面板。
+///
+/// 只更新已装配的救援面板（`wire_missing_sounds_dialog` 是单槽回调，**不能**在运行期
+/// 重接）；未装配的装配体返回 `false`，⛔ 不假装面板已出现。
+///
+/// `rows` 按新工程整体替换，`pending` 清空：旧工程的"下载完换到第 N 轨"不能跨工程
+/// 落到新工程的同名下标上。
+#[must_use]
+pub fn publish_missing_sounds_for_project(
+    ui: &MainWindow,
+    project: &yeban_model::YebanProjectV1,
+    project_dir: Option<&std::path::Path>,
+) -> bool {
+    let items = crate::missing_sounds::collect(project, project_dir);
+    let rows = RESCUE_SINK.with(|slot| {
+        let Ok(mut guard) = slot.try_borrow_mut() else {
+            return None;
+        };
+        let sink = guard.as_mut()?;
+        *sink.rows.borrow_mut() = items;
+        sink.pending.clear();
+        Some(Rc::clone(&sink.rows))
+    });
+    let Some(rows) = rows else {
+        return false;
+    };
+    publish_missing_rows(ui, &rows);
+    let open = !rows.borrow().is_empty();
+    let was_open = ui.get_missing_sounds_open();
+    ui.set_missing_sounds_open(open);
+    if open {
+        ui.invoke_focus_missing_sounds_dialog();
+    } else if was_open {
+        ui.invoke_focus_shortcut_layer();
+    }
+    true
 }
 
 /// 接线：把"打开工程时发现的缺失"交给救援面板，并接管它的三个动作。

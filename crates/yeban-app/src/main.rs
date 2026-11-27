@@ -1247,9 +1247,11 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             .clone()
             .map(|id| (id, row.pack_name.clone().unwrap_or_default()))
     });
-    if !missing_sounds.is_empty() {
-        host::wire_missing_sounds_dialog(&ui, Rc::clone(&undo_port), missing_sounds);
-    }
+    // ⭐ ISS-MWY4XSFK-71563F：**总是**装配救援面板（空表 ⇒ 面板保持关闭）。
+    // 运行期换工程（启动选择器 / 菜单打开 / 模板副本）要能在同一条 `on_missing_*`
+    // 回调上重播新的缺失清单；只在"启动时有缺失"才装配，会让运行期打开缺音源工程
+    // 时**根本没有面板可摆**（`RESCUE_SINK` 为空）。
+    host::wire_missing_sounds_dialog(&ui, Rc::clone(&undo_port), missing_sounds);
     if std::env::var("YEBAN_UI_RESCUE_DOWNLOAD")
         .map(|value| value.trim() == "1")
         .unwrap_or(false)

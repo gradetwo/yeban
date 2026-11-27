@@ -801,8 +801,26 @@ impl LiveAdminSurface {
             self.undo.clone(),
         );
         if self.engine.borrow().has_engine() {
-            let rebuild = self.rebuild_engine()?;
-            self.meters.adopt(rebuild.collector);
+            match self.rebuild_engine() {
+                Ok(rebuild) => self.meters.adopt(rebuild.collector),
+                Err(error) => {
+                    // 界面已经换到新工程、播放侧仍是上一版：不能只把这个分叉留在控制面
+                    // 的 `Err` 里。走既有的「引擎错误横幅」唯一写者，并写明恢复路径
+                    // （ISS-MWY4XSFK-71563F）。
+                    let text = format!(
+                        "界面已是新工程，但引擎换代失败（播放侧仍是上一版）：{error}。\
+                         请打开「诊断」查看详情并重新打开工程；若仍失败，请换回上一个工程。"
+                    );
+                    host::apply_engine_error(
+                        &self.window,
+                        host::EnginePublishOutcome::Failed(&text),
+                    );
+                    self.window.set_toast_message(text.into());
+                    self.window.set_toast_is_error(true);
+                    self.window.set_show_floating_toast(true);
+                    return Err(error);
+                }
+            }
         }
         self.pump_meters();
         Ok(())
