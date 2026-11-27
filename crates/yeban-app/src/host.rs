@@ -23798,6 +23798,8 @@ fn commit_roll_auto_draw(
                 .commit_ops(now_ms(), "pencil: add note", inserted.ops.clone())
                 .is_err()
             {
+                // ⭐ T-FIX-581：建音符的模型拒绝必须出声（此前直接 return = "点了但什么都没发生"）。
+                report_roll_edit_rejected(ui, "建音符被拒：模型拒绝了这一次提交（工程未改）");
                 return;
             }
             if let Some(updated_project) = port.try_project() {
@@ -23818,7 +23820,8 @@ fn commit_roll_auto_draw(
         }
         Err(refusal) => {
             if let Some(reason) = refusal.reason() {
-                ui.set_roll_edit_status(reason.into());
+                // ⭐ T-FIX-581：与移动臂同形 —— 提示条也要出声（此前只写状态行，不进提示条）。
+                report_roll_edit_rejected(ui, reason);
             }
         }
     }
@@ -24925,12 +24928,23 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     };
                     let ops = delete_ops_for(project, &[view.notes[index].id.clone()]);
                     if ops.is_empty() {
+                        // ⭐ T-FIX-581：空批不静默 —— 命中的身份解析不出任何 `Op::DeleteNote`
+                        // （已被删 / 片段没有摆放）⇒ 如实写"没有可删除的对象"。
+                        report_roll_edit_rejected(
+                            &ui,
+                            "删除没有生效：没有可删除的对象（音符身份已失效，可能已被删除）",
+                        );
                         return;
                     }
                     if port
                         .commit_ops(now_ms(), "eraser: delete note", ops)
                         .is_err()
                     {
+                        // ⭐ T-FIX-581：模型拒绝必须出声（此前直接 return = "点了但什么都没发生"）。
+                        report_roll_edit_rejected(
+                            &ui,
+                            "删除被拒：模型拒绝了这一次提交（工程未改）",
+                        );
                         return;
                     }
                     // 被删的身份已经不存在 ⇒ 选区必须清空（与键盘 `DeleteSelection` 同一取向，
@@ -25012,13 +25026,29 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                             })
                             .unwrap_or(0);
                     let Some(local_split_tick) = split_tick.checked_sub(placement_start) else {
+                        // ⭐ T-FIX-581：吸附点早于片段起点（越界）也不静默。
+                        report_roll_edit_rejected(
+                            &ui,
+                            "切分没有生效：切分点越界，没有可切分的对象",
+                        );
                         return;
                     };
                     let ops = split_ops_for(project, &view.notes[index].id, local_split_tick);
                     if ops.is_empty() {
+                        // ⭐ T-FIX-581：退化切分（吸附点不严格落在音符内部）不静默 ——
+                        // 此前直接 return = "点了但什么都没发生"。
+                        report_roll_edit_rejected(
+                            &ui,
+                            "切分没有生效：切分点不在音符内部，没有可切分的对象",
+                        );
                         return;
                     }
                     if port.commit_ops(now_ms(), "knife: split note", ops).is_err() {
+                        // ⭐ T-FIX-581：模型拒绝必须出声。
+                        report_roll_edit_rejected(
+                            &ui,
+                            "切分被拒：模型拒绝了这一次提交（工程未改）",
+                        );
                         return;
                     }
                     // 原文的身份已经不存在（被删了）⇒ 选区必须清空，与橡皮擦同一取向：
@@ -25059,6 +25089,23 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                     let ops =
                         velocity_restore_default_ops_for(project, &view.notes[index].id, &selected);
                     if ops.is_empty() {
+                        // ⭐ T-FIX-581：空批不许静默 —— 区分已是默认力度与身份失效。
+                        let resolves = view.notes[index]
+                            .id
+                            .parse::<yeban_model::EntityId>()
+                            .ok()
+                            .and_then(|id| note_identity_for(project, id));
+                        let reason = match resolves {
+                            Some((_, _, old_vel))
+                                if old_vel == yeban_model::music::DEFAULT_VELOCITY =>
+                            {
+                                "力度恢复没有生效：已是默认力度 100，没有可改动的对象"
+                            }
+                            _ => {
+                                "力度恢复没有生效：没有可改动的对象（音符身份已失效，可能已被删除）"
+                            }
+                        };
+                        report_roll_edit_rejected(&ui, reason);
                         return;
                     }
                     // **一个原子 batch = 一步撤销**（⛔ 不走拖拽臂的草稿路径：这是离散点击手势）。
@@ -25066,6 +25113,11 @@ fn install_roll_click(ui: &MainWindow, fallback_view: Rc<ViewState>, port: Optio
                         .commit_ops(now_ms(), "velocity: restore default", ops)
                         .is_err()
                     {
+                        // ⭐ T-FIX-581：模型拒绝必须出声（此前直接 return = "点了但什么都没发生"）。
+                        report_roll_edit_rejected(
+                            &ui,
+                            "力度恢复被拒：模型拒绝了这一次提交（工程未改）",
+                        );
                         return;
                     }
                     reproject_roll(&ui, port, width, scroll);
@@ -25819,7 +25871,24 @@ fn commit_note_drag(
             &project, &selected, 0, delta_tick,
         ));
         if ops.is_empty() {
-            // 没跨过网格 / 每颗都已夹到最小格 ⇒ 一次空 op 都不提交。
+            // ⭐ T-FIX-581：空批不静默。`delta_tick == 0`（没跨过吸附网格）是良性微手势，
+            // 与移动臂的零位移静默同一取向（审计未计该处）；这里只对「位移非零但一颗都没改成」
+            // 出声：拖动身份已失效（解析不出），或每颗都已夹回现值（已到最小时值下限）。
+            // 两种语义按同一份权威工程区分（`note_drag_resize_ops_for` 的空批恰是这两种）。
+            if delta_tick != 0 {
+                let dragged_id = note.parse::<yeban_model::EntityId>().ok();
+                let resolves = dragged_id
+                    .and_then(|id| note_identity_for(&project, id))
+                    .and_then(|(clip_id, _, _)| project.clip_pool.get(&clip_id))
+                    .and_then(|entry| entry.content.notes())
+                    .and_then(|notes| dragged_id.and_then(|id| notes.get(&id)));
+                let reason = match resolves {
+                    // 身份在工程里 ⇒ 改不动只能是夹到了下限（位移非零已排除零位移情形）。
+                    Some(_) => "时值调整没有生效：没有可改动的对象（已到最小时值下限）",
+                    None => "时值调整没有生效：没有可改动的对象（音符身份已失效，可能已被删除）",
+                };
+                report_roll_edit_rejected(ui, reason);
+            }
             return;
         }
         let label = if ops.len() > 1 {
@@ -25828,8 +25897,13 @@ fn commit_note_drag(
             "pencil: resize note duration"
         };
         if port.commit_ops(now_ms(), label, ops).is_err() {
+            // ⭐ T-FIX-581：模型拒绝必须出声（此前直接 return = "拖了但什么都没发生"）。
+            // `SetNoteTiming` 是**绝对**载荷（old/new 成对）⛔ 不重试：重试会拿陈旧 old 再写。
+            report_roll_edit_rejected(ui, "时值调整被拒：模型拒绝了这一次提交（工程未改）");
             return;
         }
+        // ⭐ T-FIX-581：与移动臂同形 —— 成功后清掉自己写过的拒绝文案。
+        clear_own_rejection_status(ui);
         let width = slint::ComponentHandle::window(ui).size().width as f32;
         reproject_roll(ui, port, width, scroll);
         return;
@@ -25858,10 +25932,8 @@ fn commit_note_drag(
     ));
     if ops.is_empty() {
         // ⭐ T-FIX-210：解析失败 = 音符身份已失效（已被删 / 不在工程里）⇒ 写回执，
-        // 否则用户只看到"拖了又弹回"。
-        let reason = "音符拖动被拒：音符身份已失效（可能已被删除）";
-        ui.set_roll_edit_status(reason.into());
-        update_toast(ui, reason);
+        // 否则用户只看到"拖了又弹回"。T-FIX-581 起两写收进同形入口。
+        report_roll_edit_rejected(ui, "音符拖动被拒：音符身份已失效（可能已被删除）");
         return;
     }
     let label = if ops.len() > 1 {
@@ -25872,10 +25944,8 @@ fn commit_note_drag(
     if port.commit_ops(now_ms(), label, ops).is_err() {
         // 模型拒绝（结果越界 / 身份已不存在）⇒ 如实什么都不做，⛔ **不重试**：
         // `Op::MoveNote` 是**相对**变换，重试会把同一个增量再加一次。
-        // ⭐ T-FIX-210：拒绝必须出声，否则"弹回"没有原因。
-        let reason = "音符拖动被拒：已到音高上限/下限或已到时间轴边界";
-        ui.set_roll_edit_status(reason.into());
-        update_toast(ui, reason);
+        // ⭐ T-FIX-210：拒绝必须出声，否则"弹回"没有原因。T-FIX-581 起两写收进同形入口。
+        report_roll_edit_rejected(ui, "音符拖动被拒：已到音高上限/下限或已到时间轴边界");
         return;
     }
     clear_own_rejection_status(ui);
@@ -26058,14 +26128,31 @@ fn commit_velocity_drag(ui: &MainWindow, port: Option<&Rc<UndoPort>>, _x: f32, y
     let delta = i16::from(new_vel) - i16::from(start_vel);
     let ops = velocity_drag_ops_for(&project, &note, &selected, delta);
     if ops.is_empty() {
+        // ⭐ T-FIX-581：空批不许静默 —— 区分力度没变与身份失效。
+        let resolves = note
+            .parse::<yeban_model::EntityId>()
+            .ok()
+            .and_then(|id| note_identity_for(&project, id));
+        let reason = match resolves {
+            Some((_, _, old_vel)) if old_vel == new_vel => {
+                "力度调整没有生效：力度没有变化，没有可改动的对象"
+            }
+            _ => "力度调整没有生效：没有可改动的对象（音符身份已失效，可能已被删除）",
+        };
+        report_roll_edit_rejected(ui, reason);
         return;
     }
     if port
         .commit_ops(now_ms(), "velocity: adjust note velocity", ops)
         .is_err()
     {
+        // ⭐ T-FIX-581：模型拒绝必须出声（此前直接 return = "拖了但什么都没发生"）。
+        // `ModifyNoteVelocity` 是绝对载荷（old/new 成对）⛔ 不重试。
+        report_roll_edit_rejected(ui, "力度调整被拒：模型拒绝了这一次提交（工程未改）");
         return;
     }
+    // ⭐ T-FIX-581：与移动臂同形 —— 成功后清掉自己写过的拒绝文案。
+    clear_own_rejection_status(ui);
     let width = slint::ComponentHandle::window(ui).size().width as f32;
     let scroll = ui.get_roll_scroll_x();
     reproject_roll(ui, port, width, scroll);
@@ -31743,13 +31830,26 @@ use crate::ui::{PianoRollNote, TimelineBlockData, TrackData};
 ///
 /// 只认本单三条前缀：`选区已到边界` / `模型拒绝：选区` / `音符拖动被拒`。用户在边界上
 /// 按到一次、随后挪成功时，旧的拒绝文案不该继续挂在钢琴卷帘状态行上。
+///
+/// ⭐ T-FIX-581：五条提交路径（改时值 / 力度 / 建音符 / 橡皮擦 / 剪刀）的拒绝/空批文案
+/// 也由同一条回执通道（[`report_roll_edit_rejected`]）写出，因此清空前缀随之扩展：
+/// `时值调整` / `力度调整` / `力度恢复` / `建音符` / `删除` / `切分`。
+/// ⛔ 不收「试听提示」「新建音符被拒绝」（步进格另一条通道自己的文案，有自己的清理点）。
 fn clear_own_rejection_status(ui: &MainWindow) {
+    const OWN_PREFIXES: [&str; 9] = [
+        "选区已到边界",
+        "模型拒绝：选区",
+        "音符拖动被拒",
+        "时值调整",
+        "力度调整",
+        "力度恢复",
+        "建音符",
+        "删除",
+        "切分",
+    ];
     let current = ui.get_roll_edit_status();
     let text = current.as_str();
-    if text.starts_with("选区已到边界")
-        || text.starts_with("模型拒绝：选区")
-        || text.starts_with("音符拖动被拒")
-    {
+    if OWN_PREFIXES.iter().any(|prefix| text.starts_with(prefix)) {
         ui.set_roll_edit_status("".into());
     }
 }
@@ -31771,6 +31871,24 @@ fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
     // 常规提示 = 信息级：几秒后自动收走（错误级的常驻见 `report_notice`）。
     ui.set_toast_is_error(false);
     ui.set_toast_message(s);
+}
+
+/// ⭐ T-FIX-581：卷帘五条提交路径（改时值 / 力度 / 建音符 / 橡皮擦 / 剪刀）在模型拒绝
+/// 或空批时的**统一回执** —— 与移动臂（`T-FIX-210`）同形：`roll-edit-status` ＋
+/// [`update_toast`] 两处都写。
+///
+/// 为什么抽函数：移动臂此前是两行内联（`set_roll_edit_status` ＋ `update_toast`），
+/// 五条路径补回执时再各写一遍就是十几份复制 —— 抽成唯一入口，形状漂移由编译挡住。
+/// ⛔ 默认不能静默（Wang 2026-11-18 定）：五条路径的 err 分支与空批**都必须**经这里出声，
+/// 否则用户看到的是「点了但什么都没发生」，与卡住不可区分。
+///
+/// 与 [`report_rejected`] 的分工：那条走 `report_notice`（模块回执行 + 错误级常驻提示条），
+/// 服务于 mixer / device 等模块动作；本条走卷帘自己的 `roll-edit-status` 行 + 信息级提示条
+/// —— 同一条手势通道的既有口径（`音符拖动被拒：…` 就是这条形状），五条路径照旧。
+pub fn report_roll_edit_rejected(ui: &MainWindow, reason: impl Into<SharedString>) {
+    let reason: SharedString = reason.into();
+    ui.set_roll_edit_status(reason.clone());
+    update_toast(ui, reason);
 }
 
 fn place_latest_audio_clip(ui: &MainWindow, port: &UndoPort) {

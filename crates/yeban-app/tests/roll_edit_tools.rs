@@ -4324,3 +4324,264 @@ fn a_group_resize_changes_every_selected_duration_and_clamps_at_the_grid_minimum
         "零位移不得产 op"
     );
 }
+
+// ===========================================================================
+// T-FIX-581：卷帘五条提交路径的拒绝 / 空批回执（roll-edit-status + update_toast 同形两写）
+// ===========================================================================
+//
+// ## 判据面与现状
+//
+// 活体指针注入在这个面上不可达（本文件 40 条降级判据的同一现状：旧组件树的视觉元素
+// 不再进控件树），但 **Slint 根回调的直接 invoke 仍可达**（`aether_piano_roll.rs` 的
+// 铅笔判据同款：`ui.invoke_clicked`）。因此本节判据分两层：
+//
+// - **行为判据**（活体、红对照先行）：直接 invoke 驱动两条**空批**路径 ——
+//   ① 力度工具**双击已是默认力度 100** 的音符（夹具四颗音符全部是 100）⇒ 修复前
+//   `roll-edit-status` 为**空**（`velocity_op_for` 返回 `None` 后直接 return，无任何
+//   界面写入），修复后逐字命中语义文案；② 剪刀点在音符**左沿**（吸附后 == 音符起点，
+//   退化切分 ⇒ `split_ops_for` 空集）⇒ 同上。
+// - **契约判据**（防漂移）：同形回执函数存在（`roll-edit-status` ＋ `update_toast`
+//   两写都在函数体内）、五条路径的拒绝与空批文案逐字就位、成功清理前缀覆盖新文案家族。
+//
+// ## 文案语言前提
+//
+// 卷帘状态行的运行时文案是 **zh-CN 源语言字面量** —— 与既有 `音符拖动被拒：…` 同一条
+// 通道；`translations/*/LC_MESSAGES/yeban-app.po` 只覆盖 `ui/**/*.slint` 的 `@tr` 集合
+// （`i18n_coverage.rs` 的对账口径），Rust 侧运行时文案按既有口径不入词表。本节对文案的
+// 断言逐字钉 zh-CN 字面量 —— 这就是「断言 UI 文案的判据钉语言前提」的落点。
+
+/// 契约判据：同形回执函数 + 五条路径的拒绝/空批文案逐字就位。
+///
+/// 红对照：本判据在修复前 main 上整体红 —— 回执函数与全部新文案都不存在
+/// （ISS-MWX74WAJ-B22B67 / wb-kong T-FIX-517 审计的七处静默点）。
+#[test]
+fn t_fix_581_roll_rejection_receipt_contract_pins_the_five_paths() {
+    let host = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
+    )
+    .expect("读 host.rs");
+    assert!(
+        host.contains("pub fn report_roll_edit_rejected"),
+        "同形回执函数必须存在（roll-edit-status + update_toast 两写）"
+    );
+    // 回执函数体必须同形两写（状态行 + 提示条都在函数里，调用方不许各写一份）。
+    let fn_start = host
+        .find("pub fn report_roll_edit_rejected")
+        .expect("回执函数位置");
+    let fn_body = &host[fn_start..fn_start + 500];
+    assert!(
+        fn_body.contains("set_roll_edit_status") && fn_body.contains("update_toast"),
+        "回执函数必须同形两写：roll-edit-status + update_toast"
+    );
+    for literal in [
+        // 移动臂（T-FIX-210 既有文案，重构后仍走同一条入口）
+        "音符拖动被拒：音符身份已失效（可能已被删除）",
+        "音符拖动被拒：已到音高上限/下限或已到时间轴边界",
+        // 改时值（拖拽臂：err 分支 + 空批两语义）
+        "时值调整被拒：模型拒绝了这一次提交（工程未改）",
+        "时值调整没有生效：没有可改动的对象（音符身份已失效，可能已被删除）",
+        "时值调整没有生效：没有可改动的对象（已到最小时值下限）",
+        // 力度（拖拽臂 + 双击恢复默认）
+        "力度调整被拒：模型拒绝了这一次提交（工程未改）",
+        "力度调整没有生效：没有可改动的对象（音符身份已失效，可能已被删除）",
+        "力度调整没有生效：力度没有变化，没有可改动的对象",
+        "力度恢复被拒：模型拒绝了这一次提交（工程未改）",
+        "力度恢复没有生效：已是默认力度 100，没有可改动的对象",
+        "力度恢复没有生效：没有可改动的对象（音符身份已失效，可能已被删除）",
+        // 建音符（铅笔/双击的 commit err；refusal 分支此前只写状态行，现在同形两写）
+        "建音符被拒：模型拒绝了这一次提交（工程未改）",
+        // 橡皮擦（空批 + err）
+        "删除没有生效：没有可删除的对象（音符身份已失效，可能已被删除）",
+        "删除被拒：模型拒绝了这一次提交（工程未改）",
+        // 剪刀（越界 + 退化切分 + err）
+        "切分没有生效：切分点越界，没有可切分的对象",
+        "切分没有生效：切分点不在音符内部，没有可切分的对象",
+        "切分被拒：模型拒绝了这一次提交（工程未改）",
+    ] {
+        assert!(
+            host.contains(literal),
+            "五条路径的拒绝/空批文案必须逐字存在：{literal}"
+        );
+    }
+    // 调用面：移动臂 2 + 改时值 2 + 力度拖拽 2 + 建音符 2 + 橡皮擦 2 + 剪刀 3 + 力度双击 2
+    // = 15 处调用 + 1 处定义 = 16 处出现。
+    let calls = host.matches("report_roll_edit_rejected(").count();
+    assert!(
+        calls >= 16,
+        "五条路径的拒绝/空批必须全部经同一条回执入口出声（实测 {calls} 处）"
+    );
+    // 成功清理前缀随文案家族扩展（T-FIX-210 的形状）。
+    for prefix in [
+        "\"时值调整\"",
+        "\"力度调整\"",
+        "\"力度恢复\"",
+        "\"建音符\"",
+        "\"删除\"",
+        "\"切分\"",
+    ] {
+        assert!(
+            host.contains(prefix),
+            "清理前缀必须覆盖新文案家族：{prefix}"
+        );
+    }
+}
+
+/// 找一颗**直接 invoke 点得到**的音符：绘制帧矩形（左右沿 + 中心 y）全部落在
+/// 卷帘根的可见区域内。与 [`a_painted_note`] 同一几何口径，但不依赖控件树
+/// 包围盒（降级时代的同一现状：树里查不到卷帘元素）。
+fn an_invoke_visible_note(
+    view: &yeban_app::bridge::ViewState,
+    window: &yeban_app::ui::MainWindow,
+    scroll: f32,
+) -> (usize, (f32, f32), (f32, f32)) {
+    let size = slint::ComponentHandle::window(window).size();
+    let viewport_width = size.width as f32;
+    let viewport_height = size.height as f32;
+    // 生产派发按窗口现行 `roll-base-pitch` 重算音符 y（作用域取景会改它），
+    // 坐标必须用同一 base 算，否则点的是投影几何、不是屏幕上的矩形。
+    let base = window.get_roll_base_pitch().clamp(0, 127) as u8;
+    (0..view.notes.len())
+        .find_map(|index| {
+            let note = &view.notes[index];
+            let host_y = yeban_app::bridge::pitch_lane_y_with_base(note.pitch, base);
+            let host_center = (note.x - scroll + note.width / 2.0, host_y + 5.0);
+            if view.hit_test_visible_scoped_with_base(
+                scroll,
+                viewport_width,
+                host_center.0,
+                host_center.1,
+                10.0,
+                None,
+                base,
+            ) != Some(index)
+            {
+                return None;
+            }
+            let center = host_to_painted(host_center.0, host_center.1);
+            let (left, _) = host_to_painted(note.x - scroll, host_y);
+            let (right, _) = host_to_painted(note.x - scroll + note.width, host_y);
+            let (_, top) = host_to_painted(0.0, host_y);
+            let (_, bottom) = host_to_painted(0.0, host_y + 10.0);
+            let inside =
+                left >= 0.0 && right <= viewport_width && top >= 0.0 && bottom <= viewport_height;
+            inside.then_some((index, (left, right), center))
+        })
+        .expect("夹具里必须有一颗绘制帧完全落在卷帘可见区域内的音符")
+}
+
+/// 行为判据（空批①·红对照先行）：力度工具**双击**夹具里**已是默认力度 100** 的音符 ⇒
+/// 工程一位不动，且 `roll-edit-status` **逐字**等于「已是默认力度 100」的语义文案。
+///
+/// 修复前：`velocity_op_for` 对 `old_vel == new_vel` 返回 `None` 后直接 return
+/// （`roll-edit-status` 停在本派发开头清出来的空串）—— 正是「点了但什么都没发生」。
+#[test]
+fn t_fix_581_double_click_on_default_velocity_reports_nothing_to_change() {
+    let (window, port, _plane) = assemble();
+    let project_before = port.try_project().expect("工程").clone();
+    let view = ViewState::from_project(&project_before).expect("投影");
+    let scroll = window.get_roll_scroll_x();
+    let (index, _left_right, center) = an_invoke_visible_note(&view, &window, scroll);
+    let ulid = view.notes[index].id.clone();
+    assert_eq!(
+        velocity_of(&project_before, &ulid),
+        yeban_model::music::DEFAULT_VELOCITY,
+        "夹具前提：被双击的音符必须是默认力度 100（夹具四颗全是）"
+    );
+    window.set_active_tool(i32::from(Tool::Velocity.digit()));
+
+    window.invoke_double_clicked(center.0, center.1);
+
+    let project_after = port.try_project().expect("工程");
+    assert_eq!(
+        velocity_of(&project_after, &ulid),
+        yeban_model::music::DEFAULT_VELOCITY,
+        "双击已默认力度的音符不得改工程"
+    );
+    assert!(
+        ViewState::from_project(&project_after)
+            .expect("投影")
+            .notes
+            .len()
+            == view.notes.len(),
+        "双击不得增删音符"
+    );
+    assert_eq!(
+        window.get_roll_edit_status().as_str(),
+        "力度恢复没有生效：已是默认力度 100，没有可改动的对象",
+        "空批必须按语义写「没有可改动的对象」类文案（修复前为空）"
+    );
+    assert!(
+        !window.get_toast_message().is_empty(),
+        "同形回执必须同时进提示条（与移动臂一致）"
+    );
+}
+
+/// 行为判据（空批②·红对照先行）：剪刀点在音符**左沿**内 1px（吸附后 == 音符起点，
+/// 退化切分 ⇒ `split_ops_for` 空集）⇒ 工程一位不动，且 `roll-edit-status` **逐字**
+/// 等于「切分点不在音符内部」的语义文案；修复前为空。
+#[test]
+fn t_fix_581_knife_on_note_boundary_reports_no_splittable_object() {
+    let (window, port, _plane) = assemble();
+    let project_before = port.try_project().expect("工程").clone();
+    let view = ViewState::from_project(&project_before).expect("投影");
+    let scroll = window.get_roll_scroll_x();
+    let (index, (left, _right), center) = an_invoke_visible_note(&view, &window, scroll);
+    let note_count_before = view.notes.len();
+    window.set_active_tool(i32::from(Tool::Knife.digit()));
+
+    // 左沿内 1px：命中测试落在音符矩形内，吸附取整后 == 音符起点 ⇒ 退化切分。
+    window.invoke_clicked(left + 1.0, center.1, false);
+
+    let project_after = port.try_project().expect("工程");
+    let view_after = ViewState::from_project(&project_after).expect("投影");
+    assert_eq!(
+        view_after.notes.len(),
+        note_count_before,
+        "退化切分不得增删音符"
+    );
+    assert_eq!(
+        window.get_roll_edit_status().as_str(),
+        "切分没有生效：切分点不在音符内部，没有可切分的对象",
+        "剪刀空批必须按语义写「没有可切分的对象」类文案（修复前为空）"
+    );
+    assert!(
+        !window.get_toast_message().is_empty(),
+        "同形回执必须同时进提示条（与移动臂一致）"
+    );
+    // 控制臂：同一颗音符上**真有切分点**的点击照旧工作 —— 左沿 + 140 tick（避开 120 tick
+    // 的"正中间平局"：`snap_tick` 的平局向更晚取整，但浮点误差不该参与判据；140 无歧义地
+    // 落在音符内部唯一的网格竖线 = 起点 + 240 上）⇒ 恰好 +1 颗音符，状态行清空。
+    let interior_grid_host_x = {
+        // tick→px 换算走判据自己的几何：卷帘 px/tick 由投影的实际块宽 ÷ tick 时值给出。
+        let note = &view.notes[index];
+        let interior_px = crate_px_per_tick(&view) * 140.0;
+        host_to_painted(note.x - scroll + interior_px, note.y + NOTE_HEIGHT / 2.0).0
+    };
+    window.invoke_clicked(interior_grid_host_x, center.1, false);
+    let project_after_split = port.try_project().expect("工程");
+    let view_after_split = ViewState::from_project(&project_after_split).expect("投影");
+    assert_eq!(
+        view_after_split.notes.len(),
+        note_count_before + 1,
+        "音符内部半格处的剪刀点击必须真的切分（控制臂）"
+    );
+    assert_eq!(
+        window.get_roll_edit_status().as_str(),
+        "",
+        "成功切分后状态行必须清空（与移动臂的 T-FIX-210 同一取向）"
+    );
+}
+
+/// 卷帘的 px/tick 读数（判据自证用）：取投影里第一个可见音符的实际像素宽度 ÷ 其 tick 时值。
+fn crate_px_per_tick(view: &yeban_app::bridge::ViewState) -> f32 {
+    view.notes
+        .iter()
+        .find_map(|note| {
+            if note.width > 0.0 && note.duration_ticks > 0 {
+                Some(note.width / note.duration_ticks as f32)
+            } else {
+                None
+            }
+        })
+        .expect("夹具里必须有可见音符（有宽度与时值）")
+}
