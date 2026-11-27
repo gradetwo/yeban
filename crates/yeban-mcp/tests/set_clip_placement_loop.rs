@@ -1007,9 +1007,15 @@ fn render_path(
 ///    `oldEndTick` 全部是未知键 ⇒ `INVALID_PARAMETER_RANGE` +
 ///    `reason = unknownSetClipPlacementLoopField`，`supportedFields` **逐字**等于
 ///    [`SET_CLIP_PLACEMENT_LOOP_FIELDS`]（5 个新值键 + `kind`）。
-/// 2. **缺键 ≠ null**：缺一个键报"缺少 `X`"（`data` 为空）；`loopStartTick: null`
-///    是**形状错误**（`reason = valueMustBeUnsignedInteger`），`loopEnabled: null`
+/// 2. **缺键 ≠ null**：缺一个键报"缺少 `X`"并带 T-FIX-561 恢复信封
+///    （`data` 是对象：`reason = invalidParameterRange`，`received` 为
+///    `Null`，`detail` 点名缺失字段与期望类型，`nextStep` 指回
+///    `yeban_edit_notes`）；`loopStartTick: null` 是**形状错误**
+///    （`reason = valueMustBeUnsignedInteger`），`loopEnabled: null`
 ///    是 `valueMustBeBoolean` —— 两者都不是"缺省"。
+///    （领域 `Fault` 本身仍不带 data——`notes.rs` 的缺字段单元判据守着；
+///    线上 `data` 由派发层 `recovery::enrich_tool_value` 统一补，
+///    故此处断言的是信封内容而非"无 data"。）
 /// 3. 三个新值键**全部必填**：逐个删掉都必须红。
 ///
 /// 注入（实测红）：把 `reject_set_clip_placement_loop_fields` 的调用删掉 ⇒ 第 1 条
@@ -1064,7 +1070,18 @@ fn the_wire_carries_new_values_only() {
     }
 
     // ---- 2. 缺键：三个新值键逐个删 ----
-    for missing in ["loopEnabled", "loopStartTick", "loopEndTick"] {
+    // 缺键现在带 T-FIX-561 恢复信封（见文件头 §2）：`data` 是对象，不再是
+    // `Null`。断言信封的实质内容——`detail` 点名缺失字段与期望类型、
+    // `received` 为 `Null`（字段根本不在）、`nextStep` 指回同一工具。
+    // ⛔ 不断言 nextStep 可直接执行：模板原样回显本次调用的 `ops`，缺的键
+    // 仍需调用方按 `detail`/`expected` 补上后重试（与工具参数层缺参
+    // `missingParam` 的"最小合法模板可直接执行"不同，这是操作层缺字段
+    // 的固有形态，不在此处抬高口径）。
+    for (missing, expected) in [
+        ("loopEnabled", "布尔"),
+        ("loopStartTick", "非负整数"),
+        ("loopEndTick", "非负整数"),
+    ] {
         let mut payload = base.clone();
         payload.as_object_mut().expect("对象").remove(missing);
         let response = call(
@@ -1081,10 +1098,44 @@ fn the_wire_carries_new_values_only() {
             response["error"]["code"], "INVALID_PARAMETER_RANGE",
             "缺 `{missing}` 的契约码: {response}"
         );
+        let data = &response["error"]["data"];
+        assert!(
+            data.is_object(),
+            "缺 `{missing}` 线上必须带恢复信封对象: {response}"
+        );
         assert_eq!(
-            response["error"]["data"],
+            data["reason"], "invalidParameterRange",
+            "缺 `{missing}` 的 reason 是码位派生的通用值: {response}"
+        );
+        assert_eq!(
+            data["detail"],
+            format!("缺少 `{missing}`（期望 {expected}）"),
+            "缺 `{missing}` 的 detail 必须点名缺失字段与期望类型: {response}"
+        );
+        assert_eq!(
+            data["received"],
             Value::Null,
-            "缺键是'缺少字段'（不带 data），与 `null` 的形状错误**不同**: {response}"
+            "缺 `{missing}` 的 received 必须是 Null（字段根本不在）: {response}"
+        );
+        assert_eq!(
+            data["expected"], "a value that satisfies the tool schema",
+            "缺 `{missing}` 的 expected: {response}"
+        );
+        assert_eq!(
+            data["stateChanged"], false,
+            "缺 `{missing}` 不得声称改了工程: {response}"
+        );
+        assert_eq!(
+            data["retryable"], false,
+            "缺 `{missing}` 不得声称可原样重试: {response}"
+        );
+        assert_eq!(
+            data["nextStep"]["tool"], "yeban_edit_notes",
+            "缺 `{missing}` 的 nextStep 必须指回同一工具: {response}"
+        );
+        assert!(
+            data["nextStep"]["arguments"].is_object(),
+            "缺 `{missing}` 的 nextStep 必须带参数模板: {response}"
         );
         assert!(
             response["error"]["message"]
