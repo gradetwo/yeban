@@ -166,6 +166,12 @@ fn blank_drag_selects_clips_and_click_keeps_selection() {
     ));
     let live_view = Rc::new(RefCell::new(view.clone()));
     host::wire_clip_scope(port.ui(), Rc::clone(&live_view), Some(Rc::clone(&undo)));
+    // ⭐ T-FIX-857（ISS-MWY9RPJU）：演示工程 track 0 的自动化泳道（volume +
+    // device，各 26px）铺满整条轨道行；按 T-FIX-714 裁决，泳道自身的 TouchArea
+    // 接收点击，于是空白车道的框选面被完全遮挡，真实指针拖拽进不了框选手势。
+    // 本判据测的是**空白车道框选**，故关掉泳道，让按下点真正落到框选 TouchArea。
+    // 产品侧的泳道优先语义不变（未改 arrangement.slint / host.rs）。
+    port.ui().set_automation_visible(false);
     port.refresh_tree(None).expect("必须能抓控件树");
     // ⚠ 不把 `port.ui()` 的借用跨在 `dispatch_*`（&mut self）之间持有：
     // 每次读界面状态都现取（与 `arrangement_ruler_seek` 的 Rig 同款）。
@@ -339,6 +345,12 @@ fn blank_drag_selects_clips_when_content_overflows_viewport() {
     ));
     let live_view = Rc::new(RefCell::new(view.clone()));
     host::wire_clip_scope(port.ui(), Rc::clone(&live_view), Some(Rc::clone(&undo)));
+    // ⭐ T-FIX-857（ISS-MWY9RPJU）：演示工程 track 0 的自动化泳道（volume +
+    // device，各 26px）铺满整条轨道行；按 T-FIX-714 裁决，泳道自身的 TouchArea
+    // 接收点击，于是空白车道的框选面被完全遮挡，真实指针拖拽进不了框选手势。
+    // 本判据测的是**空白车道框选**，故关掉泳道，让按下点真正落到框选 TouchArea。
+    // 产品侧的泳道优先语义不变（未改 arrangement.slint / host.rs）。
+    port.ui().set_automation_visible(false);
     port.refresh_tree(None).expect("必须能抓控件树");
 
     let bounds = port
