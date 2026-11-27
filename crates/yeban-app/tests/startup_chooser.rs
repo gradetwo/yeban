@@ -477,6 +477,10 @@ fn startup_chooser_live_window_flow() {
     // ---- 2. 打开已有工程…：B 打开且排进最近第一位 ------------------------
     ui.invoke_startup_open_existing();
     assert!(!ui.get_startup_chooser_open(), "打开成功后选择器必须关");
+    assert!(
+        ui.get_module_status_succeeded(),
+        "打开成功必须有可见的成功回执，不能只有窗口关了"
+    );
     assert_eq!(undo.project().title, "工程B", "会话必须换成工程 B");
     let recent = yeban_app::settings::load().recent_projects;
     assert_eq!(recent.len(), 2, "打开 B 后最近清单 = B + 先前那条活记录");

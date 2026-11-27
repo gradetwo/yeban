@@ -11263,11 +11263,29 @@ impl PortOpenProject {
         if let Some(error) = reload_error {
             // 界面已经换了新工程 ⇒ 这一句**如实**说明"播放侧还是上一版"（不静默）。
             return Err(format!(
-                "界面已换成 `{label}`，但引擎换代失败（播放侧仍是上一版）: {error}"
+                "{OPEN_PROJECT_UI_SWAPPED_PREFIX}{label}`，\
+                 但引擎换代失败（播放侧仍是上一版）: {error}"
             ));
         }
         Ok(())
     }
+}
+
+/// T-FIX-917：`OpenProjectRuntime` 在「界面已换、播放侧未换」时写出的错误前缀。
+///
+/// 构造与识别共用这一份原文，⛔ 不靠两处各抄一遍字面量。
+const OPEN_PROJECT_UI_SWAPPED_PREFIX: &str = "界面已换成 `";
+
+/// T-FIX-917：打开工程的错误是否属于「界面已经换了、只有播放引擎换代失败」。
+///
+/// [`OpenProjectRuntime::open_runtime`] 的 `Err` 有两种性质完全不同的事：
+/// - **界面没换**（读盘/解码/换会话失败）⇒ 留在选择器里让用户换一个再试；
+/// - **界面已换、播放侧没换**（`reload` 在音源摊平处失败等）⇒ 用户已经看见新
+///   工程，选择器必须让位，错误另走引擎横幅与提示条。
+///
+/// 判据只认 [`OpenProjectRuntime`] 自己写出的那句原文前缀；不靠调用点猜。
+fn open_project_error_left_ui_swapped(message: &str) -> bool {
+    message.starts_with(OPEN_PROJECT_UI_SWAPPED_PREFIX) && message.contains("但引擎换代失败")
 }
 
 /// 关掉「启动工程选择器」（幂等）。
@@ -12930,12 +12948,32 @@ pub fn wire_startup_chooser(
                     report_pending_settings_warnings(&ui);
                 }
                 Err(message) => {
+                    let ui_swapped = open_project_error_left_ui_swapped(&message);
+                    if ui_swapped {
+                        // 界面已经是新工程了 ⇒ 选择器不能继续盖在上面。错误仍如实
+                        // 回执，但同时要点亮引擎横幅 + 给恢复路径（T-FIX-917）。
+                        close_startup_chooser(&ui);
+                        crate::settings::record_recent_project(
+                            &path,
+                            yeban_model::project::now_unix_ms(),
+                        );
+                        apply_engine_error(&ui, EnginePublishOutcome::Failed(&message));
+                        let text = format!(
+                            "工程已打开，但播放引擎没换成新工程：{message}；编辑与导出不受影响。请在「音源管理」或「诊断」里修复后重新打开。"
+                        );
+                        ui.set_toast_message(text.into());
+                        ui.set_toast_is_error(true);
+                        ui.set_show_floating_toast(true);
+                    }
                     let receipt = module_receipt(
                         "startup-chooser",
                         &module_error_fields("open-file", &message),
                     );
                     apply_module_receipt(&ui, &receipt, false);
                     module_trace("startup-chooser", started, &receipt);
+                    if ui_swapped {
+                        report_pending_settings_warnings(&ui);
+                    }
                 }
             }
         });
