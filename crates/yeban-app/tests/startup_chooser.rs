@@ -427,6 +427,17 @@ fn startup_chooser_live_window_flow() {
     });
     let titled: Rc<dyn host::OpenProjectRuntime> = titled_port;
     let chooser_picker = ScriptedPicker::answering_open(project_b_path.clone());
+    // T-ISS-MWXZ1PQZ：启动选择器也要显示模板扫描诊断；注入非 UTF-8 文件后，
+    // 正常模板行仍在前，末尾多一条置灰警告行。必须在 wire 之前注入，
+    // 选择器的清单在接线时汇集一次。
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        let mut bad = std::ffi::OsString::from_vec(vec![b't', 0xFF, b'm', b'p', b'l']);
+        bad.push(".yeban");
+        std::fs::write(roots.factory.join("流行").join("抒情").join(bad), b"bad")
+            .expect("写非 UTF-8 模板名");
+    }
     host::wire_startup_chooser(
         ui,
         {
@@ -476,6 +487,8 @@ fn startup_chooser_live_window_flow() {
     assert_eq!(recent[1].path, recent_file_path, "旧条目顺延一位");
 
     // ---- 3. 工程模板：未命名副本打开，模板字节不变，不记最近 -------------
+    // T-ISS-MWXZ1PQZ：启动选择器也要显示模板扫描诊断；注入非 UTF-8 文件后，
+    // 正常模板行仍在前，末尾多一条置灰警告行。
     ui.set_startup_chooser_open(true);
     ui.invoke_startup_category_selected(3);
     let rows = ui.get_startup_rows();
@@ -483,6 +496,18 @@ fn startup_chooser_live_window_flow() {
         .iter()
         .map(|row| (row.kind, row.label.to_string()))
         .collect();
+    #[cfg(unix)]
+    assert_eq!(
+        shape,
+        vec![
+            (0, "流行".to_owned()),
+            (1, "抒情".to_owned()),
+            (2, "模板甲".to_owned()),
+            (2, "模板扫描警告".to_owned()),
+        ],
+        "启动选择器必须保留正常模板行并把扫描警告排在末尾"
+    );
+    #[cfg(not(unix))]
     assert_eq!(
         shape,
         vec![
@@ -492,6 +517,20 @@ fn startup_chooser_live_window_flow() {
         ],
         "工程模板分类必须按 曲风 → 子曲风 → 模板名 分组"
     );
+    #[cfg(unix)]
+    {
+        let warning = rows
+            .iter()
+            .find(|row| row.label.as_str() == "模板扫描警告")
+            .expect("扫描警告行必须存在");
+        assert!(!warning.enabled, "扫描警告行必须置灰不可打开");
+        assert_eq!(warning.entry_index, -1, "警告行不得指到任何模板条目");
+        assert!(
+            warning.detail.contains("不是 UTF-8"),
+            "警告行必须带扫描器原文，实际 {}",
+            warning.detail
+        );
+    }
     let entry_index = rows
         .iter()
         .find(|row| row.kind == 2)

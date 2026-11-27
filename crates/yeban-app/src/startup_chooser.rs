@@ -240,6 +240,11 @@ pub struct ChooserData {
     pub blocked_demos: Vec<BlockedDemo>,
     /// 全部模板（工厂在前，与 [`list_templates`] 同序）。
     pub templates: Vec<TemplateEntry>,
+    /// 模板扫描被跳过的路径 / 原因（T-ISS-MWXZ1PQZ）。
+    ///
+    /// 非空 ⇒ 启动选择器的模板分类必须把它们渲染成置灰警告行，不能只取
+    /// `templates` 把诊断丢掉。
+    pub template_diagnostics: Vec<String>,
 }
 
 /// 汇集选择器数据：最近清单来自设置（存在性当场查），演示来自
@@ -280,11 +285,13 @@ pub fn gather(settings: &Settings, roots: &TemplateRoots) -> ChooserData {
         demos.extend(scan.entries);
         blocked_demos.extend(scan.blocked);
     }
+    let templates = list_templates(roots);
     ChooserData {
         recent,
         demos,
         blocked_demos,
-        templates: list_templates(roots).entries,
+        templates: templates.entries,
+        template_diagnostics: templates.diagnostics,
     }
 }
 
@@ -1140,6 +1147,52 @@ pub fn template_rows_matching(
         });
     }
     rows
+}
+
+/// [`template_rows_matching`] ＋ 模板扫描诊断行（T-ISS-MWXZ1PQZ）。
+///
+/// 诊断行是置灰的普通条目行：`entry_index = None`（不可打开），`detail`
+/// 原样写扫描器给的路径 / 原因。正常条目仍按原序在前。
+#[must_use]
+pub fn template_rows_matching_with_diagnostics(
+    entries: &[TemplateEntry],
+    diagnostics: &[String],
+    source: TemplateSource,
+    lang: Language,
+    query: &str,
+) -> Vec<ChooserRow> {
+    let mut rows = template_rows_matching(entries, source, lang, query);
+    for diagnostic in diagnostics {
+        rows.push(ChooserRow {
+            kind: ChooserRowKind::Entry,
+            label: template_scan_warning_label(lang).to_owned(),
+            detail: diagnostic.clone(),
+            genre: String::new(),
+            bpm_label: String::new(),
+            details: String::new(),
+            detail_rows: Vec::new(),
+            details_height_px: 0,
+            entry_index: None,
+            enabled: false,
+            cover: None,
+        });
+    }
+    rows
+}
+
+fn template_scan_warning_label(lang: Language) -> &'static str {
+    use Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => "模板扫描警告",
+        EnUs => "Template scan warning",
+        FrFr => "Avertissement d'analyse des modèles",
+        EsEs => "Advertencia de escaneo de plantillas",
+        PtBr => "Aviso de varredura de modelos",
+        JaJp => "テンプレート走査の警告",
+        KoKr => "템플릿 스캔 경고",
+        RuRu => "Предупреждение сканирования шаблонов",
+        DeDe => "Vorlagen-Scanwarnung",
+    }
 }
 
 // ---------------------------------------------------------------------------

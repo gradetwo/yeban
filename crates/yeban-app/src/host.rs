@@ -12245,14 +12245,18 @@ fn apply_startup_category(
             lang,
             query,
         ),
-        STARTUP_CATEGORY_FACTORY => crate::startup_chooser::template_rows_matching(
+        STARTUP_CATEGORY_FACTORY => {
+            crate::startup_chooser::template_rows_matching_with_diagnostics(
+                &data.templates,
+                &data.template_diagnostics,
+                crate::templates::TemplateSource::Factory,
+                lang,
+                query,
+            )
+        }
+        STARTUP_CATEGORY_USER => crate::startup_chooser::template_rows_matching_with_diagnostics(
             &data.templates,
-            crate::templates::TemplateSource::Factory,
-            lang,
-            query,
-        ),
-        STARTUP_CATEGORY_USER => crate::startup_chooser::template_rows_matching(
-            &data.templates,
+            &data.template_diagnostics,
             crate::templates::TemplateSource::User,
             lang,
             query,
