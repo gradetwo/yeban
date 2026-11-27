@@ -13,6 +13,9 @@
 | 保存工程 | `yeban_app::save::{save_project_file, save_archive_file}` |
 | 引擎宿主 | `yeban_app::engine_host::EngineHost`（建图、走带、墙钟泵送、电平收集） |
 | 导出 WAV | `yeban_app::render_core::render_project_f32_with_assets_under` + `yeban_app::export_wav::write_interleaved_wav` |
+| 导入音频 | `yeban_app::import_audio::import_audio_file`（与 GUI `wire_import_audio`、MCP `yeban_import_audio` 同一份后端；字节进会话资产池与内存归档） |
+| 导入 MIDI | `yeban_app::import_midi::import_midi_file`（与 GUI 导入按钮同一个函数；目标 = 选中轨 / 光标处 MIDI 片段） |
+| 导出 MIDI | `yeban_app::export_midi::export_project_to_file`（与 GUI 导出按钮、CLI `--export-midi` 同一个落盘函数） |
 | 鼓机生成 | `yeban_theory::{factory_drum_style, generate_drum_pattern}` + `yeban_app::bridge::{drum_gen_target, drum_gen_ops}`（与 GUI 对话框、MCP 工具同一配方） |
 | 分轨导出 | `yeban_app::export_stems::export_stems`（与 GUI 菜单臂、CLI `--export-stems` 同一份后端） |
 | 诊断包 | `yeban_diagnostics::export_diagnostics`（与 GUI `UiAction::ExportDiagnostics`、MCP 工具同一个采集器） |
@@ -107,6 +110,9 @@ Vi 层。
 | 编辑器/卷帘开关 | `E` / `P` | 同键 → 焦点跳片段网格 | 形态适配 |
 | 时间轴缩放 | `Ctrl+=` / `Ctrl+-` | 同（经 GUI 解析器）→ 每小节列宽 2–8 | 已接 |
 | 导出 WAV | （GUI 走菜单，无键） | `:export wav <path>` | TUI 命令 |
+| 导入音频 | 素材池「导入音频」 | `:import audio <path>` | 已接（T-FIX-802；只进素材池、不自动摆放；格式面与 GUI 同一条 `import_audio`，只吃 PCM/float WAV） |
+| 导入 MIDI | 菜单「导入 MIDI」 | `:import midi <path>` | 已接（T-FIX-802；目标 = 选中轨 / 光标处 MIDI 片段，与 GUI 同口径） |
+| 导出 MIDI | 菜单「导出 MIDI」 | `:export midi <path>` | 已接（T-FIX-802；与 CLI `--export-midi` 同一落盘函数） |
 | 鼓机生成 | 菜单「编辑 → 鼓机生成 (Drums)...」 | `:drum <风格> [小节] [复杂度] [强度] [摇摆] [种子] [fill\|nofill]` | 已接（T-FIX-82①；同一预置/生成层，缺省 4/50/80/风格定值/0/fill） |
 | 分轨导出 | 菜单「导出分轨 (Stems)...」 | `:stems <输出目录>` | 已接（T-FIX-82②；N+1 次渲染、32-bit float、`{序号}.{轨名}.wav` + manifest） |
 | 诊断包导出 | 诊断导出动作 | `:diag [目录]`（缺省系统临时目录） | 已接（T-FIX-82③；与 GUI 同一组条目 env/git/config/MANIFEST） |

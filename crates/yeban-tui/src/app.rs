@@ -3,6 +3,8 @@
 //! 接缝（路线甲）：工程读写走 `yeban_app::open` / `yeban_app::save` 的生产路径；
 //! 引擎与走带走 `yeban_app::engine_host::EngineHost`（与 GUI 同一个宿主，无 Slint
 //! 依赖）；导出走 `yeban_app::render_core` + `yeban_app::export_wav` 的生产渲染路径；
+//! 音频/MIDI 导入与 MIDI 导出走 `yeban_app::import_audio` / `import_midi` /
+//! `export_midi` 的既有实现（与 GUI / CLI / MCP 同一份后端）；
 //! 共享键位走 `yeban_app::input::InputContext::resolve`（GUI 策略表的唯一解析器）。
 //!
 //! 二期起，编辑（静音/独奏/音量/声相/改名/片段移动与删除/速度）一律经
@@ -20,6 +22,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use yeban_app::bridge::{self, NewTrackKind};
 use yeban_app::engine_host::{EditMark, EngineHost, PublishOutcome};
 use yeban_app::export_wav::WavExportOptions;
+use yeban_app::import_audio::{AudioImportOptions, AudioImportReport};
+use yeban_app::import_midi::MidiImportOptions;
 use yeban_app::input::{Action, InputContext, MixerParam, Resolution, View};
 use yeban_app::undo::{ActionOutcome, UiAction, UndoPort};
 use yeban_engine::meter::{MeterCollector, MeterFrame};
@@ -2919,6 +2923,156 @@ impl App {
         Ok(format!("已保存 {}{missing}", path.display()))
     }
 
+    /// 把归档资产池重新装进引擎宿主的字节来源（导入新材料后必须走一次，
+    /// 否则工程文档已经指向新哈希、引擎还拿着旧表 ⇒ 声音出不来）。
+    fn install_archive_asset_source(&mut self) {
+        let asset_bytes: BTreeMap<AssetHash, Vec<u8>> = self
+            .archive
+            .as_ref()
+            .map(|archive| archive.assets.iter().cloned().collect())
+            .unwrap_or_default();
+        self.host
+            .set_audio_asset_source(Box::new(move |hash: &AssetHash| {
+                asset_bytes.get(hash).cloned()
+            }));
+    }
+
+    /// 把导入的字节登记进内存归档（保存时才会写进容器的 `assets/{sha256}`）。
+    fn register_imported_asset(&mut self, asset: AssetHash, bytes: Vec<u8>) {
+        if let Some(archive) = self.archive.as_mut() {
+            if !archive.assets.iter().any(|(hash, _)| *hash == asset) {
+                archive.assets.push((asset, bytes));
+                archive.assets.sort_by(|left, right| left.0.cmp(&right.0));
+            }
+        } else {
+            self.archive = Some(ProjectArchive {
+                project: self.port.project(),
+                history_dag: Vec::new(),
+                proposals: None,
+                assets: vec![(asset, bytes)],
+                embedded_presets: Vec::new(),
+                load_notes: Vec::new(),
+            });
+        }
+        self.install_archive_asset_source();
+    }
+
+    /// 导入一条音频素材（`:import audio <path>` 的落点）。
+    ///
+    /// # Errors
+    /// 读文件 / 解码 / 超限 / 提交被拒时返回原文原因；⛔ 不改工程、不落半个片段。
+    pub fn import_audio(&mut self, path: &Path) -> Result<AudioImportReport, String> {
+        let report = yeban_app::import_audio::import_audio_file(
+            &self.port,
+            path,
+            &self.project,
+            &AudioImportOptions::default(),
+            now_ms(),
+        )
+        .map_err(|error| format!("导入音频失败：{error}"))?;
+        let asset_registered = self
+            .port
+            .insert_asset(report.asset.clone(), report.bytes.clone());
+        if report.created || asset_registered {
+            self.dirty = true;
+        }
+        self.sync_from_port();
+        self.register_imported_asset(report.asset.clone(), report.bytes.clone());
+        self.publish_snapshot("导入音频");
+        self.log_line(format!(
+            "已导入音频「{}」：{} 帧 @ {} Hz / {} 声道 / {} bit · 素材 {} 字节 · 片段 {} · {}{}",
+            report.name,
+            report.facts.frames,
+            report.facts.sample_rate,
+            report.facts.channels,
+            report.facts.bits_per_sample,
+            report.bytes.len(),
+            report.clip_id.to_canonical_string(),
+            if report.created {
+                "已加入素材池"
+            } else {
+                "池里已有同内容片段（幂等命中）"
+            },
+            "（尚未摆放，需在轨道上手动放置）"
+        ));
+        Ok(report)
+    }
+
+    /// 导入一份 MIDI 文件（`:import midi <path>` 的落点）：目标照 GUI 口径 =
+    /// 当前选中轨 / 当前光标处 MIDI 片段；没有选中轨时由 `destination` 回退到
+    /// 第一条带 MIDI 片段的非主轨。
+    ///
+    /// # Errors
+    /// 解析 / 没有目标 / 空文件 / 提交被拒时返回原文原因；⛔ 不留半个工程。
+    pub fn import_midi(
+        &mut self,
+        path: &Path,
+    ) -> Result<yeban_app::import_midi::MidiImportReport, String> {
+        let (track_id, clip_id) = match self.list_view {
+            Some(ListView::Notes {
+                track_id, clip_id, ..
+            }) => (Some(track_id), Some(clip_id)),
+            _ => {
+                let track_id = self.selected_track_id();
+                let clip_id = self.clip_at_cursor().and_then(|(_, _, placement)| {
+                    yeban_app::import_midi::is_midi_clip(&self.project, placement.clip_id)
+                        .then_some(placement.clip_id)
+                });
+                (track_id, clip_id)
+            }
+        };
+        let options = MidiImportOptions {
+            track_id,
+            clip_id,
+            ..MidiImportOptions::default()
+        };
+        let report = yeban_app::import_midi::import_midi_file(
+            &self.port,
+            &self.project,
+            path,
+            &options,
+            now_ms(),
+        )
+        .map_err(|error| format!("导入 MIDI 失败：{error}"))?;
+        self.dirty = true;
+        self.sync_from_port();
+        self.publish_snapshot("导入 MIDI");
+        self.log_line(format!(
+            "已导入 MIDI：{} 音符 · 可听 {} · 截断 {} · 轨 {} · 片段 {} · 提交 {} · {}",
+            report.notes,
+            report.audible_notes,
+            report.clipped_notes,
+            report.track_id.to_canonical_string(),
+            report.clip_id.to_canonical_string(),
+            report.commit.to_canonical_string(),
+            report.losses.loss_summary(report.lyrics),
+        ));
+        Ok(report)
+    }
+
+    /// 导出 MIDI（`:export midi <path>` 的落点）；与 CLI `--export-midi`、GUI
+    /// 导出按钮同一个落盘函数（共享 SMF 映射与编码器）。
+    ///
+    /// # Errors
+    /// 映射 / 编码 / 原子落盘失败时返回原文原因。
+    pub fn export_midi(
+        &mut self,
+        path: &Path,
+    ) -> Result<yeban_app::export_midi::MidiExportReport, String> {
+        let report = yeban_app::export_midi::export_project_to_file(&self.project, path)
+            .map_err(|error| format!("导出 MIDI 失败：{error}"))?;
+        self.log_line(format!(
+            "已导出 MIDI {}（{} 字节 · {} 轨 · {} 音符 · {} PPQ · {:?}）",
+            report.path.display(),
+            report.bytes,
+            report.tracks,
+            report.notes,
+            report.ppq,
+            report.format,
+        ));
+        Ok(report)
+    }
+
     /// 离线导出 WAV（生产渲染路径：引擎乐器，非最小音源）。
     ///
     /// # Errors
@@ -3933,20 +4087,73 @@ impl App {
                 self.command_automation(rest);
             }
             "export" => {
-                // 形态：export wav <path> 或 export <path>（默认 wav）。
-                // ⚠ `:export wav`（不带路径）必须报用法，⛔ 不能把 "wav" 当文件名写盘。
-                let words: Vec<&str> = rest.split_whitespace().collect();
-                let target = match words.as_slice() {
-                    ["wav"] | [] => None,
-                    ["wav", path] | [path] => Some(*path),
-                    _ => None,
-                };
-                match target {
-                    None => self.log_line("用法：:export wav <path>".to_owned()),
-                    Some(target) => {
+                // 形态：export wav <path> / export midi <path> / export <path>（默认 wav）。
+                // ⚠ `:export wav` / `:export midi`（不带路径）必须报用法，⛔ 不能把格式名当文件名。
+                let words: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+                match words.as_slice() {
+                    ["wav"] | ["midi"] | [] => {
+                        self.log_line("用法：:export wav <path> | :export midi <path>".to_owned())
+                    }
+                    ["wav", path] => {
+                        if path.trim().is_empty() {
+                            self.log_line(
+                                "用法：:export wav <path> | :export midi <path>".to_owned(),
+                            );
+                        } else if let Err(error) = self.export_wav(Path::new(path.trim())) {
+                            self.log_line(error);
+                        }
+                    }
+                    ["midi", path] => {
+                        if path.trim().is_empty() {
+                            self.log_line(
+                                "用法：:export wav <path> | :export midi <path>".to_owned(),
+                            );
+                        } else if let Err(error) = self.export_midi(Path::new(path.trim())) {
+                            self.log_line(error);
+                        }
+                    }
+                    [target] => {
                         if let Err(error) = self.export_wav(Path::new(target)) {
                             self.log_line(error);
                         }
+                    }
+                    _ => self.log_line("用法：:export wav <path> | :export midi <path>".to_owned()),
+                }
+            }
+            "import" => {
+                // 形态：import audio <path> / import midi <path>。
+                // 路径保留空格（`splitn` 只切第一刀），⛔ 不把 `audio` 当文件名。
+                let words: Vec<&str> = rest.splitn(2, char::is_whitespace).collect();
+                match words.as_slice() {
+                    ["audio"] | ["midi"] | [] => {
+                        self.log_line("用法：:import audio <path> | :import midi <path>".to_owned())
+                    }
+                    ["audio", path] => {
+                        if path.trim().is_empty() {
+                            self.log_line(
+                                "用法：:import audio <path> | :import midi <path>".to_owned(),
+                            );
+                        } else if let Err(error) = self.import_audio(Path::new(path.trim())) {
+                            self.log_line(error);
+                        }
+                    }
+                    ["midi", path] => {
+                        if path.trim().is_empty() {
+                            self.log_line(
+                                "用法：:import audio <path> | :import midi <path>".to_owned(),
+                            );
+                        } else if let Err(error) = self.import_midi(Path::new(path.trim())) {
+                            self.log_line(error);
+                        }
+                    }
+                    [other] => self.log_line(format!(
+                        "未知导入格式 `{other}`：用法：:import audio <path> | :import midi <path>"
+                    )),
+                    [other, _] => self.log_line(format!(
+                        "未知导入格式 `{other}`：用法：:import audio <path> | :import midi <path>"
+                    )),
+                    _ => {
+                        self.log_line("用法：:import audio <path> | :import midi <path>".to_owned())
                     }
                 }
             }
