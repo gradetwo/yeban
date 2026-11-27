@@ -2634,3 +2634,15 @@ msgstr "Set the loop region to the selected clips"
 
 msgid "循环区间"
 msgstr "Loop Region"
+
+msgid "横向缩小（- 或 Shift+Alt+滚轮）"
+msgstr "Zoom horizontally out (- or Shift+Alt+scroll)"
+
+msgid "横向放大（= 或 Shift+Alt+滚轮）"
+msgstr "Zoom horizontally in (= or Shift+Alt+scroll)"
+
+msgid "纵向缩小（Alt+滚轮）"
+msgstr "Zoom vertically out (Alt+scroll)"
+
+msgid "纵向放大（Alt+滚轮）"
+msgstr "Zoom vertically in (Alt+scroll)"

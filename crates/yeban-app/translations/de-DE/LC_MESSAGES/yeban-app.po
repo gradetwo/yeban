@@ -2634,3 +2634,15 @@ msgstr "Loop-Bereich auf die ausgewählten Clips setzen"
 
 msgid "循环区间"
 msgstr "Loop-Bereich"
+
+msgid "横向缩小（- 或 Shift+Alt+滚轮）"
+msgstr "Horizontal verkleinern (- oder Shift+Alt+Mausrad)"
+
+msgid "横向放大（= 或 Shift+Alt+滚轮）"
+msgstr "Horizontal vergrößern (= oder Shift+Alt+Mausrad)"
+
+msgid "纵向缩小（Alt+滚轮）"
+msgstr "Vertikal verkleinern (Alt+Mausrad)"
+
+msgid "纵向放大（Alt+滚轮）"
+msgstr "Vertikal vergrößern (Alt+Mausrad)"

@@ -2634,3 +2634,15 @@ msgstr "Définir la zone de boucle sur les clips sélectionnés"
 
 msgid "循环区间"
 msgstr "Zone de boucle"
+
+msgid "横向缩小（- 或 Shift+Alt+滚轮）"
+msgstr "Dézoomer horizontalement (- ou Shift+Alt+molette)"
+
+msgid "横向放大（= 或 Shift+Alt+滚轮）"
+msgstr "Zoomer horizontalement (= ou Shift+Alt+molette)"
+
+msgid "纵向缩小（Alt+滚轮）"
+msgstr "Dézoomer verticalement (Alt+molette)"
+
+msgid "纵向放大（Alt+滚轮）"
+msgstr "Zoomer verticalement (Alt+molette)"

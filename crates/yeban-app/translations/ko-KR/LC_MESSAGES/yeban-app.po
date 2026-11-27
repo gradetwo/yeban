@@ -2634,3 +2634,15 @@ msgstr "선택한 클립 범위를 루프 구간으로 설정"
 
 msgid "循环区间"
 msgstr "루프 구간"
+
+msgid "横向缩小（- 或 Shift+Alt+滚轮）"
+msgstr "가로 축소 (- 또는 Shift+Alt+휠)"
+
+msgid "横向放大（= 或 Shift+Alt+滚轮）"
+msgstr "가로 확대 (= 또는 Shift+Alt+휠)"
+
+msgid "纵向缩小（Alt+滚轮）"
+msgstr "세로 축소 (Alt+휠)"
+
+msgid "纵向放大（Alt+滚轮）"
+msgstr "세로 확대 (Alt+휠)"

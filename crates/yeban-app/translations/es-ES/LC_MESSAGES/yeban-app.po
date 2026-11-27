@@ -2634,3 +2634,15 @@ msgstr "Establecer la región de bucle en los clips seleccionados"
 
 msgid "循环区间"
 msgstr "Región de bucle"
+
+msgid "横向缩小（- 或 Shift+Alt+滚轮）"
+msgstr "Reducir zoom horizontal (- o Shift+Alt+rueda)"
+
+msgid "横向放大（= 或 Shift+Alt+滚轮）"
+msgstr "Aumentar zoom horizontal (= o Shift+Alt+rueda)"
+
+msgid "纵向缩小（Alt+滚轮）"
+msgstr "Reducir zoom vertical (Alt+rueda)"
+
+msgid "纵向放大（Alt+滚轮）"
+msgstr "Aumentar zoom vertical (Alt+rueda)"

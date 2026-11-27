@@ -801,7 +801,7 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         accessible-role: button;
                                         accessible-id: "arrangement-zoom-h-out-button";
-                                        accessible-label: "横向缩小（- 或 Shift+Alt+滚轮）";
+                                        accessible-label: @tr("横向缩小（- 或 Shift+Alt+滚轮）");
                                         accessible-action-default => { root.zoom-h-step(false); }
                                         background: hz-out-touch.has-hover ? Tokens.skin-chip : transparent;
                                         Text { text: "H−"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
@@ -813,7 +813,7 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         accessible-role: button;
                                         accessible-id: "arrangement-zoom-h-in-button";
-                                        accessible-label: "横向放大（= 或 Shift+Alt+滚轮）";
+                                        accessible-label: @tr("横向放大（= 或 Shift+Alt+滚轮）");
                                         accessible-action-default => { root.zoom-h-step(true); }
                                         background: hz-in-touch.has-hover ? Tokens.skin-chip : transparent;
                                         Text { text: "H+"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
@@ -833,7 +833,7 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         accessible-role: button;
                                         accessible-id: "arrangement-zoom-v-out-button";
-                                        accessible-label: "纵向缩小（Alt+滚轮）";
+                                        accessible-label: @tr("纵向缩小（Alt+滚轮）");
                                         accessible-action-default => { root.zoom-v-step(false); }
                                         background: vt-out-touch.has-hover ? Tokens.skin-chip : transparent;
                                         Text { text: "V−"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }
@@ -845,7 +845,7 @@ export component ArrangementViewport inherits Rectangle {
                                         border-radius: 2px;
                                         accessible-role: button;
                                         accessible-id: "arrangement-zoom-v-in-button";
-                                        accessible-label: "纵向放大（Alt+滚轮）";
+                                        accessible-label: @tr("纵向放大（Alt+滚轮）");
                                         accessible-action-default => { root.zoom-v-step(true); }
                                         background: vt-in-touch.has-hover ? Tokens.skin-chip : transparent;
                                         Text { text: "V+"; font-family: Tokens.font-mono; font-size: 9.5px; color: Tokens.skin-text-body; horizontal-alignment: center; vertical-alignment: center; }

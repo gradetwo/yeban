@@ -2634,3 +2634,15 @@ msgstr "選択したクリップの範囲をループ区間に設定"
 
 msgid "循环区间"
 msgstr "ループ区間"
+
+msgid "横向缩小（- 或 Shift+Alt+滚轮）"
+msgstr "横方向を縮小（- または Shift+Alt+ホイール）"
+
+msgid "横向放大（= 或 Shift+Alt+滚轮）"
+msgstr "横方向を拡大（= または Shift+Alt+ホイール）"
+
+msgid "纵向缩小（Alt+滚轮）"
+msgstr "縦方向を縮小（Alt+ホイール）"
+
+msgid "纵向放大（Alt+滚轮）"
+msgstr "縦方向を拡大（Alt+ホイール）"

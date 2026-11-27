@@ -2634,3 +2634,15 @@ msgstr "Definir a região de loop para os clipes selecionados"
 
 msgid "循环区间"
 msgstr "Região de loop"
+
+msgid "横向缩小（- 或 Shift+Alt+滚轮）"
+msgstr "Reduzir zoom horizontal (- ou Shift+Alt+roda)"
+
+msgid "横向放大（= 或 Shift+Alt+滚轮）"
+msgstr "Aumentar zoom horizontal (= ou Shift+Alt+roda)"
+
+msgid "纵向缩小（Alt+滚轮）"
+msgstr "Reduzir zoom vertical (Alt+roda)"
+
+msgid "纵向放大（Alt+滚轮）"
+msgstr "Aumentar zoom vertical (Alt+roda)"
