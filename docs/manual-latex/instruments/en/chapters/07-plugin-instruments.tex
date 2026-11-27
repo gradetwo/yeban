@@ -1,6 +1,8 @@
 \chapter{Plugin Instruments}
 \label{chap:plugin-instruments}
 
+\classquote{它山之石，可以攻玉。}{《诗经·小雅·鹤鸣》 / The Book of Songs, "Minor Odes, He Ming"}{Translation: Stones from another hill can polish jade. Note: third-party plugin instruments bring outside sound sources in — but first understand the boundaries of scanning, loading, and offline rendering.}
+
 A plugin instrument brings a third-party sound source into Yeban: you scan local VST3s, choose an instrument class, load it onto the current MIDI track, and the project gains an "external instrument" device. It is not the same implementation as the built-in synth or SFZ sampler: its parameters are not on Yeban's device card, and real-time playback does not execute it; actual sound happens in offline export and full-song preview. This chapter follows that real path and does not turn "it can scan" into "it can play live".
 
 \section{Supported scope}
@@ -135,3 +137,9 @@ Boundaries and risks & \texttt{plugin-limits} \\
 \end{tabular}
 \caption{Help-topic mapping for Chapter 7}
 \end{table}
+
+\section*{Further Reading}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://github.com/gradetwo/yeban} — Yeban repository: check the README and source for the real boundaries of plugin scanning, loading, and offline rendering.
+\item \url{https://www.steinberg.net/cubase/} — Steinberg Cubase: understand plugin formats, scanning, and project compatibility from the host side of VST3.
+\end{itemize}

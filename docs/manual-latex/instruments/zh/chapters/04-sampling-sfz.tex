@@ -1,6 +1,8 @@
 \chapter{采样与 SFZ}
 \label{chap:sampling-sfz}
 
+\classquote{荃者所以在鱼，得鱼而忘荃；蹄者所以在兔，得兔而忘蹄；言者所以在意，得意而忘言。}{《庄子·外物》}{工具是为了达成目的；SFZ 与采样文件是“筌”，音乐意图才是“鱼”，不要让文件管理盖过声音本身。}
+
 合成器用算法“算”出声音，采样乐器用录音“播”出声音。夜半的采样侧以 SFZ 为核心：一份 SFZ 文本描述“哪个音区、哪个力度、用哪个音频文件、怎么移调”，音频文件本身留在磁盘上。理解这层分工，才能判断“装了没声音”到底是文件缺失、音区没覆盖，还是轨道绑错了入口。
 
 \section{SFZ 是什么，不是什么}
@@ -132,3 +134,9 @@ SFZ 是什么，不是什么 & \texttt{sfz-what-it-is} \\
 \end{tabular}
 \caption{第 4 章帮助主题映射}
 \end{table}
+
+\section*{延伸阅读}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://sfzformat.com/opcodes/}——SFZ opcode 参考：逐项核对 region、sample、pitch、velocity 等字段的真实语义。
+\item \url{https://www.soundonsound.com/techniques/sampling}——Sound On Sound 采样专题：补足采样率、循环点、力度分层与多麦克风采样的工程背景。
+\end{itemize}

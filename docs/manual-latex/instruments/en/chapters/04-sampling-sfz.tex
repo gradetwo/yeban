@@ -1,6 +1,8 @@
 \chapter{Sampling and SFZ}
 \label{chap:sampling-sfz}
 
+\classquote{荃者所以在鱼，得鱼而忘荃；蹄者所以在兔，得兔而忘蹄；言者所以在意，得意而忘言。}{《庄子·外物》 / Zhuangzi, "Things External" (Wai Wu)}{Translation: The trap exists for the fish; once you have the fish, you can forget the trap. Note: SFZ files and samples are the trap; the musical intent is the fish. Do not let file management eclipse the sound.}
+
 A synth computes sound; a sampled instrument plays recordings. Yeban's sampling side is built around SFZ: a text file describing which key range, which velocity range, which audio file, and how to transpose it. The audio stays on disk. Understanding that split is how you tell "no sound" apart from a missing file, an uncovered key, or the wrong entry point.
 
 \section{What SFZ is, and what it is not}
@@ -132,3 +134,9 @@ Troubleshooting & \texttt{sfz-troubleshooting} \\
 \end{tabular}
 \caption{Help-topic mapping for Chapter 4}
 \end{table}
+
+\section*{Further Reading}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://sfzformat.com/opcodes/} — SFZ opcode reference: check the real meaning of region, sample, pitch, velocity, and related fields one by one.
+\item \url{https://www.soundonsound.com/techniques/sampling} — Sound On Sound sampling: fill in sample rate, loop points, velocity layers, and multi-mic sampling practice.
+\end{itemize}

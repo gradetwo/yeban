@@ -1,6 +1,8 @@
 \chapter{插件乐器}
 \label{chap:plugin-instruments}
 
+\classquote{它山之石，可以攻玉。}{《诗经·小雅·鹤鸣》}{别的山上的石头也能磨玉；第三方插件乐器能把外部音源接进来，但要先看清扫描、装载与离线导出的边界。}
+
 插件乐器是把第三方音源接进夜半：你扫描本机的 VST3，选中一个乐器类，把它装载到当前 MIDI 轨，工程里就多了一台“外部乐器”设备。它和内置合成器、SFZ 采样器不是同一套实现：参数不在夜半的设备卡上，实时播放也不执行它；真正的发声发生在离线导出与整曲预览。本章按这条真实链路写，不把“能扫描”写成“能实时弹”。
 
 \section{支持范围}
@@ -135,3 +137,9 @@ ARA 与插件乐器不是一回事 & \texttt{plugin-ara-boundary} \\
 \end{tabular}
 \caption{第 7 章帮助主题映射}
 \end{table}
+
+\section*{延伸阅读}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://github.com/gradetwo/yeban}——夜半仓库：按 README 与源码核对插件扫描、装载和离线导出的真实实现边界。
+\item \url{https://www.steinberg.net/cubase/}——Steinberg Cubase 页面：从 VST3 宿主的角度理解插件格式、扫描与工程兼容性。
+\end{itemize}

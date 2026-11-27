@@ -1,6 +1,8 @@
 \chapter{物理建模乐器}
 \label{chap:physical-modeling}
 
+\classquote{臣以神遇而不以目视，官知止而神欲行。}{《庄子·养生主》}{熟练之后靠感觉与经验下手，不被眼睛和机械步骤绑住；物理建模调参也是这样，先听共振，再看数值。}
+
 物理建模不是“采样一段真实乐器再播放”，而是用一组会共振的模态（mode）去模拟物体被敲击后的振动。它把音高、材质、尺寸、敲击位置变成可计算的参数，因此能做出采样库很难覆盖的连续变化。夜半目前只有这条路的 DSP 核心，还没有把它接成可挂轨的乐器；本章按“原理 + 夜半现状”写，不假装界面上有还不存在的旋钮。
 
 \section{模态合成的基本思路}
@@ -121,3 +123,9 @@
 \end{tabular}
 \caption{第 5 章帮助主题映射}
 \end{table}
+
+\section*{延伸阅读}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://ccrma.stanford.edu/~jos/pasp/}——CCRMA 物理音频软件项目：从模态、波导与共振器继续深入物理建模的数学与实现。
+\item \url{https://www.soundonsound.com/techniques}——Sound On Sound 技术栏目：用可听的案例对照物理建模与采样合成的差异。
+\end{itemize}

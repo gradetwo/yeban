@@ -1,6 +1,8 @@
 \chapter{Physical-Modeling Instruments}
 \label{chap:physical-modeling}
 
+\classquote{臣以神遇而不以目视，官知止而神欲行。}{《庄子·养生主》 / Zhuangzi, "The Secret of Caring for Life" (Yang Sheng Zhu)}{Translation: I meet it with the spirit rather than look at it with the eye; the senses stop and the spirit moves. Note: physical-model tuning works the same way — listen to the resonance first, then read the numbers.}
+
 Physical modeling is not "sample a real instrument and play it back"; it uses a set of resonating modes to simulate how an object vibrates after being struck. Pitch, material, size, and strike position become computable parameters, so it can produce continuous variations that a sample library cannot enumerate. Yeban currently has only the DSP core of this path, not an instrument that can be placed on a track. This chapter therefore writes "principle + current state", without pretending that controls exist.
 
 \section{The basic idea of modal synthesis}
@@ -121,3 +123,9 @@ When it will matter & \texttt{modal-use-cases} \\
 \end{tabular}
 \caption{Help-topic mapping for Chapter 5}
 \end{table}
+
+\section*{Further Reading}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://ccrma.stanford.edu/~jos/pasp/} — CCRMA Physical Audio Signal Processing: go deeper into the maths and implementation of modes, waveguides, and resonators.
+\item \url{https://www.soundonsound.com/techniques} — Sound On Sound techniques: use audible examples to compare physical modelling with sample-based synthesis.
+\end{itemize}
