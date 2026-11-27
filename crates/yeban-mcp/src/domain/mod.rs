@@ -4350,6 +4350,44 @@ fn plan_propose_section(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault>
     )
 }
 
+/// T-FIX-957：当前活跃撤销链上出现过的 `DeleteNote` 身份集合。
+///
+/// 只沿 active head 的**第一父**回溯（撤销链口径），不含提案分支或其它孤岛；
+/// 因此“随机不存在 ID”不会因为别处某条删除而被误判成已删除。
+fn active_history_deleted_note_keys(domain: &Domain) -> BTreeSet<(EntityId, EntityId)> {
+    fn collect(op: &Op, out: &mut BTreeSet<(EntityId, EntityId)>) {
+        match op {
+            Op::DeleteNote {
+                clip_id, note_id, ..
+            } => {
+                let _ = out.insert((*clip_id, *note_id));
+            }
+            Op::Batch { ops, .. } => {
+                for child in ops {
+                    collect(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = BTreeSet::new();
+    let mut cursor = domain.active_head();
+    let mut seen = BTreeSet::new();
+    while let Some(id) = cursor {
+        if !seen.insert(id) {
+            break;
+        }
+        let Ok(commit) = domain.graph.commit(&id) else {
+            break;
+        };
+        for stamped in &commit.ops {
+            collect(&stamped.op, &mut out);
+        }
+        cursor = commit.first_parent();
+    }
+    out
+}
+
 /// `yeban_edit_notes`。
 ///
 /// 十个形态（同一个工具、同一份 `NoteOp` 解析器、同一个发声数上限）：
@@ -4682,8 +4720,21 @@ fn plan_edit_notes(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> {
         notes::reject_duplicate_lane_targets(&track_id, &note_ops)?;
         // 同一个**场景**同理（`setScene` 的 `old_scene` 也从调用前的文档读）。
         notes::reject_duplicate_scene_targets(&note_ops)?;
-        let (compiled, echoes) =
-            notes::compile_with_param_echoes(project, &track_id, &clip_id, &note_ops)?;
+        let deleted_history = if note_ops
+            .iter()
+            .any(|op| matches!(op, notes::NoteOp::Delete { .. }))
+        {
+            active_history_deleted_note_keys(domain)
+        } else {
+            BTreeSet::new()
+        };
+        let (compiled, echoes) = notes::compile_with_param_echoes_and_deleted(
+            project,
+            &track_id,
+            &clip_id,
+            &note_ops,
+            &deleted_history,
+        )?;
         param_echoes = echoes.iter().map(notes::ParamEcho::to_value).collect();
         compiled
     };

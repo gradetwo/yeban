@@ -767,7 +767,7 @@
 //! 未知旋钮仍不执行 —— 那是 `domain/render.rs` 的 `deviceChainDsp` 登记面）；**不允许插入重复身份**（模型 `Op::validate` 的
 //! `DuplicateEntityId`，本层提前报 `deviceIdAlreadyInTrack`）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr as _;
 
 use serde_json::{Map, Value};
@@ -10256,7 +10256,30 @@ pub fn compile_with_param_echoes(
     ops: &[NoteOp],
 ) -> Result<(Vec<Op>, Vec<ParamEcho>), Fault> {
     let mut echoes = Vec::new();
-    let compiled = compile_inner(project, track_id, clip_id, ops, Some(&mut echoes))?;
+    let compiled = compile_inner(project, track_id, clip_id, ops, Some(&mut echoes), None)?;
+    Ok((compiled, echoes))
+}
+
+/// 同 [`compile_with_param_echoes`]，并携带“当前活跃历史已删除音符”集合。
+///
+/// T-FIX-957：第二次删同一个 `noteId` 时，查找失败若命中该集合 ⇒
+/// `CONFLICT`/`noteAlreadyDeleted`，与“从未存在”的 `ENTITY_NOT_FOUND` 分开。
+pub fn compile_with_param_echoes_and_deleted(
+    project: &YebanProjectV1,
+    track_id: &EntityId,
+    clip_id: &EntityId,
+    ops: &[NoteOp],
+    deleted_notes: &BTreeSet<(EntityId, EntityId)>,
+) -> Result<(Vec<Op>, Vec<ParamEcho>), Fault> {
+    let mut echoes = Vec::new();
+    let compiled = compile_inner(
+        project,
+        track_id,
+        clip_id,
+        ops,
+        Some(&mut echoes),
+        Some(deleted_notes),
+    )?;
     Ok((compiled, echoes))
 }
 
@@ -10273,7 +10296,7 @@ pub fn compile(
     clip_id: &EntityId,
     ops: &[NoteOp],
 ) -> Result<Vec<Op>, Fault> {
-    compile_inner(project, track_id, clip_id, ops, None)
+    compile_inner(project, track_id, clip_id, ops, None, None)
 }
 
 /// `compile` 的实现本体（错误表见此）。
@@ -10299,6 +10322,7 @@ fn compile_inner(
     clip_id: &EntityId,
     ops: &[NoteOp],
     mut param_echoes: Option<&mut Vec<ParamEcho>>,
+    deleted_notes: Option<&BTreeSet<(EntityId, EntityId)>>,
 ) -> Result<Vec<Op>, Fault> {
     // 音轨实体级形态（`removeTrack`）自带寻址，而且一个音符都不读：它不需要顶层
     // `trackId` / `clipId`（那两个是"目标片段所在的音轨"的寻址）。判据
@@ -10372,6 +10396,8 @@ fn compile_inner(
     // 因此循环⛔ 不能是 `for op in ops`：展开出来的条目必须**在原位置**接着被编译，
     // 同批里"先 `add` 再 `transposeClip`"才转得到刚建的那个音（在投影上展开 ⇒ 天然成立）。
     let mut queue: Vec<NoteOp> = ops.to_vec();
+    // T-FIX-957：同批里第二次删同一个音符也要可区分（不依赖已提交历史）。
+    let mut batch_deleted: BTreeSet<(EntityId, EntityId)> = BTreeSet::new();
     // ⭐ 同批 `addTrack` 自动接线的节点身份：后续 `addRoutingNode` 撞
     // `routingNodeAlreadyExists` 时用它把 hint 指向“去掉重复 op”，而不是只让
     // 调用方猜。只记录本次 `addTrack` 真的自动补了节点的情形；节点原本就在图里
@@ -10403,10 +10429,34 @@ fn compile_inner(
             } => {
                 // ⭐ 第五份报告 B-4：目标片段 = 操作自带（优先）或顶层缺省。
                 let target_clip = op_clip_id.unwrap_or(*clip_id);
-                let previous_note = project
-                    .note(&target_clip, note_id)
-                    .map_err(|error| from_model("音符查找", &error))?
-                    .clone();
+                let previous_note = match project.note(&target_clip, note_id) {
+                    Ok(note) => note.clone(),
+                    Err(yeban_model::ModelError::NoteNotFound { .. })
+                        if batch_deleted.contains(&(target_clip, *note_id))
+                            || deleted_notes.is_some_and(|deleted| {
+                                deleted.contains(&(target_clip, *note_id))
+                            }) =>
+                    {
+                        return Err(Fault::domain_with_data(
+                            ErrorCode::Conflict,
+                            format!("音符 {note_id} 已在当前活跃历史中被删除，不能重复删除"),
+                            serde_json::json!({
+                                "reason": "noteAlreadyDeleted",
+                                "alreadyDeleted": true,
+                                "stateChanged": false,
+                                "noteId": note_id.to_canonical_string(),
+                                "clipId": target_clip.to_canonical_string(),
+                                "trackId": track_id.to_canonical_string(),
+                                "nextStep": {
+                                    "tool": "yeban_undo",
+                                    "action": "若要恢复该音符，调用 yeban_undo 撤销最近一次编辑（仅当这次删除就是最近一步时直接恢复）；其后还有编辑时先确认再撤销",
+                                },
+                            }),
+                        ));
+                    }
+                    Err(error) => return Err(from_model("音符查找", &error)),
+                };
+                let _ = batch_deleted.insert((target_clip, *note_id));
                 Op::DeleteNote {
                     track_id: *track_id,
                     clip_id: target_clip,
@@ -14275,6 +14325,99 @@ mod tests {
             }
             other => panic!("应当是 DeleteNote: {other:?}"),
         }
+    }
+
+    /// T-FIX-957：同一音符删第二次必须与“随机不存在 ID”不同形。
+    ///
+    /// 采用 (b) 明确冲突：当前活跃历史里已有该音符的 `DeleteNote` ⇒
+    /// `CONFLICT` + `reason:noteAlreadyDeleted` + `stateChanged:false`；
+    /// 从未出现过的 ID 仍走 `ENTITY_NOT_FOUND`。判据先红（旧代码两者同形）。
+    #[test]
+    fn deleting_the_same_note_twice_is_distinguishable_from_a_ghost_id() {
+        let mut project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let note_id = project.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("MIDI")
+            .keys()
+            .next()
+            .copied()
+            .expect("至少一个音符");
+        let delete = [NoteOp::Delete {
+            note_id,
+            clip_id: None,
+        }];
+        let first = compile(&project, &track_id, &clip_id, &delete).expect("第一次编译");
+        Op::Batch {
+            ops: first,
+            description: "delete once".to_owned(),
+        }
+        .apply(&mut project)
+        .expect("第一次删除必须成功");
+        assert!(project.note(&clip_id, &note_id).is_err(), "音符应已删除");
+
+        let deleted = BTreeSet::from([(clip_id, note_id)]);
+        let fault =
+            compile_with_param_echoes_and_deleted(&project, &track_id, &clip_id, &delete, &deleted)
+                .expect_err("第二次删除必须被识别为已删除");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::Conflict));
+        assert_eq!(reason_of(&fault).as_deref(), Some("noteAlreadyDeleted"));
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["alreadyDeleted"], Value::Bool(true));
+        assert_eq!(data["stateChanged"], Value::Bool(false));
+        assert_eq!(data["noteId"], Value::from(note_id.to_canonical_string()));
+
+        let ghost = deterministic_id("t957-ghost-note");
+        let ghost_fault = compile_with_param_echoes_and_deleted(
+            &project,
+            &track_id,
+            &clip_id,
+            &[NoteOp::Delete {
+                note_id: ghost,
+                clip_id: None,
+            }],
+            &deleted,
+        )
+        .expect_err("随机 ID 仍必须是不存在");
+        assert_eq!(
+            ghost_fault.domain_code(),
+            Some(ErrorCode::EntityNotFound),
+            "从未存在的 ID 不得被报成已删除"
+        );
+        assert_ne!(
+            reason_of(&ghost_fault).as_deref(),
+            Some("noteAlreadyDeleted"),
+            "两种结果的 reason 不能同形"
+        );
+        // 同批两次删同一个音符也必须可区分（批内投影，不依赖已提交历史）。
+        let fresh = filled_project();
+        let (track_id, clip_id) = lead_clip(&fresh);
+        let note_id = fresh.clip_pool[&clip_id]
+            .content
+            .notes()
+            .expect("MIDI")
+            .keys()
+            .next()
+            .copied()
+            .expect("至少一个音符");
+        let duplicate_batch = [
+            NoteOp::Delete {
+                note_id,
+                clip_id: None,
+            },
+            NoteOp::Delete {
+                note_id,
+                clip_id: None,
+            },
+        ];
+        let batch_fault = compile(&fresh, &track_id, &clip_id, &duplicate_batch)
+            .expect_err("同批第二次删除必须报已删除");
+        assert_eq!(batch_fault.domain_code(), Some(ErrorCode::Conflict));
+        assert_eq!(
+            reason_of(&batch_fault).as_deref(),
+            Some("noteAlreadyDeleted")
+        );
     }
 
     #[test]

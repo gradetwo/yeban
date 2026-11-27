@@ -45,7 +45,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 318 | 1352 | `27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 318 | 1352 | `033dc424bdc21868b0d556b3f847885c2159e912e15c2f36757f9b17a023e41b` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -230,7 +230,7 @@ const SCANNER_BLIND_LITERAL_REASONS: [&str; 1] = ["engineSource"];
 const SCANNER_BLIND_LITERAL_PAYLOADS: [(&str, &[&str]); 1] =
     [("engineSource", &["cause", "hint", "reason"])];
 
-pub const GOLDEN_REASONS: [&str; 316] = [
+pub const GOLDEN_REASONS: [&str; 317] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetDecodeFailed",
@@ -582,6 +582,8 @@ pub const GOLDEN_REASONS: [&str; 316] = [
     // 无活跃工程时 `yeban_correct_pitch_job` 只回 `delivery.pending`，
     // 键集是 {pending, reason}。
     "noActiveProject",
+    // ⭐ T-FIX-957：同一音符第二次删除的可区分冲突（`data.reason`）。
+    "noteAlreadyDeleted",
     // ⭐ T-FIX-249（本支）：保存 / 投放侧 5 条已存在但黄金表漏登的 reason。
     // `alreadyDelivered` / `dryRun` 是 OTCP 「交付」子对象的说明性字段（形状
     // `{ready:false, reason}`，因标识符形状 ⇒ 进主表）；`path_unresolved` /
@@ -1650,7 +1652,15 @@ struct DynamicReasonSite {
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 8] = [
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 9] = [
+    DynamicReasonSite {
+        file: "domain/automation.rs",
+        expr: "reason",
+        occurrences: 1,
+        forwards: "T-FIX-955 的 point.tick 校验闭包把 `reason` 入参原样写进 `data.reason`；                   取值来自同文件内多个字面 call site（overflow / notInteger 等），\
+                   扫描器不跨闭包传播。",
+        retires_when: "闭包改接收闭合枚举（每个 reason 一个常量），或每个 call site 直接构造                       完整 Fault、不再经 `reason` 参数转发。",
+    },
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -1949,7 +1959,7 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 9] = [
 // 由本文件 [`EXEMPT_DYNAMIC_REASON_SITES`] 的 7 个 distinct 表达式逐条登记
 // （output_schema 类型声明 2 次、`item.reason` 4 次、其余各 1 次）。
 // ⛔ 这些数是**实测**的规模契约，不是从历史增量手推的。
-const REASON_OCCURRENCES_TOTAL: usize = 386;
+const REASON_OCCURRENCES_TOTAL: usize = 388;
 // ⭐ T-FIX-885（2026-11-27，活尖端 `6a3375f2`）：字面 356 ＋ 可解析 `let` 2 ＋
 // 运行时 14 ＋ 传播 3 ＝ 键站点 375；总出现 386 ＝ 375 ＋ 参数名 9 ＋
 // 未分类登记 2（`recovery.rs` 的 `.entry("reason".to_owned())`，见
@@ -1958,10 +1968,10 @@ const REASON_OCCURRENCES_TOTAL: usize = 386;
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 375;
-const REASON_LITERAL_SITES_TOTAL: usize = 356;
+const REASON_KEY_SITES_TOTAL: usize = 377;
+const REASON_LITERAL_SITES_TOTAL: usize = 357;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 14;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 15;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 9;
 
@@ -2326,7 +2336,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 316] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 317] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -3353,6 +3363,18 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 316] = [
         &["build_commit", "job_id", "missing_capabilities", "reason"],
     ),
     ("noActiveProject", &["pending", "reason"]),
+    (
+        "noteAlreadyDeleted",
+        &[
+            "alreadyDeleted",
+            "clipId",
+            "nextStep",
+            "noteId",
+            "reason",
+            "stateChanged",
+            "trackId",
+        ],
+    ),
     // ⭐ T-FIX-249：OTCP 交付子对象（`domain/otcp.rs`）与保存侧缺样本分类
     // （`domain/mod.rs` 的 `sampler_binding_warnings`，三处字面站点同键集）。
     ("alreadyDelivered", &["ready", "reason"]),
@@ -3917,12 +3939,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新摘要 `27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb`
 /// 由临时取数判据报出后照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb";
+    "033dc424bdc21868b0d556b3f847885c2159e912e15c2f36757f9b17a023e41b";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 318;
+pub const REASON_SURFACE_REASONS: usize = 319;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1352;
+pub const REASON_SURFACE_LINES: usize = 1360;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
