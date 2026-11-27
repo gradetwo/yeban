@@ -482,12 +482,14 @@ fn all_33_aether_callbacks_reach_real_handlers_in_a_live_window() {
         format!("status-selection = {status}")
     );
 
-    // 30 monitor-switch -> EngineHost::device_name() 真实读数
-    ui.invoke_monitor_switch("Main".into());
+    // 30 monitor-switch -> 引擎实际总线名 + EngineHost::device_name() 真实读数。
+    // T-FIX-838：`from_name` 只认小写 "main"/"alt"；未知名字必须响亮拒绝，
+    // 不能再像旧版那样把入参原文（"Main"）回显成切换成功。
+    ui.invoke_monitor_switch("main".into());
     let status = ui.get_status_selection().to_string();
     hit!(
         "monitor-switch",
-        status.contains("监听 Main"),
+        status.contains("监听 main"),
         format!("status-selection = {status}")
     );
 

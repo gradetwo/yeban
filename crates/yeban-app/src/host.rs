@@ -30860,18 +30860,6 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
         }
     });
 
-    // 9. 监听控制室
-    ui.on_monitor_switch({
-        let weak = weak.clone();
-        move |mon| {
-            if let Some(ui) = weak.upgrade() {
-                ui.set_toast_message(
-                    format!("[监听] Control Room 监听输出已切换至: {}", mon).into(),
-                );
-            }
-        }
-    });
-
     // 10. 归一化高度
     ui.on_normalize_track_heights({
         let weak = weak.clone();
@@ -34035,21 +34023,35 @@ pub fn wire_aether_actions(
     // `mon_a_touch` / `mon_b_touch` 先把组件内的 `active-monitor` 置
     // "main"/"alt" 再调本回调 ⇒ `mon` 就是用户选的那一路；这里先把它写进
     // 引擎的监听总线选择（原子；设备腿上也生效），再读设备名写状态行。
-    // 未知名字 ⛔ 不切总线（只显示，不改路由）。
+    // ⭐ T-FIX-838：未知名字 ⛔ 不切总线，且**响亮**报错 —— 旧实现把"没切"也
+    // 回显成"监听 X · …"，用户看状态行以为切换成功（静默 no-op + 假成功）。
+    // 本回调是全仓**唯一**的 `on_monitor_switch` 注册点（`wire_aether_callbacks`
+    // 里那份只写 toast 的旧版已删除）。
     ui.on_monitor_switch({
         let w = weak.clone();
         let engine = Rc::clone(&engine);
         move |mon| {
             if let Some(ui) = w.upgrade() {
-                if let Some(bus) = MonitorBus::from_name(mon.as_str()) {
-                    engine.borrow().set_monitor_bus(bus);
-                }
+                let Some(bus) = MonitorBus::from_name(mon.as_str()) else {
+                    let current = engine.borrow().monitor_bus().as_name().to_owned();
+                    let text = format!(
+                        "未知监听名 `{mon}`，未切换（当前仍是 {current}；可用 main / alt）"
+                    );
+                    ui.set_status_selection(text.clone().into());
+                    ui.set_toast_message(text.into());
+                    ui.set_toast_is_error(true);
+                    ui.set_show_floating_toast(true);
+                    return;
+                };
+                engine.borrow().set_monitor_bus(bus);
+                // 回显取**引擎实际状态**，不取入参原文（调用方与引擎不可能各说一套）。
+                let actual = engine.borrow().monitor_bus().as_name().to_owned();
                 let device = engine
                     .borrow()
                     .device_name()
                     .unwrap_or("(无设备 / 离线)")
                     .to_owned();
-                ui.set_status_selection(format!("监听 {} · 引擎输出 {}", mon, device).into());
+                ui.set_status_selection(format!("监听 {} · 引擎输出 {}", actual, device).into());
             }
         }
     });

@@ -5,7 +5,8 @@
 //! | D1 | 活窗口里调 `monitor-switch("alt")` ⇒ 引擎总线真变 B，且状态行报 `监听 alt`；切回 `"main"` ⇒ 总线回 A | 回调只读设备名写状态（修前行为） |
 //! | D2 | 两台同工程引擎（设备回调路径）⇒ B 路增益 0.5 的那台每帧逐位 `== 基线 × 0.5`；切回 A 的那台与基线**逐位相同** | 总线级只在 UI 层 / 没进 `process_quantum` |
 //! | D3 | B 路选中＋增益 0.5 时 `reload` ⇒ 换代后总线仍是 B、增益仍是 0.5（宿主把旧值拷进新运行时） | 换代静默归零 ⇒ 界面与引擎脱节 |
-//! | D4 | 调 `monitor-switch("bogus")` ⇒ 引擎总线不动（仍是 A），不 panic | 未知名字静默切总线 / panic |
+//! | D4 | 调 `monitor-switch("MAIN"/"bogus"/"")` ⇒ 引擎总线不动，**响亮**报未切换与未知名字，不出现成功回显 | 未知名字静默切总线 / 把未切换回显成成功 |
+//! | D5 | `main`/`alt` 照常切换，状态行回显**引擎实际总线名** | 回显取入参原文，与引擎脱节 |
 //!
 //! 装配与 `tests/control_room_monitor.rs`（T-FIX-190）同款：Tier-1 活窗口
 //! （Slint testing backend ＋ 生产同款 `wire_*` 装配，先旧回调、最后
@@ -207,21 +208,48 @@ fn reload_preserves_the_monitor_bus_and_gain() {
     );
 }
 
-/// D4：未知名字不切总线、不 panic（只显示）。
+/// D4（T-FIX-838）：未知名字不切总线、**响亮**报错，不出现成功回显。
 #[test]
-fn unknown_monitor_name_leaves_the_bus_unchanged() {
+fn unknown_monitor_name_leaves_the_bus_unchanged_and_fails_loudly() {
     let (live, engine, _project) = live_window();
     let ui = live.ui();
-    assert_eq!(engine.borrow().monitor_bus(), MonitorBus::A);
-    ui.invoke_monitor_switch("bogus".into());
-    assert_eq!(
-        engine.borrow().monitor_bus(),
-        MonitorBus::A,
-        "D4 未知名字 ⛔ 不许切总线（仍须是 A）"
-    );
-    let status = ui.get_status_selection().to_string();
-    assert!(
-        status.contains("监听 bogus"),
-        "D4 状态行仍显示请求的名字，实得 {status}"
-    );
+    for name in ["MAIN", "bogus", ""] {
+        assert_eq!(engine.borrow().monitor_bus(), MonitorBus::A);
+        ui.invoke_monitor_switch(name.into());
+        assert_eq!(
+            engine.borrow().monitor_bus(),
+            MonitorBus::A,
+            "D4 未知名字 `{name}` ⛔ 不许切总线（仍须是 A）"
+        );
+        let status = ui.get_status_selection().to_string();
+        assert!(
+            status.contains("未切换") && status.contains(name),
+            "D4 状态行必须写明未切换与未知名字 `{name}`，实得 {status}"
+        );
+        assert!(
+            !status.contains(&format!("监听 {name} ·")),
+            "D4 不许出现成功回显，实得 {status}"
+        );
+        assert!(
+            ui.get_toast_is_error(),
+            "D4 未知名字必须走错误 toast（响亮），实得 status={status}"
+        );
+    }
+}
+
+/// D5（T-FIX-838）：合法名字照常切换，状态行回显取引擎实际总线名。
+#[test]
+fn known_monitor_names_echo_the_engine_bus_not_the_raw_argument() {
+    let (live, engine, _project) = live_window();
+    let ui = live.ui();
+    for (name, expected) in [("alt", MonitorBus::B), ("main", MonitorBus::A)] {
+        ui.invoke_monitor_switch(name.into());
+        assert_eq!(engine.borrow().monitor_bus(), expected);
+        let status = ui.get_status_selection().to_string();
+        let actual = engine.borrow().monitor_bus().as_name();
+        assert!(
+            status.contains(&format!("监听 {actual} ·")),
+            "D5 回显必须取引擎实际总线名 `{actual}`，实得 {status}"
+        );
+    }
 }
