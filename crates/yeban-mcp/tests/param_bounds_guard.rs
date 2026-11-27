@@ -87,7 +87,7 @@ enum BoundStatus {
 }
 
 /// 52 条 string 参数声明（`TOOLS` 里 `json_type == "string"` 的**不同名**）。
-const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 52] = [
+const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 53] = [
     ("idempotencyKey", BoundStatus::Length(None, Some(256))),
     ("name", BoundStatus::Length(Some(1), None)),
     ("license", BoundStatus::Length(Some(1), None)),
@@ -239,6 +239,12 @@ const STRING_PARAM_BOUNDS: [(&str, BoundStatus); 52] = [
         "job_id",
         BoundStatus::Parsed(
             "服务端生成的 16 位十六进制 id；本层只接受字母/数字/`_`/`-`，防 URL 路径与暂存文件名越界",
+        ),
+    ),
+    (
+        "jobId",
+        BoundStatus::Parsed(
+            "`job_id` 的 camelCase 兼容别名，解析期归一化到 `job_id` 后走同一形状校验",
         ),
     ),
     ("want", BoundStatus::WordList),
@@ -518,7 +524,10 @@ fn every_string_params_bound_status_is_registered() {
         .iter()
         .flat_map(|spec| spec.all_params())
         .filter(|param| param.json_type == "string")
-        .map(|param| param.name.to_owned())
+        .flat_map(|param| {
+            std::iter::once(param.name.to_owned())
+                .chain(param.aliases.iter().map(|alias| (*alias).to_owned()))
+        })
         .collect();
     let registered: BTreeSet<String> = STRING_PARAM_BOUNDS
         .iter()
@@ -544,7 +553,7 @@ fn every_string_params_bound_status_is_registered() {
         let specs: Vec<&yeban_mcp::tools::ParamSpec> = TOOLS
             .iter()
             .flat_map(|spec| spec.all_params())
-            .filter(|param| param.name == name)
+            .filter(|param| param.name == name || param.aliases.contains(&name))
             .collect();
         assert!(!specs.is_empty(), "表里的 `{name}` 在注册表里找不到");
         let seen: BTreeSet<(Option<usize>, Option<usize>)> = specs

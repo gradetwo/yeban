@@ -666,33 +666,41 @@ fn extension_argument_constraints_match_the_registry() {
             .as_object()
             .unwrap_or_else(|| panic!("`{}` 的 $defs 必须有 properties", spec.name));
 
-        // (2a) 属性集合**恰好**等于注册表的全部参数（公共两个 + 特有）。
+        // (2a) 属性集合**恰好**等于注册表的全部参数（公共两个 + 特有 + 兼容别名）。
         let mut declared_keys: Vec<&str> = declared.keys().map(String::as_str).collect();
         declared_keys.sort_unstable();
-        let mut registry_keys: Vec<&str> =
-            spec.all_params().iter().map(|param| param.name).collect();
+        let mut registry_keys: Vec<&str> = spec
+            .all_params()
+            .iter()
+            .flat_map(|param| std::iter::once(param.name).chain(param.aliases.iter().copied()))
+            .collect();
         registry_keys.sort_unstable();
         registry_keys.dedup();
         assert_eq!(
             declared_keys, registry_keys,
-            "`{}` 的实参集合必须与注册表逐项相等",
+            "`{}` 的实参集合必须与注册表逐项相等（含别名）",
             spec.name
         );
 
-        // (2b) 每个参数的 JSON 类型一致。
+        // (2b) 每个参数及其兼容别名的 JSON 类型一致。
         for param in spec.all_params() {
-            let property = &declared[param.name];
-            assert_eq!(
-                property["type"], param.json_type,
-                "`{}.{}` 的 JSON 类型必须与注册表一致",
-                spec.name, param.name
-            );
+            for name in std::iter::once(param.name).chain(param.aliases.iter().copied()) {
+                let property = &declared[name];
+                assert_eq!(
+                    property["type"],
+                    param.json_type,
+                    "`{spec_name}.{name}` 的 JSON 类型必须与注册表一致",
+                    spec_name = spec.name
+                );
+            }
         }
 
-        // (2c) 必填集合一致 —— 口径是手写 schema 的 `required` 数组。
+        // (2c) 必填集合一致。无别名的必填参数进 `required`；带别名的必填参数
+        // 用 `anyOf: [{"required":[规范名]}, {"required":[别名…]}]` 表达任选其一。
         let mut registry_required: Vec<String> = spec
             .required_params()
             .iter()
+            .filter(|param| param.aliases.is_empty())
             .map(|param| param.name.to_owned())
             .collect();
         registry_required.sort();
@@ -719,6 +727,40 @@ fn extension_argument_constraints_match_the_registry() {
             "`{}` 的必填集合必须与注册表一致 (手写 schema 的 required 数组)",
             spec.name
         );
+        for param in spec
+            .required_params()
+            .iter()
+            .filter(|param| !param.aliases.is_empty())
+        {
+            let branches: Vec<Vec<String>> = definition
+                .get("anyOf")
+                .and_then(|value| value.as_array())
+                .map(|branches| {
+                    branches
+                        .iter()
+                        .filter_map(|branch| {
+                            branch.get("required").and_then(|value| value.as_array())
+                        })
+                        .map(|items| {
+                            items
+                                .iter()
+                                .map(|item| item.as_str().expect("字符串").to_owned())
+                                .collect()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for candidate in std::iter::once(param.name).chain(param.aliases.iter().copied()) {
+                assert!(
+                    branches
+                        .iter()
+                        .any(|branch| branch.as_slice() == [candidate]),
+                    "`{}.{}` 必须在 anyOf 里有单独的 required 分支",
+                    spec.name,
+                    candidate
+                );
+            }
+        }
         // 反向：注册表说可选的那些参数，schema 里不得列进 required。
         for param in spec.all_params() {
             if !param.required {

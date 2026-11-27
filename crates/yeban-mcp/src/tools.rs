@@ -466,6 +466,11 @@ pub struct ParamSpec {
     /// ⚠ 同样用函数指针（不是 `Value`）以保持 `ParamSpec: Copy + const`；
     /// 清单在调用时从单一真相生成，⛔ 不在注册表里手抄。
     pub enum_values: Option<fn() -> Vec<String>>,
+    /// 可接受的**兼容别名**（JSON 属性名）；空 = 无别名。
+    ///
+    /// 别名在解析后会规范成 [`Self::name`]，领域层只读规范名；
+    /// `tools/list` 会把别名作为兼容属性广播出去，静态契约同步。
+    pub aliases: &'static [&'static str],
     /// 规范语义。
     pub doc: &'static str,
 }
@@ -496,6 +501,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         max_len: None,
         items: None,
         enum_values: None,
+        aliases: &[],
         doc: "只读模拟校验: 只做参数与领域合法性校验, 不改任何状态",
     },
     ParamSpec {
@@ -509,6 +515,7 @@ pub const COMMON_PARAMS: [ParamSpec; 2] = [
         max_len: Some(256),
         items: None,
         enum_values: None,
+        aliases: &[],
         doc: "幂等重放键: 同一个非空键的第二次调用不执行工具, 直接返回首次结果的缓存 (响应是 `{\"replayed\":true,\"response\":…}` 信封, 不是裸 `ToolResponse`); 空串按未提供处理; 作用域 = 工具名 + 键 ⇒ 不同工具复用同一个键不会互相命中",
     },
 ];
@@ -647,6 +654,7 @@ const fn param(
         max_len: None,
         items: None,
         enum_values: None,
+        aliases: &[],
         doc,
     }
 }
@@ -672,6 +680,7 @@ const fn bounded_param(
         max_len,
         items: None,
         enum_values: None,
+        aliases: &[],
         doc,
     }
 }
@@ -697,6 +706,7 @@ const fn array_param(
         max_len: None,
         items: Some(items),
         enum_values: None,
+        aliases: &[],
         doc,
     }
 }
@@ -719,6 +729,27 @@ const fn enum_param(
         max_len: None,
         items: None,
         enum_values: Some(enum_values),
+        aliases: &[],
+        doc,
+    }
+}
+
+/// 带**兼容别名**的字符串参数（别名在解析后规范成 `name`）。
+const fn aliased_param(
+    name: &'static str,
+    required: bool,
+    doc: &'static str,
+    aliases: &'static [&'static str],
+) -> ParamSpec {
+    ParamSpec {
+        name,
+        json_type: "string",
+        required,
+        min_len: None,
+        max_len: None,
+        items: None,
+        enum_values: None,
+        aliases,
         doc,
     }
 }
@@ -2513,7 +2544,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-OTCP-CORRECT",
         name: "yeban_correct_pitch",
-        summary: "把一个音频片段提交给用户自备的 OpenTune API 分支构建做离线调性 snap (`ADR-0070`; 单 clip; 只改音高、不改时值)。提交后立即回 `{job_id, status:\"running\", server, notes_before, receipt_path}`, 校正在后台线程跑; 用 `yeban_correct_pitch_job` 轮询。源音频须是单声道 (立体声 ⇒ `otcpStereoUnsupported`); 轨道已挂 OpenTune 外部效果绑定 ⇒ `otcpDoubleCorrection` (二选一, ⛔ 不双重校正)。`mode` 缺省 `snapNotes`, v1 只执行它 (其余给了即响亮拒绝)。`autoMerge` 缺省 false = 只出提案; `predictOnly` (缺省 false) = 真跑一遍只返回预测音符表, ⛔ 不导出、不交付。失败时 `RENDER_FAILED` 大声失败、什么都不写、⛔ 不回落干声",
+        summary: "把一个音频片段提交给用户自备的 OpenTune API 分支构建做离线调性 snap (`ADR-0070`; 单 clip; 只改音高、不改时值)。提交后立即回 `{job_id, status:\"running\", server, notes_before, receipt_path}`, 校正在后台线程跑; 用 `yeban_correct_pitch_job` 轮询；轮询参数是 `job_id`（工具面也接受 camelCase 别名 `jobId`，两者同给且不同值会拒绝）。源音频须是单声道 (立体声 ⇒ `otcpStereoUnsupported`); 轨道已挂 OpenTune 外部效果绑定 ⇒ `otcpDoubleCorrection` (二选一, ⛔ 不双重校正)。`mode` 缺省 `snapNotes`, v1 只执行它 (其余给了即响亮拒绝)。`autoMerge` 缺省 false = 只出提案; `predictOnly` (缺省 false) = 真跑一遍只返回预测音符表, ⛔ 不导出、不交付。失败时 `RENDER_FAILED` 大声失败、什么都不写、⛔ 不回落干声",
         scope: Scope::AppAdmin,
         // 外部副作用（启动 OpenTune 子进程建任务）：不改工程、不落盘，但 `dryRun` 必须短路它。
         side_effect: SideEffect::External,
@@ -2579,15 +2610,15 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
     ToolSpec {
         spec_id: "MCP-TOOL-EXT-OTCP-JOB",
         name: "yeban_correct_pitch_job",
-        summary: "查音高校正任务状态; 成功后经提案换资产。`running`: 回 `{job_id, status, notes_before, receipt_path}`。`succeeded`: 回音符表与测量读数 (`measurement` / `asset` / `server`), 同时按提交时的 `autoMerge` 出提案 (false 只出提案, true 当场合并), 响应带 `proposal` 块。`failed`: 回 `{job_id, status, error:{code, detail, …}}`, `code` 是固定 `reason`; `RENDER_FAILED` 时什么都没写、源片段原样。任务收据住在控制根的任务目录下, 进程重启后仍可查",
+        summary: "查音高校正任务状态; 成功后经提案换资产。`running`: 回 `{job_id, status, notes_before, receipt_path}`；轮询参数是 `job_id`（也接受 camelCase 别名 `jobId`，两者同给且不同值会拒绝，⛔ 不是只认 `jobId`）。`succeeded`: 回音符表与测量读数 (`measurement` / `asset` / `server`), 同时按提交时的 `autoMerge` 出提案 (false 只出提案, true 当场合并), 响应带 `proposal` 块。`failed`: 回 `{job_id, status, error:{code, detail, …}}`, `code` 是固定 `reason`; `RENDER_FAILED` 时什么都没写、源片段原样。任务收据住在控制根的任务目录下, 进程重启后仍可查",
         scope: Scope::AppAdmin,
         // 按最坏情况：成功后交付走提案路径改工程（与 `svs_job` 同款口径）。
         side_effect: SideEffect::ProjectState,
-        params: &[param(
+        params: &[aliased_param(
             "job_id",
-            "string",
             true,
-            "校正任务 id（提交时返回的 `job_id`）",
+            "校正任务 id（提交时返回的 `job_id`；也接受 camelCase 别名 `jobId`，两者同给且不同值会响亮拒绝）",
+            &["jobId"],
         )],
         errors: &[
             ErrorCode::InvalidParameterRange,
@@ -3069,6 +3100,7 @@ impl ToolSpec {
     pub fn input_schema(&self) -> Value {
         let mut properties = Map::new();
         let mut required: Vec<Value> = Vec::new();
+        let mut any_of: Vec<Value> = Vec::new();
         for spec in self.all_params() {
             // ⚠ 有的工具（如 `yeban_edit_notes`）**自己**又声明了一份 `idempotencyKey`
             // （描述文本与公共那份不同）⇒ `properties.insert` 会**覆盖**掉公共那份，
@@ -3109,13 +3141,39 @@ impl ToolSpec {
                     Value::Array(values().into_iter().map(Value::from).collect()),
                 );
             }
-            properties.insert(spec.name.to_owned(), Value::Object(property));
-            if spec.required
-                && !required
-                    .iter()
-                    .any(|value| value.as_str() == Some(spec.name))
-            {
-                required.push(Value::from(spec.name));
+            let canonical_property = Value::Object(property);
+            properties.insert(spec.name.to_owned(), canonical_property.clone());
+            for alias in spec.aliases {
+                let mut alias_property =
+                    canonical_property.as_object().cloned().unwrap_or_default();
+                alias_property.insert(
+                    "description".to_owned(),
+                    Value::from(format!(
+                        "兼容别名，等价于 `{}`；同给且值不同 ⇒ 解析期响亮拒绝",
+                        spec.name
+                    )),
+                );
+                properties.insert((*alias).to_owned(), Value::Object(alias_property));
+            }
+            if spec.required {
+                if spec.aliases.is_empty() {
+                    if !required
+                        .iter()
+                        .any(|value| value.as_str() == Some(spec.name))
+                    {
+                        required.push(Value::from(spec.name));
+                    }
+                } else {
+                    for candidate in std::iter::once(spec.name).chain(spec.aliases.iter().copied())
+                    {
+                        let mut branch = Map::new();
+                        branch.insert(
+                            "required".to_owned(),
+                            Value::Array(vec![Value::from(candidate)]),
+                        );
+                        any_of.push(Value::Object(branch));
+                    }
+                }
             }
         }
         let mut schema = Map::new();
@@ -3124,8 +3182,40 @@ impl ToolSpec {
         if !required.is_empty() {
             schema.insert("required".to_owned(), Value::Array(required));
         }
+        if !any_of.is_empty() {
+            schema.insert("anyOf".to_owned(), Value::Array(any_of));
+        }
         schema.insert("additionalProperties".to_owned(), Value::from(false));
         Value::Object(schema)
+    }
+
+    /// 把兼容别名规范成规范名。
+    ///
+    /// 规则：
+    /// - 只给别名 ⇒ 插入规范名；
+    /// - 规范名与别名同给且值相同 ⇒ 删别名，保留规范名；
+    /// - 值不同 ⇒ [`ToolCallError::ConflictingParamAlias`] 响亮拒绝（⛔ 不悄悄挑一个）。
+    ///
+    /// 归一化发生在 [`Self::validate_arguments`] 之前 ⇒ 类型/必填/长度校验都只跑规范名一份。
+    fn normalize_aliases(&self, arguments: &mut Map<String, Value>) -> Result<(), ToolCallError> {
+        for spec in self.all_params() {
+            for alias in spec.aliases {
+                let Some(alias_value) = arguments.remove(*alias) else {
+                    continue;
+                };
+                if let Some(canonical) = arguments.get(spec.name) {
+                    if canonical != &alias_value {
+                        return Err(ToolCallError::ConflictingParamAlias {
+                            name: spec.name.to_owned(),
+                            alias: (*alias).to_owned(),
+                        });
+                    }
+                } else {
+                    arguments.insert(spec.name.to_owned(), alias_value);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -3174,6 +3264,16 @@ pub enum ToolCallError {
         /// 契约声明的上界。
         max: Option<usize>,
     },
+    /// 兼容别名与规范名同给且值不同。
+    #[error(
+        "参数 `{alias}` 与规范名 `{name}` 同时出现且值不同；只给一个（`{alias}` 是 `{name}` 的别名）"
+    )]
+    ConflictingParamAlias {
+        /// 规范名。
+        name: String,
+        /// 别名。
+        alias: String,
+    },
     /// 未知参数。
     #[error("未知参数 `{name}`")]
     UnknownParam {
@@ -3205,7 +3305,7 @@ impl ToolCall {
             Some(Value::String(name)) => name.as_str(),
             _ => return Err(ToolCallError::MissingName),
         };
-        let arguments = match object.get("arguments") {
+        let mut arguments = match object.get("arguments") {
             Some(Value::Object(arguments)) => arguments.clone(),
             Some(_) => return Err(ToolCallError::ArgumentsNotAnObject),
             None => return Err(ToolCallError::MissingArguments),
@@ -3215,6 +3315,7 @@ impl ToolCall {
                 name: name.to_owned(),
             });
         };
+        tool.normalize_aliases(&mut arguments)?;
         tool.validate_arguments(&arguments)?;
         Ok(Self { tool, arguments })
     }
@@ -4003,5 +4104,58 @@ mod tests {
                 "枚举内的 `{id}` 必须能用作风格预设"
             );
         }
+    }
+
+    /// T-FIX-949：`yeban_correct_pitch_job` 的 `job_id` 保留，`jobId` 作为兼容别名；
+    /// 两者同给且不同值必须响亮拒绝；未知参数仍按 UnknownParam 拒绝；schema 同时广播别名。
+    #[test]
+    fn correct_pitch_job_accepts_job_id_camel_alias() {
+        let parse = |arguments: Value| {
+            ToolCall::from_params(Some(&serde_json::json!({
+                "name": "yeban_correct_pitch_job",
+                "arguments": arguments,
+            })))
+        };
+
+        let old = parse(serde_json::json!({"job_id": "job-abc"})).expect("旧调用必须可用");
+        assert_eq!(old.arguments["job_id"], "job-abc");
+
+        let alias = parse(serde_json::json!({"jobId": "job-abc"})).expect("别名必须可用");
+        assert_eq!(alias.arguments["job_id"], "job-abc");
+        assert!(!alias.arguments.contains_key("jobId"), "别名必须归一化掉");
+
+        let same = parse(serde_json::json!({"job_id": "job-abc", "jobId": "job-abc"}))
+            .expect("同值双写可接受");
+        assert_eq!(same.arguments["job_id"], "job-abc");
+        assert!(!same.arguments.contains_key("jobId"));
+
+        let conflict = parse(serde_json::json!({"job_id": "job-a", "jobId": "job-b"}))
+            .expect_err("值不同的双写必须拒绝");
+        assert!(matches!(
+            conflict,
+            ToolCallError::ConflictingParamAlias { ref name, ref alias }
+                if name == "job_id" && alias == "jobId"
+        ));
+
+        let unknown = parse(serde_json::json!({"jobId": "job-abc", "jobiId": "typo"}))
+            .expect_err("未知参数仍必须响亮拒绝");
+        assert!(matches!(
+            unknown,
+            ToolCallError::UnknownParam { ref name } if name == "jobiId"
+        ));
+
+        let schema = tool("yeban_correct_pitch_job")
+            .expect("工具必须在注册表")
+            .input_schema();
+        assert!(
+            schema["properties"]["jobId"]["type"] == "string",
+            "tools/list 必须广播 jobId 别名"
+        );
+        assert!(
+            schema["anyOf"]
+                .as_array()
+                .is_some_and(|branches| branches.len() == 2),
+            "schema 必须允许 job_id 或 jobId 任一必填，实际={schema}"
+        );
     }
 }

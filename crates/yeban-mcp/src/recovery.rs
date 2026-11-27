@@ -176,6 +176,21 @@ pub fn tool_call_error(
                 next_step_with_arguments(tool_name.unwrap_or(""), template),
             );
         }
+        ToolCallError::ConflictingParamAlias { name, alias } => {
+            reason(&mut data, "conflictingParamAlias");
+            location(&mut data, format!("arguments.{alias}"));
+            data.insert("received".to_owned(), Value::from(alias.as_str()));
+            data.insert(
+                "expected".to_owned(),
+                Value::from(format!("只给 `{name}` 或 `{alias}` 其中一个")),
+            );
+            data.insert(
+                "nextStep".to_owned(),
+                json!({
+                    "action": format!("删掉 `{alias}` 或 `{name}` 中一个；两者值不同时不猜"),
+                }),
+            );
+        }
         ToolCallError::UnknownParam { name } => {
             reason(&mut data, "unknownParam");
             location(&mut data, format!("arguments.{name}"));
@@ -183,7 +198,10 @@ pub fn tool_call_error(
             let accepted = spec.map_or_else(Vec::new, |spec| {
                 spec.all_params()
                     .iter()
-                    .map(|param| param.name.to_owned())
+                    .flat_map(|param| {
+                        std::iter::once(param.name.to_owned())
+                            .chain(param.aliases.iter().map(|alias| (*alias).to_owned()))
+                    })
                     .collect::<Vec<_>>()
             });
             let accepted_refs: Vec<&str> = accepted.iter().map(String::as_str).collect();

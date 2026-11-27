@@ -2431,11 +2431,15 @@
         "yeban_correct_pitch_job": {
           "title": "yeban_correct_pitch_job",
           "type": "object",
-          "description": "查音高校正任务状态；成功后经提案换资产。running 回 job_id / status / notes_before / receipt_path；succeeded 回 notes_before / notes_after / measurement / asset / server / receipt_path，同时按提交时的 autoMerge 出提案（false 只出提案，true 当场合并）；failed 回 error {code, detail, block?, self_test?}，code 是固定 reason（otcpRenderFailed 等）。任务收据住在控制根的任务目录下，进程重启后仍可查。",
+          "description": "查音高校正任务状态；成功后经提案换资产。轮询参数是 job_id（也接受 camelCase 别名 jobId，两者同给且值不同会拒绝，不是只认 jobId）。running 回 job_id / status / notes_before / receipt_path；succeeded 回 notes_before / notes_after / measurement / asset / server / receipt_path，同时按提交时的 autoMerge 出提案（false 只出提案，true 当场合并）；failed 回 error {code, detail, block?, self_test?}，code 是固定 reason（otcpRenderFailed 等）。任务收据住在控制根的任务目录下，进程重启后仍可查。",
           "properties": {
             "job_id": {
               "type": "string",
-              "description": "校正任务 id（提交时返回的 job_id）"
+              "description": "校正任务 id（提交时返回的 job_id）；也接受 camelCase 别名 jobId，同给且值不同会拒绝"
+            },
+            "jobId": {
+              "type": "string",
+              "description": "兼容别名，等价于 `job_id`；同给且值不同 ⇒ 解析期响亮拒绝"
             },
             "dryRun": {
               "type": "boolean",
@@ -2446,8 +2450,17 @@
               "maxLength": 256
             }
           },
-          "required": [
-            "job_id"
+          "anyOf": [
+            {
+              "required": [
+                "job_id"
+              ]
+            },
+            {
+              "required": [
+                "jobId"
+              ]
+            }
           ]
         },
         "yeban_correct_pitch_notes": {
