@@ -2678,6 +2678,11 @@ impl Op {
                 if new_point.id != *point_id {
                     return Err(ModelError::OpStateMismatch { op: self.name() });
                 }
+                // T-FIX-948：与 MCP 写入层同一口径 —— 目标必须先对账。否则本 op 会
+                // 在"音轨存在但设备槽/参数/宏/路由边/CC 控制器不存在"时写出
+                // 一条谁都不该读到的幽灵泳道：`automation_value_at` 随后报目标错误，
+                // 而按轨遍历的界面仍会画出它。
+                target.validate_against(doc)?;
                 new_point.validate()?;
                 let current = read_automation_point(doc, target, point_id)?;
                 if current != old_point.as_ref() {

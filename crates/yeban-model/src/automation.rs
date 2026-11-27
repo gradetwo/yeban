@@ -23,16 +23,22 @@
 //! 胜者**（`point_id` 字典序最大者），求值与"曲线端点"不会因 `BTreeMap` 的键序而不同。
 //!
 //! 设 `T` 为查询 tick，排序后的点为 `p₀…pₙ₋₁`，`a` 为 `tick <= T` 的**最后**一个点
-//! （按 `(tick,id)` 序），`b` 为 `tick > T` 的**第一个**点：
+//! （按 `(tick,id)` 序，即该 tick 的胜者），`b` 为 `tick > T` 的**第一个 tick** 上的
+//! **胜者**（该 tick 上 `point_id` 最大者）：
 //!
 //! | 情形 | 结果 |
 //! | :--- | :--- |
 //! | 泳道没有采样点 | `None`（"无自动化值"，下游应退回静态值） |
-//! | `T` 在首点之前 | 首点的值（**保持**，不外推） |
-//! | `T` 在末点之后（含等于末点） | 末点的值（**保持**，不外推） |
+//! | `T` 在首点之前 | 首点的值（**保持**，不外推；"首点"按 `(tick,id)` 序） |
+//! | `T` 在末 tick 之后（含等于末 tick） | 末 tick 胜者的值（**保持**，不外推） |
 //! | 只有一个点 | 该点的值（处处保持） |
-//! | `T` 恰好落在某个点上 | 该点的值**逐位精确**（`t=0` ⇒ `u=0`） |
+//! | `T` 恰好落在某个点上 | 该 tick 胜者的值**逐位精确**（`t=0` ⇒ `u=0`） |
 //! | `a.tick < T < b.tick` | `a.value + (b.value − a.value)·u`，`u = a.curve.ease(t)`，`t = (T−a.tick)/(b.tick−a.tick)` |
+//!
+//! ⚠ `b` 必须是**下一 tick 的胜者**，不能取排序序列里下一 tick 的第一个点：否则区间
+//! 会朝着被同 tick 胜者遮蔽的败者收敛，`T` 到达该 tick 的瞬间又跳到胜者，曲线出现
+//! 一段没有任何理由的断崖。判据 `automation_point_boundaries` 的重复点删除用例钉住
+//! "区间终点换人后两侧同步改写"。
 //!
 //! 曲线形状的口径在 [`crate::CurveType::ease`]（只有 `+` `-` `*`，无超越函数 ⇒
 //! 跨架构逐位可复现，ADR-0001 D32 的"IEEE 精确类零容差"）。
@@ -232,8 +238,10 @@ impl AutomationLane {
     /// 逐位等价；热路径上不再需要"缓存排序结果再二分"。
     #[must_use]
     pub fn value_at(&self, tick: u64) -> Option<f32> {
+        // 首点（`(tick,id)` 序第一个，保留既有"首点之前保持"口径）、
+        // `tick <= T` 的胜者、下一 tick 的胜者。低端点与高端点必须按胜者取：
+        // 同 tick 的败者只在排序里占一个位置，不能成为插值端点（否则曲线会断崖）。
         let mut first: Option<AutomationPoint> = None;
-        let mut last: Option<AutomationPoint> = None;
         let mut low: Option<AutomationPoint> = None;
         let mut high: Option<AutomationPoint> = None;
         for &point in self.points.values() {
@@ -241,30 +249,27 @@ impl AutomationLane {
             if first.is_none_or(|f| key < (f.tick, f.id)) {
                 first = Some(point);
             }
-            if last.is_none_or(|l| key > (l.tick, l.id)) {
-                last = Some(point);
-            }
             if point.tick <= tick && low.is_none_or(|l| key > (l.tick, l.id)) {
                 low = Some(point);
             }
-            if point.tick > tick && high.is_none_or(|h| key < (h.tick, h.id)) {
+            if point.tick > tick
+                && high.is_none_or(|h| {
+                    point.tick < h.tick || (point.tick == h.tick && key > (h.tick, h.id))
+                })
+            {
                 high = Some(point);
             }
         }
-        let (Some(first), Some(last)) = (first, last) else {
-            return None;
-        };
-        // 首点之前 / 末点之后：**保持**（不外推）。
+        let first = first?;
+        // 首点之前：保持首点的值（不外推，既有口径）。
         if tick < first.tick {
             return Some(first.value);
         }
-        if tick >= last.tick {
-            return Some(last.value);
-        }
-        // 能到这里 ⇒ `first.tick <= tick < last.tick` ⇒ low/high 必然存在
-        //（first 是 low 的候选，last 是 high 的候选）。
-        let (Some(low), Some(high)) = (low, high) else {
-            unreachable!("first.tick <= tick < last.tick 时 low/high 必存在");
+        // 能到首点或之后 ⇒ `low` 必然存在。
+        let low = low.expect("tick >= first.tick 时 low 必存在");
+        // 没有下一 tick（含 `T == u64::MAX`）：保持末 tick 胜者的值（不外推）。
+        let Some(high) = high else {
+            return Some(low.value);
         };
         Some(interpolate(&low, &high, tick))
     }
@@ -356,9 +361,10 @@ fn interpolate(low: &AutomationPoint, high: &AutomationPoint, tick: u64) -> f32 
 }
 
 /// 已排序序列上的单点求值：与 [`AutomationLane::value_at`] **同一口径**
-/// （首点之前 / 末点之后保持端点值；`tick` 恰好落在点上时逐位返回该点值；
-/// 同 tick 的多点由 `(tick, point_id)` 最大者胜 —— 排序键已保证
-/// `partition_point` 取到的 `low` 就是那个胜者），但用**二分**代替线性扫描。
+/// （首点之前保持首点的值、末 tick 之后保持末 tick 胜者的值；`tick` 恰好落在点上时
+/// 逐位返回该 tick 胜者的值；插值终点取下一 tick 的胜者，⛔ 不取排序序列里的
+/// 第一个同 tick 点），但用**二分**定位 `tick > T` 的第一个位置，再在下一 tick
+/// 内前进到胜者。
 ///
 /// 返回 `(值, 比较次数)`；比较次数是判据用的复杂度读数，不参与求值。
 fn value_at_ordered(ordered: &[AutomationPoint], tick: u64) -> (Option<f32>, usize) {
@@ -366,7 +372,7 @@ fn value_at_ordered(ordered: &[AutomationPoint], tick: u64) -> (Option<f32>, usi
     let mut low = 0_usize;
     let mut high = ordered.len();
     let mut comparisons = 0_usize;
-    // 第一个 `tick > T` 的位置 ⇒ `low` 之前的最后一个元素就是 `tick <= T` 的胜者。
+    // 第一个 `tick > T` 的位置。
     while low < high {
         let mid = low + (high - low) / 2;
         comparisons += 1;
@@ -377,15 +383,22 @@ fn value_at_ordered(ordered: &[AutomationPoint], tick: u64) -> (Option<f32>, usi
         }
     }
     if low == 0 {
-        // 首点之前：保持首点值（含"只有一个点"与"恰好是首点"）。
+        // 首点之前：保持首点的值（既有口径，按 `(tick,id)` 序的第一个点）。
         return (Some(ordered[0].value), comparisons);
     }
     if low == ordered.len() {
-        // 末点之后（含等于末点）：保持末点值。
+        // 末 tick 之后（含等于末 tick）：保持末 tick 胜者的值。
         return (Some(ordered[ordered.len() - 1].value), comparisons);
     }
+    // `low` 是下一 tick 的第一个点；该 tick 的胜者是最后一个同 tick 点。
+    let next_tick = ordered[low].tick;
+    let mut winner = low;
+    while winner + 1 < ordered.len() && ordered[winner + 1].tick == next_tick {
+        comparisons += 1;
+        winner += 1;
+    }
     (
-        Some(interpolate(&ordered[low - 1], &ordered[low], tick)),
+        Some(interpolate(&ordered[low - 1], &ordered[winner], tick)),
         comparisons,
     )
 }
