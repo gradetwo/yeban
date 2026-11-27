@@ -4,11 +4,12 @@
 //! 每个新音符身份全新且其余表现力字段逐位沿用；剪切是"复制 + 一次删除批"，
 //! 一步撤销全部回来；目标/落点不合法时返回空批（宿主据此响亮回执，⛔ 不静默改粘片段）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yeban_app::host::{note_clipboard_notes_for, note_cut_payload_for, note_paste_ops_for};
 use yeban_model::YebanProjectV1;
 use yeban_model::ops::Op;
+use yeban_model::{ClipContent, ClipPoolEntry, EntityId};
 
 fn notes_total(project: &YebanProjectV1) -> usize {
     project
@@ -165,4 +166,45 @@ fn paste_refuses_playhead_outside_target_and_empty_clipboard() {
     let (ops, ids) = note_paste_ops_for(&project, &clipboard, "not-a-ulid", target.start_tick);
     assert!(ops.is_empty(), "无效目标片段 ⇒ 空批");
     assert!(ids.is_empty());
+}
+
+/// ⭐ T-FIX-971：选区是身份集合，工程里同一个 note id 被两个片段复用时，
+/// 复制集必须仍等于选区（一个 id 一份副本），不能按片段全表串计成 10 颗。
+#[test]
+fn copy_count_equals_selected_ids_even_if_notes_are_duplicated_across_clips() {
+    let mut project = yeban_model::samples::filled_project();
+    let (_, selected, _) = midi_fixture(&project);
+    assert_eq!(selected.len(), 2, "夹具选中两颗音符");
+
+    // 在另一个片段池条目里放入同一批 note id（真人模拟的重复 id 工程）。
+    let duplicated: Vec<_> = project
+        .clip_pool
+        .values()
+        .filter_map(|entry| entry.content.notes())
+        .flat_map(|notes| notes.values().cloned())
+        .take(1)
+        .collect();
+    assert_eq!(duplicated.len(), 1, "必须能取到一颗用于制造重复 id 的音符");
+    let extra_id = EntityId::new();
+    project.clip_pool.insert(
+        extra_id,
+        ClipPoolEntry {
+            id: extra_id,
+            name: "duplicate-id-clip".to_owned(),
+            content: ClipContent::Midi {
+                notes: duplicated.into_iter().map(|note| (note.id, note)).collect(),
+            },
+        },
+    );
+
+    let clipboard = note_clipboard_notes_for(&project, &selected);
+    assert_eq!(
+        clipboard.len(),
+        selected.len(),
+        "复制数必须等于选区数（重复 id 不得串计）: {clipboard:?}"
+    );
+    let ids: BTreeSet<_> = clipboard.iter().map(|note| note.id).collect();
+    assert_eq!(ids.len(), selected.len(), "每个选中 id 只产出一份副本");
+
+    // 红对照：把 host.rs 的 `seen.insert(*note_id)` 去重去掉 ⇒ 本条红在 clipboard.len() == 3。
 }

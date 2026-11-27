@@ -26337,13 +26337,18 @@ pub fn note_clipboard_notes_for(
         return Vec::new();
     }
     let mut notes = Vec::new();
+    // ⭐ T-FIX-971：`selected-ulids` 是**身份集合**；工程若在不同片段里复用同一个
+    // note id（真人模拟的双片段工程），旧实现在片段池全表上按 id 收集会把同一颗
+    // 音符从两个片段各收一次 —— 选 6 颗却复制 10 颗，toast 与剪贴板都多报。
+    // 这里按身份去重：一个被选中的 id 只产出一份副本，复制数恒等于选区有效 id 数。
+    let mut seen: BTreeSet<yeban_model::EntityId> = BTreeSet::new();
     // 片段池键序 → 音符键序：与 `ViewState.notes` 同源，复制顺序确定。
     for entry in project.clip_pool.values() {
         let Some(clip_notes) = entry.content.notes() else {
             continue;
         };
         for (note_id, note) in clip_notes {
-            if targets.contains(note_id) {
+            if targets.contains(note_id) && seen.insert(*note_id) {
                 notes.push(note.clone());
             }
         }
