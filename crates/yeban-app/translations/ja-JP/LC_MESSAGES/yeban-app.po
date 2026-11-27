@@ -262,6 +262,12 @@ msgstr "ループ再生：オフ (C)"
 msgid "节拍器开关"
 msgstr "メトロノーム切替"
 
+msgid "节拍器开关：开 (Ctrl+Alt+N)"
+msgstr "メトロノームスイッチ：オン (Ctrl+Alt+N)"
+
+msgid "节拍器开关：关 (Ctrl+Alt+N)"
+msgstr "メトロノームスイッチ：オフ (Ctrl+Alt+N)"
+
 msgid "预备拍开关 (Ctrl+Alt+D)"
 msgstr "カウントイン切替 (Ctrl+Alt+D)"
 

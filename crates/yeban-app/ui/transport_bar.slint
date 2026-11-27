@@ -592,6 +592,41 @@ component IconTransportLoop inherits Rectangle {
     }
 }
 
+// 节拍器字形：梯形机身 + 摆杆 + 顶端摆锤。开态由按钮底色/边框表达，
+// 字形本身只随 hover 调亮度（与同栏 stop/play/record 的笔触重量一致）。
+component IconTransportMetronome inherits Rectangle {
+    in property <color> icon-color: Tokens.skin-text-dim;
+    width: 12px;
+    height: 13px;
+
+    Path {
+        x: 0px;
+        y: 0px;
+        width: 12px;
+        height: 13px;
+        commands: "M 3.2 1 L 8.8 1 L 11 12 L 1 12 Z";
+        stroke: root.icon-color;
+        stroke-width: 1.2px;
+    }
+    Path {
+        x: 0px;
+        y: 0px;
+        width: 12px;
+        height: 13px;
+        commands: "M 6 11 L 9.1 3.2";
+        stroke: root.icon-color;
+        stroke-width: 1.2px;
+    }
+    Rectangle {
+        x: 8.1px;
+        y: 2.1px;
+        width: 2.6px;
+        height: 2.6px;
+        border-radius: 1.3px;
+        background: root.icon-color;
+    }
+}
+
 export component TransportHeaderBar inherits Rectangle {
     in-out property <bool> show-browser: true;
     in-out property <bool> show-clipmatrix: true;
@@ -602,6 +637,9 @@ export component TransportHeaderBar inherits Rectangle {
     in-out property <bool> is-playing: false;
     in-out property <bool> is-recording: false;
     in-out property <bool> is-looping: true;
+    // 节拍器开/关镜面：唯一写者是 `host::apply_action` 的 `ToggleMetronome` 臂
+    // （`ui.set_metronome_on`）；按钮与 `Cmd/Ctrl+Alt+N` 共用同一个落点。
+    in-out property <bool> metronome-on: false;
     in-out property <string> timecode-text: "003.02.01";
     in-out property <int> bpm-val: 124;
     in-out property <string> bpm-display: "124.00";
@@ -627,6 +665,7 @@ export component TransportHeaderBar inherits Rectangle {
     callback toggle-rec();
     callback toggle-record();
     callback toggle-loop();
+    callback toggle-metronome();
     callback rewind();
     callback change-bpm(int);
     callback change-scale(string);
@@ -1049,6 +1088,44 @@ export component TransportHeaderBar inherits Rectangle {
                             clicked => { root.toggle-loop(); }
                         }
                         TooltipBubble { text: @tr("选区循环播放开关 [C]"); is-visible: btn_loop_touch.has-hover; }
+                    }
+
+                    // 6. Metronome Toggle Button (♩)
+                    // T-FIX-867：旧 `transport.slint` 的 `transport-metronome-button`
+                    // 落到**新顶栏真的被实例化**的这颗键；`accessible-id` 与旧件一致。
+                    // `T-FIX-555` 未合入 ⇒ 先服从本栏既有的 F2 `overflow` 口径：
+                    // 窄档（`transport-overflow`）下与 KEY/SCALE 等一起离场，键盘入口仍在。
+                    btn_metronome := Rectangle {
+                        visible: !root.overflow;
+                        width: 32px;
+                        height: 24px;
+                        border-radius: 3px;
+                        accessible-role: button;
+                        accessible-id: "transport-metronome-button";
+                        accessible-label: root.metronome-on
+                            ? @tr("节拍器开关：开 (Ctrl+Alt+N)")
+                            : @tr("节拍器开关：关 (Ctrl+Alt+N)");
+                        accessible-action-default => { root.toggle-metronome(); }
+                        background: root.metronome-on
+                            ? Theme.accent.with-alpha(0.22)
+                            : (btn_metronome_touch.has-hover ? Tokens.bg-lane2 : transparent);
+                        border-width: root.metronome-on ? 1px : (btn_metronome_touch.has-hover ? 1px : 0);
+                        border-color: root.metronome-on ? Theme.accent.with-alpha(0.70) : Tokens.line-strong;
+                        IconTransportMetronome {
+                            icon-color: root.metronome-on
+                                ? Theme.accent
+                                : (btn_metronome_touch.has-hover ? Tokens.skin-text-body : Tokens.skin-text-dim);
+                        }
+                        btn_metronome_touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-metronome(); }
+                        }
+                        TooltipBubble {
+                            text: root.metronome-on
+                                ? @tr("节拍器开关：开 (Ctrl+Alt+N)")
+                                : @tr("节拍器开关：关 (Ctrl+Alt+N)");
+                            is-visible: btn_metronome_touch.has-hover;
+                        }
                     }
                 }
             }

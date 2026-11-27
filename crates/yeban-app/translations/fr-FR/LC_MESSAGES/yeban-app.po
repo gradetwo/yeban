@@ -262,6 +262,12 @@ msgstr "Boucle : désactivée (C)"
 msgid "节拍器开关"
 msgstr "Métronome"
 
+msgid "节拍器开关：开 (Ctrl+Alt+N)"
+msgstr "Interrupteur métronome : activé (Ctrl+Alt+N)"
+
+msgid "节拍器开关：关 (Ctrl+Alt+N)"
+msgstr "Interrupteur métronome : désactivé (Ctrl+Alt+N)"
+
 msgid "预备拍开关 (Ctrl+Alt+D)"
 msgstr "Compte à rebours (Ctrl+Alt+D)"
 

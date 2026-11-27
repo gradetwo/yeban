@@ -203,15 +203,15 @@ impl ElementRegistry {
         //
         // ⭐ T-FIX-122（2026-11-23）：`transport.slint` 是**死文件**（全仓没有任何
         // `.slint` import 它；`app.slint:8` 只 import `transport_bar.slint` 的
-        // `TransportHeaderBar`）。本段 5 条已按"一个 id 一颗真键"落到活文件：
+        // `TransportHeaderBar`）。本段 6 条已按"一个 id 一颗真键"落到活文件：
         //   `transport-play-button` / `transport-stop-button` /
-        //   `transport-record-button` / `transport-loop-button`（四颗走带键）与
+        //   `transport-record-button` / `transport-loop-button` /
+        //   `transport-metronome-button`（T-FIX-867 恢复的第五颗走带键）与
         //   `transport-timecode`（只读读数）。
         //
-        // ⚠ 剩下 11 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
+        // ⚠ 剩下 10 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
         // 的节点，比指向死文件更假）：
-        //   * `transport-save-button` / `transport-metronome-button`：顶栏今天没有这两颗键
-        //     （保存走宿主菜单；节拍器只有 `app.slint` 的菜单项与快捷键）；
+        //   * `transport-save-button`：顶栏今天没有保存键（保存走宿主菜单）；
         //   * `transport-branch-button` / `transport-commit-button` / `transport-revert-button`：
         //     顶栏没有可见键，且 `the_remaining_transport_document_actions_are_not_wired_today`
         //     已登记"能力不存在 / 未接线"；
@@ -268,12 +268,16 @@ impl ElementRegistry {
             false,
         );
         // ⭐ 节拍器开关（`[ARCH-RT-001]` 的界面侧）：`Cmd/Ctrl+Alt+N` 的可点等价物。
-        // 宽档（≥1120）才画；窄档仍可从键盘拨动（同一个宿主落点）。
-        registry.add_known_absent(
+        // T-FIX-867：旧 `transport.slint` 的 `transport-metronome-button` 已落到
+        // 新顶栏 `transport_bar.slint` 的 `btn_metronome`；`accessible-label` 随
+        // `metronome-on` 两态变化，注册表按 loop 键同款取静态概括（两态并一条）。
+        // `T-FIX-555` 未合入前，窄档服从本栏既有 `overflow` 口径；键位入口不受影响。
+        registry.add(
             "transport-metronome-button",
             ElementKind::Button,
-            "节拍器 (Cmd/Ctrl + Alt + N)",
-            "顶栏没有节拍器控件",
+            "transport_bar.slint",
+            "节拍器开关：开 / 关 (Ctrl+Alt+N)",
+            false,
         );
         // `ROAD-M4-008` 选项 (a)：产品二进制里的**保存**入口（用户够得到的那个按钮）。
         // 它不改工程内容，只是把"保存"交给宿主（`host::wire_save` → `save_action`）。

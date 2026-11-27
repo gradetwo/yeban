@@ -1826,6 +1826,23 @@ impl LiveUi {
         )
     }
 
+    /// ⭐ 音频读路径累计发出的**节拍器咔哒**数（`EngineStats::metronome_clicks`）。
+    ///
+    /// `T-FIX-867` 用它判"指针按按钮后真的响、再按真的不响"：只读界面属性
+    /// `metronome-on` 证明不了快照里有没有节拍器计划，必须数到渲染出来的咔哒。
+    ///
+    /// 没有引擎 ⇒ `None`（不猜）。
+    // ⚠ `#[allow(dead_code)]`：同款近例见 `engine_metronome_enabled` 上方那条。
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn engine_metronome_clicks(&self) -> Option<u64> {
+        self.surface
+            .engine
+            .borrow()
+            .engine_stats()
+            .map(|stats| stats.metronome_clicks)
+    }
+
     /// ⭐ 装配**这一条走带**是否在跑 —— 读的是 `EngineHost::transport()`（RT→控制侧的
     /// 镜面读数），⛔ 不是界面属性 `playing`（那只是它的投影）。
     ///
@@ -2037,6 +2054,30 @@ impl LiveUi {
         key: yeban_ui_test_port::port::KeyCode,
     ) -> Result<(), PortError> {
         self.surface.inner.dispatch_key_press(key)
+    }
+
+    /// 在**这个活窗口**上按一次控件（重抓树 → 指针按下 → 松开）。
+    ///
+    /// `T-FIX-867` 用它按走带区那颗 `transport-metronome-button`：⛔ 不是直接调
+    /// Rust 回调，而是走真命中测试；找不到控件时如实返回 `PortError`。
+    ///
+    /// # Errors
+    ///
+    /// 重抓树失败、找不到控件、或端口拒绝注入。
+    pub fn click_element(
+        &mut self,
+        element_id: &str,
+        x_offset: f64,
+        y_offset: f64,
+    ) -> Result<(), PortError> {
+        self.surface.refresh_tree().map_err(wiring_rejected)?;
+        self.surface.inner.dispatch_pointer_down(
+            element_id,
+            x_offset,
+            y_offset,
+            PointerButton::Left,
+        )?;
+        self.surface.inner.dispatch_pointer_up(PointerButton::Left)
     }
 
     /// 在这个活窗口上注入一次组合键（`ui/dispatch_key_chord` 的**本体**，缺陷 `D-UI-3`）。

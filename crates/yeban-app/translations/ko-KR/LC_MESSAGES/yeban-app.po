@@ -262,6 +262,12 @@ msgstr "반복 재생: 꺼짐 (C)"
 msgid "节拍器开关"
 msgstr "메트로놈 전환"
 
+msgid "节拍器开关：开 (Ctrl+Alt+N)"
+msgstr "메트로놈 스위치: 켬 (Ctrl+Alt+N)"
+
+msgid "节拍器开关：关 (Ctrl+Alt+N)"
+msgstr "메트로놈 스위치: 끔 (Ctrl+Alt+N)"
+
 msgid "预备拍开关 (Ctrl+Alt+D)"
 msgstr "카운트인 전환 (Ctrl+Alt+D)"
 

@@ -262,6 +262,12 @@ msgstr "Loop Playback Switch: Off (C)"
 msgid "节拍器开关"
 msgstr "Toggle Metronome"
 
+msgid "节拍器开关：开 (Ctrl+Alt+N)"
+msgstr "Metronome Switch: On (Ctrl+Alt+N)"
+
+msgid "节拍器开关：关 (Ctrl+Alt+N)"
+msgstr "Metronome Switch: Off (Ctrl+Alt+N)"
+
 msgid "预备拍开关 (Ctrl+Alt+D)"
 msgstr "Toggle Count-In (Ctrl+Alt+D)"
 

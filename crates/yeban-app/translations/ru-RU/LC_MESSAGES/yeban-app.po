@@ -262,6 +262,12 @@ msgstr "Повтор воспроизведения: выкл. (C)"
 msgid "节拍器开关"
 msgstr "Метроном"
 
+msgid "节拍器开关：开 (Ctrl+Alt+N)"
+msgstr "Переключатель метронома: вкл. (Ctrl+Alt+N)"
+
+msgid "节拍器开关：关 (Ctrl+Alt+N)"
+msgstr "Переключатель метронома: выкл. (Ctrl+Alt+N)"
+
 msgid "预备拍开关 (Ctrl+Alt+D)"
 msgstr "Вступительные удары (Ctrl+Alt+D)"
 
