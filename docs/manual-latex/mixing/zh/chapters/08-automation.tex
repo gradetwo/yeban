@@ -1,6 +1,8 @@
 \chapter{自动化混音}
 \label{chap:automation}
 
+\classquote{穷则变，变则通，通则久。}{《周易·系辞下》}{简注：走到尽头就要变，变了才通，通了才久；自动化是在时间轴上随段落改变推子与参数，而不是一个静态开关。}
+
 静态混音回答“整首歌用同一个推子位置”，自动化回答“第几小节推到哪里”。夜半的自动化不是插件里的一个“自动化开关”，而是挂在每条音轨上的一组曲线：每个点记录一个 tick 和一个值，播放或导出时由模型按曲线求值，再用这个值取代（不是叠加）该目标的静态值。本章只写活尖端真实存在的目标、泳道、读/写标志与编辑入口；没有做出来的部分在末尾逐条列出。
 
 \section{自动化在夜半的层级}
@@ -400,3 +402,9 @@ tick & 小节 & 值 & 意图 \\
 \caption{第八章帮助主题映射}
 \label{tab:automation-help-map}
 \end{table}
+
+\section*{延伸阅读}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://www.ableton.com/en/blog/}——Ableton 博客：看自动化泳道与段落变化的制作案例，补足“何时动、动多少”的判断。
+\item \url{https://github.com/gradetwo/yeban}——夜半仓库：按源码核对自动化目标、泳道与读/写标志的真实实现边界。
+\end{itemize}

@@ -1,6 +1,8 @@
 \chapter{Automation Mixing}
 \label{chap:automation}
 
+\classquote{穷则变，变则通，通则久。}{《周易·系辞下》 / The Book of Changes, "Xi Ci II"}{Translation: When it is exhausted, it changes; having changed, it passes through; having passed through, it lasts. Note: automation changes faders and parameters over song time; it is not a static switch.}
+
 Static mixing answers ``where should the fader sit for the whole song?'' Automation answers ``where should it sit at bar 5?'' In Yeban, automation is not a switch inside a plug-in. It is a set of curves attached to each track: every point stores a tick and a value, and playback or export evaluates the curve through one model entry point. The resulting value replaces the target's static value; it is not added to it. This chapter documents only the targets, lanes, read/write flags and edit entry points that exist on the live tip. Missing pieces are listed at the end.
 
 \section{The layers of automation}
@@ -400,3 +402,9 @@ Current boundaries & \texttt{automation-gaps} \\
 \caption{Chapter 8 help-topic mapping}
 \label{tab:automation-help-map}
 \end{table}
+
+\section*{Further Reading}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://www.ableton.com/en/blog/} — Ableton blog: see automation lanes and section-change cases, and fill in the judgment of when to move and how far.
+\item \url{https://github.com/gradetwo/yeban} — Yeban repository: check the source for the real boundaries of automation targets, lanes, and read/write flags.
+\end{itemize}

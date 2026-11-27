@@ -1,6 +1,8 @@
 \chapter{总线与母带入门}
 \label{chap:bus-mastering}
 
+\classquote{治大国若烹小鲜。}{《老子·第六十章》}{简注：治理大国像煎小鱼，翻动太多就碎；母带阶段对总线的处理要轻、要稳，不要反复大动。}
+
 总线是“多条轨汇到一处再处理”的地方；母带是“整首歌定稿前的最后一轮总线处理与交付检查”。夜半没有独立的母带套件，只有三类真实入口：辅助返回轨（\texttt{AuxReturn}）、主总线（\texttt{Master}）上的插入链与推子，以及导出对话框里的母线限制器、位深/采样率/时长选项和导出后的实测行。本章按这三类入口写；响度目标、真峰值上限与响度归一化只在 CLI/MCP 路径存在，界面没有输入框，不能假装有。
 
 \section{信号从轨到文件}
@@ -286,3 +288,9 @@ GUI 响度目标/真峰值上限 & 没有；只在 CLI/MCP \\
 \caption{第九章帮助主题映射}
 \label{tab:mastering-help-map}
 \end{table}
+
+\section*{延伸阅读}
+\begin{itemize}[leftmargin=1.5em]
+\item \url{https://www.izotope.com/en/learn.html}——iZotope 学习库：读总线处理、限制器与响度的入门材料，补足母带阶段的检查顺序。
+\item \url{https://www.soundonsound.com/reviews}——Sound On Sound 评测库：读母带工具与监听设备评测，理解“轻处理”为什么比堆插件更难。
+\end{itemize}
