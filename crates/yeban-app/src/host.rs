@@ -885,6 +885,18 @@ fn set_scene_launch_status(ui: &MainWindow, text: &str) {
     ui.set_scene_launch_status(text.into());
 }
 
+/// 从“已排队：名字”/“已开始：名字（…）”里取出场景名，供“已生效”回执复用。
+///
+/// 只解析本文件自己写出的两种前缀；解析失败时用中性词“场景”，⛔ 不伪造一个名字。
+fn scene_launch_name_from_status(status: &str) -> String {
+    status
+        .split_once('：')
+        .map(|(_, rest)| rest.split('（').next().unwrap_or(rest).trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("场景")
+        .to_owned()
+}
+
 /// **行几何**（`ADR-0004` S0/S1）的全部注入数组 —— [`apply_view`] 的**子集**，
 /// 而且列表**只有这一份**：[`apply_view`] 自己调用的就是这个函数。
 ///
@@ -7018,6 +7030,12 @@ pub struct ProductionLoop {
     /// pending 队列的走带命令可能**过了补写期限**才被记为真丢（那时发起方早已
     /// 返回）⇒ 那个"超时丢"只能在心跳之后的 `tick` 里报。只比总数，不重复弹。
     transport_dropped_seen: u64,
+    /// ⭐ `T-FIX-837`：上一次在这一跳看到的 `scene_launches_applied` 读数。
+    ///
+    /// "已生效"只能由**引擎真实计数前进**触发（⛔ 不按定时器猜）。读口在控制
+    /// 驱动档可用；设备腿档返回 `None` ⇒ 本跳不动（该档的既有读口限制见
+    /// [`EngineHost::scene_launches_applied`]）。
+    scene_applied_seen: u64,
 }
 
 /// 端点看护状态（T-FIX-225）。全部是**控制面**数字，不进实时路径。
@@ -7187,6 +7205,7 @@ impl ProductionLoop {
             last_device_config: None,
             device_watch: DeviceWatch::default(),
             transport_dropped_seen: 0,
+            scene_applied_seen: 0,
         })
     }
 
@@ -7205,6 +7224,7 @@ impl ProductionLoop {
             last_device_config: None,
             device_watch: DeviceWatch::default(),
             transport_dropped_seen: 0,
+            scene_applied_seen: 0,
         }
     }
 
@@ -7557,6 +7577,9 @@ impl ProductionLoop {
         // ⭐ `#228`：**走带读数**（`Copy` 的一帧，一次原子镜面读）。
         // ⛔ 在借内只读、不写界面：界面写入一律在 `drop(engine)` 之后（`#212`）。
         let transport = engine.transport();
+        // ⭐ T-FIX-837：场景启动的**生效**读数（控制驱动档有值；设备腿档为 None）。
+        // 只在计数**前进**时把回执从“已排队/已开始”改成“已生效”，⛔ 不按定时器猜。
+        let scene_applied = engine.scene_launches_applied();
         // ⭐ **自动化「当前值」跟到播放头**：标签里的数值取的是 `position_ticks`
         // 那一刻的求值结果（投影期同一件事由 `playhead_tick` 交给投影）。只在**位置变了**
         // 的那一跳重算 —— 几何（折线 / 带 / 轴）与位置无关 ⇒ ⛔ 不重投影、⛔ 不换几何数组。
@@ -7583,6 +7606,19 @@ impl ProductionLoop {
         // ⛔ 它**不是**第 5 个"必做步骤"：它只写一个 Slint 属性（无 I/O、无分配上限、
         //   不阻塞），即使失败也不影响前三步的读数。
         drop(engine);
+        if let Some(applied) = scene_applied {
+            if applied > self.scene_applied_seen {
+                self.scene_applied_seen = applied;
+                let status = ui.get_scene_launch_status();
+                if status.starts_with("已排队") || status.starts_with("已开始") {
+                    let name = scene_launch_name_from_status(status.as_str());
+                    set_scene_launch_status(ui, &format!("已生效：{name}"));
+                }
+            } else if applied < self.scene_applied_seen {
+                // 引擎换代（重建）⇒ 计数从 0 起算；只对齐基准，不改回执。
+                self.scene_applied_seen = applied;
+            }
+        }
         apply_engine_error(
             ui,
             match (&publish_error, published_revision) {
@@ -8012,6 +8048,19 @@ fn wire_transport_with_wiring(
             eprintln!("[yeban-app] 忽略 stop：引擎正被同一线程借用（重入）⇒ 本次按键无效");
             return;
         };
+        // ⭐ T-FIX-837：停止必须**取消**尚未生效的场景启动，而不是让它继续在后续
+        // 量子静默到点。控制驱动档能在停之前读到 pending；设备腿档读不到（运行时在
+        // cpal 回调线程）⇒ 引擎侧收到 `Stop` 时自己清 pending（同一语义，见 rt.rs）。
+        // ⚠ 只有**真的有 pending**才写"已取消"，否则停止一个已经生效的场景会把
+        // "已生效"改写成假取消。设备腿档读不到引擎 pending（`None`），但界面回执
+        // 仍是本文件写出的"已排队/已开始" ⇒ 用这条回执作为设备腿的已知证据。
+        let pending_in_engine = engine.has_pending_scene_launch();
+        let pending_status = stop_ui.upgrade().is_some_and(|ui| {
+            let status = ui.get_scene_launch_status();
+            status.starts_with("已排队") || status.starts_with("已开始")
+        });
+        let cancelled_pending =
+            pending_in_engine == Some(true) || (pending_in_engine.is_none() && pending_status);
         let reading = engine.stop_and_rewind();
         // ⭐ `#227`：停止按钮已经**回起点** ⇒ 清掉"待配对的停住时刻"。否则用户在
         // 按下停止按钮之后 1.5 s 内按 `Space`，会被当成"连按的第二次"而**只是**再定位一次，
@@ -8023,6 +8072,20 @@ fn wire_transport_with_wiring(
         if let Some(ui) = stop_ui.upgrade() {
             apply_transport(&ui, reading);
             report_transport_dispatch(&ui, dispatch);
+            if cancelled_pending {
+                if dispatch.is_dropped() {
+                    // 停止命令没进环 ⇒ 引擎侧的取消也不成立，⛔ 不许写“已取消”。
+                    set_scene_launch_status(
+                        &ui,
+                        "停止命令没有送到引擎：场景启动未被取消（再按一次）",
+                    );
+                } else {
+                    // 回执与当前场景属于同一次启动：启动被取消了 ⇒ 高亮也要退回，
+                    // 不能让界面继续指着"即将生效"的场景。
+                    apply_current_scene(&ui, None);
+                    set_scene_launch_status(&ui, "已取消：停止");
+                }
+            }
         } else {
             debug_assert!(false, "MainWindow 在回调执行期间被销毁");
         }

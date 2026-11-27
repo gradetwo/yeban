@@ -6349,18 +6349,28 @@ impl EngineRuntime {
                     let _ = params.accept(target, value, *armed_master);
                 }
             }
-            if let EngineEvent::Transport { command } = event
-                && let TransportEffect::Seeked { frames, .. } = transport.apply(command)
-            {
-                synth.seek(frames);
-                post_seek_start = current_idx + 1;
-                // ⭐ `#231`：记下"本量子定位过"。游标的实际搬回在快照借出之后
-                // （见下面 `synth.realign_cursors(...)` 的调用点）。
-                seeked = true;
-                // 节拍器也要重新对齐：从第 8 小节跳回第 1 小节之后，下一拍必须落在
-                // 新位置之后的拍栅格上，而不是继续等第 9 小节的强拍（`ticks_per_beat`
-                // 为 0 = 还没有任何快照被武装 ⇒ `resync` 不发明栅格）。
-                metronome.resync(transport.position_ticks(), *armed_metronome_ticks_per_beat);
+            if let EngineEvent::Transport { command } = event {
+                // ⭐ T-FIX-837：**走带停住/暂停即取消未生效的场景启动**。
+                // 用户按下停止（或空格停住）之后，排队的场景启动不许再在后续量子
+                // 静默生效：停止是一条明确的"不要动"命令。取消是幂等的；已经生效的
+                // 启动早已把 `pending_launch` 清回 `None`，所以这里不会误伤"已生效"。
+                if matches!(
+                    command,
+                    crate::ring::TransportCommand::Stop | crate::ring::TransportCommand::Pause
+                ) {
+                    *pending_launch = None;
+                }
+                if let TransportEffect::Seeked { frames, .. } = transport.apply(command) {
+                    synth.seek(frames);
+                    post_seek_start = current_idx + 1;
+                    // ⭐ `#231`：记下"本量子定位过"。游标的实际搬回在快照借出之后
+                    // （见下面 `synth.realign_cursors(...)` 的调用点）。
+                    seeked = true;
+                    // 节拍器也要重新对齐：从第 8 小节跳回第 1 小节之后，下一拍必须落在
+                    // 新位置之后的拍栅格上，而不是继续等第 9 小节的强拍（`ticks_per_beat`
+                    // 为 0 = 还没有任何快照被武装 ⇒ `resync` 不发明栅格）。
+                    metronome.resync(transport.position_ticks(), *armed_metronome_ticks_per_beat);
+                }
             }
             // ⭐ 环音符事件延迟到步骤 2 快照武装之后统一按真实音源（鼓机 ＞ SFZ ＞ 复音）派发，
             // 同时跳过发生在最后一次 `SeekTicks` 之前的已作废音符。
@@ -7555,7 +7565,14 @@ impl EngineRuntime {
             // 走带是唯一时钟 ⇒ 生效判决放在推进之后：`frames_until_switch` 每块只减一次、
             // 减到 0 才动作（整数减法＋一次比较，零分配）。触发后状态机回到 `None`
             // ⇒ 幂等、⛔ 不重复触发。
+            // ⭐ T-FIX-837：**普通排队只在走带运行时递减**。停止态不再让排队启动
+            // 按墙钟量子偷偷走到生效点；停止命令本身已在上面把 pending 清掉。
+            // ⚠ 唯一例外是 T-FIX-821 钉住的"停住态点场景"：该 pending 自身带着
+            // `start_transport=true`，它的契约就是**在停住态等到量化点再起播**；
+            // 若也按 running 锁死，那条既有判据会永远等不到生效。因此只放行
+            // "自带起播"的 pending —— 它的终点就是开始播放，不是绕过停止。
             if let Some(launch) = pending_launch
+                && (running || launch.start_transport)
                 && launch.advance(frames as u64)
             {
                 // tempo 覆盖：`arm` 保位置、只重算有理数（⛔ 不跳变）。
