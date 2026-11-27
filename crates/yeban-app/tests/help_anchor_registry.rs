@@ -242,11 +242,50 @@ fn missing_and_external_anchors_are_never_covered() {
 }
 
 #[test]
+fn all_349_manual_section_anchors_are_registered_without_duplicates_or_dangling() {
+    let expected: BTreeSet<&str> = include_str!("fixtures/manual_anchors_349.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(
+        expected.len(),
+        358,
+        "对齐 onboarding 后 358 个主题（10 个已有 Present + 348 External）"
+    );
+    for anchor in &expected {
+        assert!(
+            manual::resolve_help_anchor(anchor).is_some(),
+            "手册锚点 {anchor} 悬空"
+        );
+    }
+    let external = manual::HELP_ANCHORS
+        .iter()
+        .filter(|r| matches!(r.status, HelpTopicStatus::External))
+        .count();
+    assert_eq!(external, 348, "349 条中 onboarding 由 Present 行承载");
+    for row in manual::HELP_ANCHORS {
+        if row.status == HelpTopicStatus::External {
+            assert!(
+                row.chapter.is_none() && row.entry.is_none(),
+                "External 行 {} 不许有落点",
+                row.anchor
+            );
+        }
+    }
+    let on = manual::resolve_help_anchor("getting-started-onboarding").expect("onboarding");
+    assert!(on.is_covered(), "onboarding 必须仍可打开");
+    assert_eq!(on.entry, Some("help-onboarding"));
+    assert!(
+        manual::resolve_help_anchor("help-onboarding").is_none(),
+        "旧锚点名不许双名并存"
+    );
+}
+
+#[test]
 fn ui_ids_are_not_help_anchors() {
     // 同名 UI id 与近似串一律不是帮助落点：注册表只做精确匹配。
     for anchor in [
-        "export-wav-dialog",
-        "plugin-scan",
         "plugin-scan-button",
         "plugin-scan-paths",
         "plugin-scan-status",
@@ -262,6 +301,11 @@ fn ui_ids_are_not_help_anchors() {
             !manual::covered_anchors().any(|row| row.anchor == anchor),
             "锚点 {anchor:?} 不许出现在已覆盖清单里"
         );
+    }
+    for anchor in ["export-wav-dialog", "plugin-scan"] {
+        let row = manual::resolve_help_anchor(anchor).expect("手册 External 行");
+        assert_eq!(row.status, HelpTopicStatus::External);
+        assert!(!row.is_covered());
     }
 }
 
