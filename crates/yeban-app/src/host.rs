@@ -30851,24 +30851,6 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
         }
     });
 
-    // 6. Clip & Scene 激发
-    ui.on_clip_trigger({
-        let weak = weak.clone();
-        move |track_id, clip_idx| {
-            if let Some(ui) = weak.upgrade() {
-                ui.set_is_playing(true);
-                ui.set_toast_message(
-                    format!(
-                        "[播放] 触发轨道 TRK {:02} 第 {} 个 Clip 播放",
-                        track_id,
-                        clip_idx + 1
-                    )
-                    .into(),
-                );
-            }
-        }
-    });
-
     ui.on_scene_trigger({
         let weak = weak.clone();
         move |scene_idx| {
@@ -33799,20 +33781,56 @@ pub fn wire_aether_actions(
         }
     });
 
-    // ⑨ clip-trigger: 从活投影解析 clip ULID, 转发到 wire_clip_scope 的真实选中入口。
+    // ⑨ clip-trigger: 按 (track_id, clip_idx) 从活投影解析该轨片段，再转发
+    // `wire_clip_scope` 的真实选中入口。轨道身份来自 UI，不能丢。
     ui.on_clip_trigger({
         let w = weak.clone();
-        move |_track, clip_idx| {
+        let view = Rc::clone(&view);
+        move |track_id, clip_idx| {
             let Some(ui) = w.upgrade() else {
                 return;
             };
-            // 与 `wire_clip_scope` 的准入检查同源: 直接用注入面的 clip-ulids,
-            // ⛔ 不从投影另算一遍(两处口径会漂移)。
-            let index = usize::try_from(clip_idx).unwrap_or(usize::MAX);
-            let Some(ulid) = ui.get_clip_ulids().row_data(index) else {
+            let Some(track_index) = usize::try_from(track_id)
+                .ok()
+                .and_then(|id| id.checked_sub(1))
+            else {
+                update_toast(&ui, "未选中：轨道编号非法");
                 return;
             };
-            ui.invoke_clip_select(ulid);
+            let Some(clip_index) = usize::try_from(clip_idx).ok() else {
+                update_toast(&ui, "未选中：片段编号非法");
+                return;
+            };
+            // 活投影的 clips 已是「轨道序 → 摆放身份」；与 `view_to_tracks` 的
+            // `clip1..4` 过滤同一份序。⛔ 不能用全局 `clip-ulids[clip_idx]`：
+            // 那会点到别的轨。
+            let Some((ulid, track_name, clip_name)) = ({
+                let view = view.borrow();
+                view.clips
+                    .iter()
+                    .filter(|clip| clip.track_index == track_index)
+                    .nth(clip_index)
+                    .map(|clip| {
+                        (
+                            clip.placement_id.clone(),
+                            clip.track_name.clone(),
+                            clip.clip_name.clone(),
+                        )
+                    })
+            }) else {
+                update_toast(
+                    &ui,
+                    format!("未选中：第 {track_id} 轨第 {} 格没有片段", clip_index + 1),
+                );
+                return;
+            };
+            let known = ui.get_clip_ulids();
+            if !known.iter().any(|id| id.as_str() == ulid) {
+                update_toast(&ui, "未选中：目标片段不在当前视图");
+                return;
+            }
+            ui.invoke_clip_select(ulid.into());
+            update_toast(&ui, format!("已选中：{track_name} · {clip_name}"));
         }
     });
 
