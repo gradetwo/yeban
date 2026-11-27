@@ -13804,6 +13804,15 @@ fn export_measurement_line(
     format!("实测 · 真峰值 {true_peak} · 积分响度 {integrated} · LRA {range}")
 }
 
+/// 导出**失败**后的实测行：必须把上一轮的成功读数替换成“未测 + 原因”，
+/// 并与同一次失败回执使用**同一个** reason 字符串。
+///
+/// 为什么不能留空：`export-wav-measurement` 只在非空时写界面；失败时留空等于
+/// 让上一次的真峰值/LUFS 继续挂在那里，用户会把它当成这次导出的测量。
+fn export_measurement_failure_line(reason: &str) -> String {
+    format!("未测 · 导出失败：{reason}")
+}
+
 /// `YEBAN_UI_MODULE_TRACE=1` 时把每一步的墙钟读数打到 stderr。
 ///
 /// 为什么要有它：本机纪律禁止在这里跑基准，而"经 UI 触发一次动作要多久"是交付读数。
@@ -18713,11 +18722,11 @@ pub fn wire_module_actions_with_shared(
             // 工程读数来自端口（撤销之后按导出 ⇒ 导出的是撤销之后那一版）。
             // 没有端口时退回**这一次装配**能看到的界面态：没有工程可导出 ⇒ 如实拒绝。
             let Some(port) = port.as_ref() else {
-                let receipt = module_receipt(
-                    "export-wav",
-                    &module_error_fields("no-project", "没有撤销端口 ⇒ 拿不到当前工程的权威读数"),
-                );
+                let reason = "没有撤销端口 ⇒ 拿不到当前工程的权威读数";
+                let receipt =
+                    module_receipt("export-wav", &module_error_fields("no-project", reason));
                 apply_module_receipt(&ui, &receipt, false);
+                ui.set_export_wav_measurement(export_measurement_failure_line(reason).into());
                 module_trace("export-wav", started, &receipt);
                 return;
             };
@@ -18727,14 +18736,13 @@ pub fn wire_module_actions_with_shared(
             // **panic**（见 `UndoPort::project` 的 `# Panics`），而用户按下导出按钮的
             // 这一刻完全可能正是工程刚被控制面关掉之后。
             let Some(project) = port.try_project() else {
+                let reason = "控制面已关闭当前工程（`yeban_close_project`）⇒ 没有可导出的工程读数";
                 let receipt = module_receipt(
                     "export-wav",
-                    &module_error_fields(
-                        NO_ACTIVE_PROJECT_CODE,
-                        "控制面已关闭当前工程（`yeban_close_project`）⇒ 没有可导出的工程读数",
-                    ),
+                    &module_error_fields(NO_ACTIVE_PROJECT_CODE, reason),
                 );
                 apply_module_receipt(&ui, &receipt, false);
+                ui.set_export_wav_measurement(export_measurement_failure_line(reason).into());
                 module_trace("export-wav", started, &receipt);
                 return;
             };
@@ -18765,6 +18773,7 @@ pub fn wire_module_actions_with_shared(
                         &module_error_fields("invalid-options", &message),
                     );
                     apply_module_receipt(&ui, &receipt, false);
+                    ui.set_export_wav_measurement(export_measurement_failure_line(&message).into());
                     module_trace("export-wav", started, &receipt);
                     return;
                 }
@@ -18917,16 +18926,19 @@ pub fn wire_module_actions_with_shared(
                                 measurement,
                             )
                         }
-                        Err(error) => (
-                            module_receipt(
-                                "export-wav",
-                                &module_error_fields("export-wav", &error.to_string()),
-                            ),
-                            false,
-                            String::new(),
-                            None,
-                            String::new(),
-                        ),
+                        Err(error) => {
+                            let reason = error.to_string();
+                            (
+                                module_receipt(
+                                    "export-wav",
+                                    &module_error_fields("export-wav", &reason),
+                                ),
+                                false,
+                                String::new(),
+                                None,
+                                export_measurement_failure_line(&reason),
+                            )
+                        }
                     };
                     apply_module_receipt_with_clipping_warning(
                         &ui,
