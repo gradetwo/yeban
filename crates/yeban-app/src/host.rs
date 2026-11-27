@@ -16644,7 +16644,9 @@ fn refresh_sound_pack_installed_flags(ui: &MainWindow) {
 /// **原生预制库的 GUI 接线（T-FIX-77）**。
 ///
 /// 四个动作与 MCP 工具共用同一份构造：
-/// - 列出：`preset::list_presets_json("all", None)`（工厂内嵌 + 用户库读盘）；
+/// - 列出：工厂 + 用户库（`preset::list_presets_json("all", None)`)，
+///   再并入**当前工程内嵌副本**（T-FIX-807）——同一份 `embedded` 表既供列表
+///   又供 resolve / bypass，⛔ 不再使用空表；
 /// - 应用：`preset::resolve_preset` + `preset::build_apply_ops`（缺省五类）；
 /// - 另存：`preset::build_save_preset` + `preset::write_user_preset_file`
 ///   （同名未显式覆盖时，`Conflict` 的原文直接回到面板的 `error` 行）；
@@ -16676,12 +16678,26 @@ pub fn wire_preset_library(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
         Ok((project, track_id))
     }
 
-    fn rows() -> Vec<crate::ui::PresetRowData> {
+    fn embedded_table(
+        port: Option<&Rc<UndoPort>>,
+    ) -> Result<BTreeMap<String, yeban_model::Preset>, String> {
+        let Some(port) = port else {
+            return Ok(BTreeMap::new());
+        };
+        let entries = port.embedded_presets();
+        if entries.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        preset::parse_embedded_presets(&entries).map_err(|error| fault_text(&error))
+    }
+
+    fn rows(port: Option<&Rc<UndoPort>>) -> Result<Vec<crate::ui::PresetRowData>, String> {
+        let embedded = embedded_table(port)?;
         let listing = preset::list_presets_json("all", None);
         let Some(presets) = listing.get("presets").and_then(serde_json::Value::as_array) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        presets
+        let mut rows: Vec<crate::ui::PresetRowData> = presets
             .iter()
             .filter_map(|row| {
                 let id = row.get("id")?.as_str()?;
@@ -16714,11 +16730,39 @@ pub fn wire_preset_library(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                     instrument: instrument.into(),
                 })
             })
-            .collect()
+            .collect();
+        // 内嵌副本是这份工程自己的权威副本：同名 id 必须覆盖用户库那一行，
+        // 否则界面显示的旧名/旧宏会和 resolve 实际用到的内嵌预制不一致。
+        rows.retain(|row| !embedded.contains_key(row.id.as_str()));
+        for (id, preset) in &embedded {
+            rows.push(crate::ui::PresetRowData {
+                id: id.as_str().into(),
+                name: preset.name.as_str().into(),
+                detail: format!(
+                    "{} · {} 个宏 · {} 条发送{}",
+                    preset.instrument,
+                    preset.macros.len(),
+                    preset.sends.len(),
+                    if preset.draft { " · 草稿" } else { "" }
+                )
+                .into(),
+                kind: "user".into(),
+                instrument: preset.instrument.as_str().into(),
+            });
+        }
+        Ok(rows)
     }
 
     fn refresh(ui: &MainWindow, port: Option<&Rc<UndoPort>>) {
-        ui.set_preset_rows(ModelRc::new(VecModel::from(rows())));
+        let rows = match rows(port) {
+            Ok(rows) => rows,
+            Err(message) => {
+                ui.set_preset_error(message.clone().into());
+                ui.set_toast_message(format!("[预制] {message}").into());
+                Vec::new()
+            }
+        };
+        ui.set_preset_rows(ModelRc::new(VecModel::from(rows)));
         let Some(project) = port.and_then(|port| port.try_project()) else {
             ui.set_preset_current_track("当前轨：没有打开的工程".into());
             ui.set_preset_has_current(false);
@@ -16787,7 +16831,11 @@ pub fn wire_preset_library(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 Ok(pair) => pair,
                 Err(message) => return fail(&ui, message),
             };
-            let preset = match preset::resolve_preset(&BTreeMap::new(), preset_id.as_str()) {
+            let embedded = match embedded_table(Some(port)) {
+                Ok(table) => table,
+                Err(message) => return fail(&ui, message),
+            };
+            let preset = match preset::resolve_preset(&embedded, preset_id.as_str()) {
                 Ok(preset) => preset,
                 Err(error) => return fail(&ui, fault_text(&error)),
             };
@@ -16882,8 +16930,12 @@ pub fn wire_preset_library(ui: &MainWindow, port: Option<Rc<UndoPort>>) {
                 Ok(pair) => pair,
                 Err(message) => return fail(&ui, message),
             };
+            let embedded = match embedded_table(Some(port)) {
+                Ok(table) => table,
+                Err(message) => return fail(&ui, message),
+            };
             let (ops, sends_skipped, macros_skipped) =
-                match preset::build_bypass_ops(&project, &track_id, bypassed, &BTreeMap::new()) {
+                match preset::build_bypass_ops(&project, &track_id, bypassed, &embedded) {
                     Ok(result) => result,
                     Err(error) => return fail(&ui, fault_text(&error)),
                 };
