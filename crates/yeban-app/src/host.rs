@@ -12040,6 +12040,16 @@ pub fn new_project_target(
 ///    "界面上的工程"与"磁盘上的字节"不可能分叉。
 ///    失败 ⇒ 报 `error=swap` 并**点名**文件已经写出（不静默、不假装换成功）。
 ///
+/// ## 脏保护（T-FIX-927）：有未保存改动时先问「保存 / 放弃 / 取消」
+///
+/// 入口被点下时先读 [`crate::dirty_guard`]（与退出保护**同一份**保存点）：
+/// 干净 ⇒ 直接走上面 ①–⑤；脏 ⇒ 弹新建三选框（`new-project-confirm-open`），
+/// 三条出口全部复用既有实现 —— 保存并继续（同一个 `invoke_save_project()`，
+/// 成功才继续新建，失败留在框里）、放弃并新建（直接走 ①–⑤）、取消（只关框，
+/// ⛔ 不建文件、⛔ 不换工程、⛔ 不退出）。
+/// `port = None` 的装配（判据 / 无头）没有保存点可读 ⇒ 脏判定恒 false，
+/// 行为与改动前逐位一致（与 [`wire_quit_guard`] 的"未安装时零干扰"同款纪律）。
+///
 /// ## 为什么**不**先保存当前工程
 ///
 /// [`wire_open_project`] 的 `save_first` 是为"换掉**已有**工程"设计的。新建工程的语义是
@@ -12051,118 +12061,225 @@ pub fn new_project_target(
 /// —— 与 [`wire_open_project`] 的 `saveFirst = true` 不同，本切片**不**先保存。
 /// 给新建套 `saveFirst` 会让样本会话（`save_target()` = `None`）先弹一次"保存当前工程"、
 /// 并因为"没有目标路径"**拒绝新建** —— 那正好堵死本单要补的"从零开始"。
-/// 正确的完整形态（后续切片）是"有未保存改动时问一次『保存 / 丢弃 / 取消』"，
-/// 那需要一个新的三态对话框能力面，⛔ 不在本单假装有它。
+/// 正确的完整形态（T-FIX-927）是"有未保存改动时问一次『保存 / 丢弃 / 取消』"，
+/// 见上面「脏保护」一节 —— 三态对话框能力面已由新建三选框补上。
 pub fn wire_new_project(
     ui: &MainWindow,
     picker: Rc<dyn crate::file_picker::FilePicker>,
     runtime: Rc<dyn OpenProjectRuntime>,
+    port: Option<&Rc<UndoPort>>,
 ) {
     let weak = ui.as_weak();
-    ui.on_new_project(move || {
-        let Some(ui) = weak.upgrade() else {
-            debug_assert!(false, "MainWindow 在回调执行期间被销毁");
-            return;
-        };
-        let started = std::time::Instant::now();
-        // ⭐ ① **没有对话框**不是"用户取消"：新工程的落点只能来自对话框 ⇒ 如实报错。
-        if !picker.can_prompt() {
-            let receipt = module_receipt(
-                "new-project",
-                &module_error_fields(
-                    "no-picker",
-                    "新建工程需要先问『新工程存到哪里』，但本装配没有可用的文件对话框\
-                     （`FilePicker::can_prompt() = false`）⇒ 拒绝创建（⛔ 不静默、\
-                     ⛔ 不猜一个文件名，当前工程一位没动）",
-                ),
-            );
-            apply_module_receipt(&ui, &receipt, false);
-            module_trace("new-project", started, &receipt);
-            return;
-        }
-        // ⭐ ② 问**一次**保存对话框（标题与建议文件名是本单的语义；后缀过滤与 `wire_save` 同款）。
-        let picked = picker.choose_save(
-            &crate::file_picker::PickerRequest::save("新建工程", "project.yeban")
-                .with_extensions(["yeban"]),
-        );
-        let Some(path) = picked else {
-            // 取消：什么都不做（⛔ 不写回执、⛔ 不建文件），见上面的文档。
-            return;
-        };
-        // 与 `wire_save` **同一条**后缀口径：用户敲了 `demo` ⇒ 写 `demo.yeban`。
-        let path = crate::file_picker::with_default_extension(path, "yeban");
-        // T-FIX-310：保持 `PathBuf` 全保真；`to_string_lossy` 只允许出现在最终显示。
-        // ⭐ ③ 目标已存在？先问一次**显式确认**（T-FIX-308）。
-        //
-        // 这一段是"新建"与"覆盖"的分界线：不存在 ⇒ 走不覆盖的 create；存在且用户
-        // 取消 ⇒ 什么都不做（⛔ 不写文件、⛔ 不写回执、当前工程一位不动）；存在且
-        // 用户确认 ⇒ 才走名字就写着 overwrite 的那个入口。⛔ 不把平台保存对话框的
-        // "是否替换"当成契约 —— 脚本假实现 / 控制面装配都可能直接返回已有路径。
-        let mut overwritten = false;
-        let write = match new_project_target(&path, |target| picker.confirm_overwrite(target)) {
-            NewProjectTarget::Cancelled => return,
-            NewProjectTarget::Create => {
-                create_new_project_file(&path).map_err(|error| error.to_string())
-            }
-            NewProjectTarget::Overwrite => {
-                overwritten = true;
-                overwrite_new_project_file(&path)
-            }
-        };
-        // ⭐ ③′ 落盘（两个入口都走唯一的归档写入口；区别只在覆盖策略）。
-        let bytes = match write {
-            Ok(report) => report.bytes,
-            Err(message) => {
+    let port = port.map(Rc::clone);
+    // ①–⑤ 的本体：问路径 → 写文件 → 换工程。直接入口与三选框的「继续」两条腿
+    // 共用**同一份**闭包（⛔ 不抄第二份流程 —— 两处流程分叉是本仓反复踩过的坑）。
+    let proceed: Rc<dyn Fn()> = Rc::new({
+        let weak = weak.clone();
+        let picker = Rc::clone(&picker);
+        let runtime = Rc::clone(&runtime);
+        move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let started = std::time::Instant::now();
+            // ⭐ ① **没有对话框**不是"用户取消"：新工程的落点只能来自对话框 ⇒ 如实报错。
+            if !picker.can_prompt() {
                 let receipt = module_receipt(
                     "new-project",
-                    &module_error_fields("create", &format!("{message}（当前工程一位没动）")),
+                    &module_error_fields(
+                        "no-picker",
+                        "新建工程需要先问『新工程存到哪里』，但本装配没有可用的文件对话框\
+                     （`FilePicker::can_prompt() = false`）⇒ 拒绝创建（⛔ 不静默、\
+                     ⛔ 不猜一个文件名，当前工程一位没动）",
+                    ),
                 );
                 apply_module_receipt(&ui, &receipt, false);
+                raise_new_project_error_toast(
+                    &ui,
+                    "新建空白工程失败：没有可用的文件对话框，当前工程一位没动。",
+                );
                 module_trace("new-project", started, &receipt);
                 return;
             }
-        };
-        // ⭐ ④ 换成新工程 = **打开**刚写出的那个文件（`#93` 的同一段换工程代码）。
-        let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
-            Ok(()) => {
-                // 新建并打开成功 ⇒ 同样记进「最近打开」（它就是一次打开）。
-                crate::settings::record_recent_project(&path, yeban_model::project::now_unix_ms());
-                let mut fields = vec![
-                    "outcome=ok".to_owned(),
-                    format!("path={}", path.display()),
-                    format!("bytes={bytes}"),
-                    // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
-                    format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
-                ];
-                // ⭐ T-FIX-308：覆盖写必须在回执里**自报**（新建永远不出现这一行）。
-                if overwritten {
-                    fields.push("overwrite=true".to_owned());
+            // ⭐ ② 问**一次**保存对话框（标题与建议文件名是本单的语义；后缀过滤与 `wire_save` 同款）。
+            let picked = picker.choose_save(
+                &crate::file_picker::PickerRequest::save("新建工程", "project.yeban")
+                    .with_extensions(["yeban"]),
+            );
+            let Some(path) = picked else {
+                // 取消：什么都不做（⛔ 不写回执、⛔ 不建文件），见上面的文档。
+                return;
+            };
+            // 与 `wire_save` **同一条**后缀口径：用户敲了 `demo` ⇒ 写 `demo.yeban`。
+            let path = crate::file_picker::with_default_extension(path, "yeban");
+            // T-FIX-310：保持 `PathBuf` 全保真；`to_string_lossy` 只允许出现在最终显示。
+            // ⭐ ③ 目标已存在？先问一次**显式确认**（T-FIX-308）。
+            //
+            // 这一段是"新建"与"覆盖"的分界线：不存在 ⇒ 走不覆盖的 create；存在且用户
+            // 取消 ⇒ 什么都不做（⛔ 不写文件、⛔ 不写回执、当前工程一位不动）；存在且
+            // 用户确认 ⇒ 才走名字就写着 overwrite 的那个入口。⛔ 不把平台保存对话框的
+            // "是否替换"当成契约 —— 脚本假实现 / 控制面装配都可能直接返回已有路径。
+            let mut overwritten = false;
+            let write = match new_project_target(&path, |target| picker.confirm_overwrite(target)) {
+                NewProjectTarget::Cancelled => return,
+                NewProjectTarget::Create => {
+                    create_new_project_file(&path).map_err(|error| error.to_string())
                 }
-                (module_receipt("new-project", &fields), true)
-            }
-            Err(message) => (
-                module_receipt(
-                    "new-project",
-                    &module_error_fields(
-                        "swap",
-                        &format!(
-                            "已写出 `{}`（{bytes} 字节），但换成新工程失败: {message}",
-                            path.display()
+                NewProjectTarget::Overwrite => {
+                    overwritten = true;
+                    overwrite_new_project_file(&path)
+                }
+            };
+            // ⭐ ③′ 落盘（两个入口都走唯一的归档写入口；区别只在覆盖策略）。
+            let bytes = match write {
+                Ok(report) => report.bytes,
+                Err(message) => {
+                    let receipt = module_receipt(
+                        "new-project",
+                        &module_error_fields("create", &format!("{message}（当前工程一位没动）")),
+                    );
+                    apply_module_receipt(&ui, &receipt, false);
+                    raise_new_project_error_toast(
+                        &ui,
+                        &format!("新建空白工程失败：{message}。当前工程一位没动。"),
+                    );
+                    module_trace("new-project", started, &receipt);
+                    return;
+                }
+            };
+            // ⭐ ④ 换成新工程 = **打开**刚写出的那个文件（`#93` 的同一段换工程代码）。
+            let (receipt, ok) = match runtime.open_runtime(&ui, &path) {
+                Ok(()) => {
+                    // 新建并打开成功 ⇒ 同样记进「最近打开」（它就是一次打开）。
+                    crate::settings::record_recent_project(
+                        &path,
+                        yeban_model::project::now_unix_ms(),
+                    );
+                    let mut fields = vec![
+                        "outcome=ok".to_owned(),
+                        format!("path={}", path.display()),
+                        format!("bytes={bytes}"),
+                        // **回读**（不是回显入参）：界面此刻的轨道行数（新建 = 0 轨）。
+                        format!("tracks={}", slint::Model::row_count(&ui.get_track_names())),
+                    ];
+                    // ⭐ T-FIX-308：覆盖写必须在回执里**自报**（新建永远不出现这一行）。
+                    if overwritten {
+                        fields.push("overwrite=true".to_owned());
+                    }
+                    (module_receipt("new-project", &fields), true)
+                }
+                Err(message) => (
+                    module_receipt(
+                        "new-project",
+                        &module_error_fields(
+                            "swap",
+                            &format!(
+                                "已写出 `{}`（{bytes} 字节），但换成新工程失败: {message}",
+                                path.display()
+                            ),
                         ),
                     ),
+                    false,
                 ),
-                false,
-            ),
-        };
-        if ok {
-            close_startup_chooser(&ui);
+            };
+            if !ok {
+                raise_new_project_error_toast(
+                    &ui,
+                    &format!(
+                        "新建空白工程失败：文件已写出（{bytes} 字节），但换成新工程失败，当前工程仍在窗口里。"
+                    ),
+                );
+            }
+            if ok {
+                close_startup_chooser(&ui);
+            }
+            apply_module_receipt(&ui, &receipt, ok);
+            module_trace("new-project", started, &receipt);
+            // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299）：放在回执之后，
+            // 让警告成为本次新建的最后一条可见反馈。
+            report_pending_settings_warnings(&ui);
         }
-        apply_module_receipt(&ui, &receipt, ok);
-        module_trace("new-project", started, &receipt);
-        // 最近清单写回失败 ⇒ 错误级常驻提示（T-FIX-299）：放在回执之后，
-        // 让警告成为本次新建的最后一条可见反馈。
-        report_pending_settings_warnings(&ui);
     });
+
+    // 入口：脏 ⇒ 弹三选框；干净 ⇒ 直接走 ①–⑤。
+    {
+        let proceed = Rc::clone(&proceed);
+        let port = port.clone();
+        let weak = weak.clone();
+        ui.on_new_project(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            // T-FIX-736：与退出判定同一口径 —— 现读指纹再比。
+            if let Some(port) = &port {
+                crate::dirty_guard::set_current_fingerprint(port.fingerprint());
+                if crate::dirty_guard::current_is_dirty(port.display().head) {
+                    ui.set_new_project_confirm_open(true);
+                    return;
+                }
+            }
+            proceed();
+        });
+    }
+
+    // ① 保存并继续：复用既有保存入口，成功才继续新建。
+    {
+        let w = weak.clone();
+        let proceed = Rc::clone(&proceed);
+        ui.on_new_project_save_and_continue(move || {
+            let Some(ui) = w.upgrade() else { return };
+            // 与 save_first / 退出保护同款：先清读数 → 触发那一个保存回调 → 读结果。
+            // 保存回调内部（wire_save_with_engine）在 Saved 分支已 mark_saved。
+            ui.set_save_succeeded(false);
+            ui.set_save_status(slint::SharedString::new());
+            ui.invoke_save_project();
+            if ui.get_save_succeeded() {
+                ui.set_new_project_confirm_open(false);
+                proceed();
+            } else {
+                // 保存失败 / 没落盘：留在框里，响亮给出下一步，⛔ 不假装新建成功。
+                let status = ui.get_save_status().to_string();
+                ui.set_save_status(
+                    format!("{status} · 下一步：先关掉占用工程文件的程序再试，或选「放弃并新建」")
+                        .into(),
+                );
+            }
+        });
+    }
+
+    // ② 放弃并新建：关框 + 直接走 ①–⑤。
+    {
+        let w = weak.clone();
+        let proceed = Rc::clone(&proceed);
+        ui.on_new_project_discard_and_continue(move || {
+            if let Some(ui) = w.upgrade() {
+                ui.set_new_project_confirm_open(false);
+            }
+            proceed();
+        });
+    }
+
+    // ③ 取消：只关框，工程一位不动（⛔ 不建文件、⛔ 不换工程、⛔ 不退出）。
+    {
+        let w = weak.clone();
+        ui.on_new_project_cancel(move || {
+            if let Some(ui) = w.upgrade() {
+                ui.set_new_project_confirm_open(false);
+            }
+        });
+    }
+}
+
+/// 新建失败的浮动 toast（T-FIX-927：失败也要被看见）。
+///
+/// 只写 toast 三件套，⛔ 不碰 `module-status` —— 结构化回执（`module:action=new-project:…`）
+/// 是判据的读数，必须逐字节保留；toast 是给人看的那一句。
+fn raise_new_project_error_toast(ui: &MainWindow, text: &str) {
+    ui.set_toast_message(text.into());
+    ui.set_toast_is_error(true);
+    ui.set_show_floating_toast(true);
 }
 
 /// 把模板选择器的行模型写进窗口（T-FIX-293：全量写入 + 搜索过滤）。

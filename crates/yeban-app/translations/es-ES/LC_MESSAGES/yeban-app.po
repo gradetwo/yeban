@@ -2565,6 +2565,16 @@ msgstr "Salir sin guardar (descartar cambios)"
 msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
 msgstr "¿Guardar antes de salir? Salir ahora descartará tus cambios sin guardar."
 
+# --- T-FIX-927: new-project unsaved guard msgids ---
+msgid "新建空白工程前要先保存吗？直接新建会丢掉这次未保存的改动。"
+msgstr "¿Guardar antes de crear un proyecto en blanco? Crear uno ahora descartará tus cambios sin guardar."
+
+msgid "保存并继续"
+msgstr "Guardar y continuar"
+
+msgid "放弃并新建"
+msgstr "Descartar y crear nuevo"
+
 # --- T-FIX-363: ysfx JSFX injection msgids ---
 msgid "ysfx JSFX 文件路径（可选，仅 GUI）"
 msgstr "Ruta del archivo JSFX de ysfx (opcional, solo GUI)"

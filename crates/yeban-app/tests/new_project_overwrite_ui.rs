@@ -113,7 +113,8 @@ fn an_existing_new_project_target_is_only_overwritten_after_confirmation() {
     let runtime = Rc::new(RecordingRuntime {
         opened: RefCell::new(Vec::new()),
     });
-    host::wire_new_project(&window, picker.clone(), runtime.clone());
+    // T-FIX-927：本判据不装脏保护（`None` ⇒ 脏判定恒 false，行为与改动前逐位一致）。
+    host::wire_new_project(&window, picker.clone(), runtime.clone(), None);
 
     // ---- ① 取消确认：文件与当前工程都不变 ----
     window.invoke_new_project();

@@ -2565,6 +2565,16 @@ msgstr "Quit Without Saving (Discard Changes)"
 msgid "退出前要先保存吗？直接退出会丢掉这次未保存的改动。"
 msgstr "Save before quitting? Quitting now will discard your unsaved changes."
 
+# --- T-FIX-927: new-project unsaved guard msgids ---
+msgid "新建空白工程前要先保存吗？直接新建会丢掉这次未保存的改动。"
+msgstr "Save before creating a new blank project? Creating one now will discard your unsaved changes."
+
+msgid "保存并继续"
+msgstr "Save and Continue"
+
+msgid "放弃并新建"
+msgstr "Discard and Create New"
+
 # --- T-FIX-363: ysfx JSFX injection msgids ---
 msgid "ysfx JSFX 文件路径（可选，仅 GUI）"
 msgstr "ysfx JSFX file path (optional, GUI only)"

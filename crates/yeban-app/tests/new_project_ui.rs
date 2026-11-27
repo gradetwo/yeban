@@ -141,7 +141,8 @@ fn wire(
     picker: Rc<dyn FilePicker>,
     runtime: &Rc<dyn host::OpenProjectRuntime>,
 ) {
-    host::wire_new_project(window, picker, Rc::clone(runtime));
+    // T-FIX-927：本判据不装脏保护（`None` ⇒ 脏判定恒 false，行为与改动前逐位一致）。
+    host::wire_new_project(window, picker, Rc::clone(runtime), None);
 }
 
 #[test]

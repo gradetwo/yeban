@@ -1139,6 +1139,8 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
             // 克隆而非移动：同一个 `open_runtime` 还要喂给下面的启动
             // 选择器（line/startup-chooser 的 titled 腿）。
             Rc::clone(&open_runtime),
+            // T-FIX-927：把活端口交给新建入口 —— 脏保护读的就是这一份。
+            Some(&undo_port),
         );
         // ⭐ **工程模板的两个入口**（2026-11-17，照 Logic 的模板机制）：
         //    文件菜单「从模板新建…」/「另存为模板…」⇒
