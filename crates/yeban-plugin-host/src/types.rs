@@ -1,35 +1,52 @@
 //! 宿主公共类型：接口标识、事件、参数、描述符、状态容器与实例 trait。
 //!
 //! VST3 常量来源：Steinberg `vst3_pluginterfaces`（MIT）原文。
-//! IID 的 16 字节＝4 个 u32 **大端**串联（SDK 的 `FUID` 构造口径；JUCE 的换算代码同口径）。
-//! ⚠ 本文件只定常量与 trait，COM 虚表布局在 [`crate::vst3`]。
+//! IID 的 16 字节按 SDK `INLINE_UID` 的平台口径：非 Windows＝4 个 u32 大端
+//! 串联；Windows 打开 `COM_COMPATIBLE`，前 3 段（Data1/2/3）按 COM GUID
+//! 小端排、Data4 保持大端（见 [`tuid`]）。⚠ 本文件只定常量与 trait，
+//! COM 虚表布局在 [`crate::vst3`]。
 
 use crate::error::HostError;
 
 /// VST3 类型唯一标识（16 字节）。
 pub type Tuid = [u8; 16];
 
-/// 由 4 个 u32 拼成 `Tuid`（大端串联，见模块文档）。
+/// 由 4 个 u32 拼成 `Tuid`，字节序按 SDK `INLINE_UID` 的平台 ABI。
+///
+/// 非 Windows：4 个 u32 大端串联；Windows：SDK 打开 `COM_COMPATIBLE`，
+/// Data1/Data2/Data3 按 COM GUID 小端排（各自 4/2/2 字节内翻转），
+/// Data4 保持大端。❌ 若在 Windows 仍发大端 IID，真实插件会按
+/// `queryInterface`／`createInstance` 比较失败，典型返回 `E_NOINTERFACE`
+/// （T-FIX-818：MuseFX 12 个 VST3 插件全数中招；夹具在同进程用同一
+/// 错误口径时会把问题掩盖）。
 #[must_use]
 pub const fn tuid(a: u32, b: u32, c: u32, d: u32) -> Tuid {
-    let mut out = [0_u8; 16];
-    out[0] = (a >> 24) as u8;
-    out[1] = (a >> 16) as u8;
-    out[2] = (a >> 8) as u8;
-    out[3] = a as u8;
-    out[4] = (b >> 24) as u8;
-    out[5] = (b >> 16) as u8;
-    out[6] = (b >> 8) as u8;
-    out[7] = b as u8;
-    out[8] = (c >> 24) as u8;
-    out[9] = (c >> 16) as u8;
-    out[10] = (c >> 8) as u8;
-    out[11] = c as u8;
-    out[12] = (d >> 24) as u8;
-    out[13] = (d >> 16) as u8;
-    out[14] = (d >> 8) as u8;
-    out[15] = d as u8;
-    out
+    let mut be = [0_u8; 16];
+    be[0] = (a >> 24) as u8;
+    be[1] = (a >> 16) as u8;
+    be[2] = (a >> 8) as u8;
+    be[3] = a as u8;
+    be[4] = (b >> 24) as u8;
+    be[5] = (b >> 16) as u8;
+    be[6] = (b >> 8) as u8;
+    be[7] = b as u8;
+    be[8] = (c >> 24) as u8;
+    be[9] = (c >> 16) as u8;
+    be[10] = (c >> 8) as u8;
+    be[11] = c as u8;
+    be[12] = (d >> 24) as u8;
+    be[13] = (d >> 16) as u8;
+    be[14] = (d >> 8) as u8;
+    be[15] = d as u8;
+    // `COM_COMPATIBLE` 仅 Windows 打开：翻转前 3 段，Data4 不动。
+    if cfg!(windows) {
+        [
+            be[3], be[2], be[1], be[0], be[5], be[4], be[7], be[6], be[8], be[9], be[10], be[11],
+            be[12], be[13], be[14], be[15],
+        ]
+    } else {
+        be
+    }
 }
 
 /// `FUnknown` 的 IID（与 COM `IUnknown` 同值）。
@@ -423,5 +440,42 @@ pub trait PluginInstance: Send + Sync {
         Err(HostError::NotAnEffect(
             "该实例不是效果器（process_audio 只有效果器实现）".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T-FIX-818 判据：Windows 上标准 VST3 IID 必须是 `COM_COMPATIBLE`
+    /// 字节序（前 3 段翻转，Data4 原样）；非 Windows 保持 4×u32 大端。
+    /// 旧实现在 Windows 也发大端，真实插件 createInstance 会以
+    /// `E_NOINTERFACE` 拒绝——本判据在旧实现上是红的。
+    #[test]
+    fn iid_byte_order_matches_sdk_abi() {
+        let (component, audio, controller, midi, connection) = if cfg!(windows) {
+            (
+                "31ff31e8d5f20143928ebbee25697802",
+                "993f0442dab73c45a569e79d9aaec33d",
+                "e3bbd7dc42778d44a874aacc979c759e",
+                "f7f90fdfb7496946b63ab7327adbf5e5",
+                "6f15a4706e6e2640989148bfaa60d8d1",
+            )
+        } else {
+            (
+                "e831ff31f2d54301928ebbee25697802",
+                "42043f99b7da453ca569e79d9aaec33d",
+                "dcd7bbe37742448da874aacc979c759e",
+                "df0ff9f749b74669b63ab7327adbf5e5",
+                "70a4156f6e6e4026989148bfaa60d8d1",
+            )
+        };
+        assert_eq!(tuid_hex(&ICOMPONENT_IID), component);
+        assert_eq!(tuid_hex(&IAUDIO_PROCESSOR_IID), audio);
+        assert_eq!(tuid_hex(&IEDIT_CONTROLLER_IID), controller);
+        assert_eq!(tuid_hex(&IMIDI_MAPPING_IID), midi);
+        assert_eq!(tuid_hex(&ICONNECTIONPOINT_IID), connection);
+        // FUnknown/COM IUnknown 的 GUID 本身在两种 ABI 下字节相同。
+        assert_eq!(tuid_hex(&FUNKNOWN_IID), "0000000000000000c000000000000046");
     }
 }

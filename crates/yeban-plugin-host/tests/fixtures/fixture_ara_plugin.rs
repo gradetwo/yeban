@@ -45,8 +45,10 @@ use std::sync::Mutex;
 
 type Tuid = [u8; 16];
 
+// SDK `INLINE_UID` 平台 ABI：非 Windows 4×u32 大端；Windows 的
+// `COM_COMPATIBLE` 翻转前 3 段。夹具与真实插件同口径（T-FIX-818）。
 const fn tuid(a: u32, b: u32, c: u32, d: u32) -> Tuid {
-    [
+    let be = [
         (a >> 24) as u8,
         (a >> 16) as u8,
         (a >> 8) as u8,
@@ -63,7 +65,15 @@ const fn tuid(a: u32, b: u32, c: u32, d: u32) -> Tuid {
         (d >> 16) as u8,
         (d >> 8) as u8,
         d as u8,
-    ]
+    ];
+    if cfg!(windows) {
+        [
+            be[3], be[2], be[1], be[0], be[5], be[4], be[7], be[6], be[8], be[9], be[10], be[11],
+            be[12], be[13], be[14], be[15],
+        ]
+    } else {
+        be
+    }
 }
 
 const FUNKNOWN_IID: Tuid = tuid(0x0000_0000, 0x0000_0000, 0xC000_0000, 0x0000_0046);

@@ -58,8 +58,11 @@ use std::sync::Mutex;
 
 type Tuid = [u8; 16];
 
+// SDK `INLINE_UID` 平台 ABI：非 Windows 4×u32 大端；Windows 的
+// `COM_COMPATIBLE` 翻转前 3 段。夹具必须与真实插件同口径，否则会在
+// Windows 上掩盖宿主的 IID 字节序错误（T-FIX-818）。
 const fn tuid(a: u32, b: u32, c: u32, d: u32) -> Tuid {
-    [
+    let be = [
         (a >> 24) as u8,
         (a >> 16) as u8,
         (a >> 8) as u8,
@@ -76,7 +79,15 @@ const fn tuid(a: u32, b: u32, c: u32, d: u32) -> Tuid {
         (d >> 16) as u8,
         (d >> 8) as u8,
         d as u8,
-    ]
+    ];
+    if cfg!(windows) {
+        [
+            be[3], be[2], be[1], be[0], be[5], be[4], be[7], be[6], be[8], be[9], be[10], be[11],
+            be[12], be[13], be[14], be[15],
+        ]
+    } else {
+        be
+    }
 }
 
 const FUNKNOWN_IID: Tuid = tuid(0x0000_0000, 0x0000_0000, 0xC000_0000, 0x0000_0046);
@@ -289,8 +300,7 @@ struct EditControllerVtbl {
     get_state: unsafe extern "system" fn(*mut c_void, *mut c_void) -> i32,
     get_parameter_count: unsafe extern "system" fn(*mut c_void) -> i32,
     get_parameter_info: unsafe extern "system" fn(*mut c_void, i32, *mut ParameterInfoRaw) -> i32,
-    get_param_string_by_value:
-        unsafe extern "system" fn(*mut c_void, u32, f64, *mut u16) -> i32,
+    get_param_string_by_value: unsafe extern "system" fn(*mut c_void, u32, f64, *mut u16) -> i32,
     get_param_value_by_string:
         unsafe extern "system" fn(*mut c_void, u32, *const u16, *mut f64) -> i32,
     normalized_param_to_plain: unsafe extern "system" fn(*mut c_void, u32, f64) -> f64,
@@ -325,21 +335,15 @@ struct ParameterChangesVtbl {
     base: FUnknownVtbl,
     get_parameter_count: unsafe extern "system" fn(*mut c_void) -> i32,
     get_parameter_data: unsafe extern "system" fn(*mut c_void, i32) -> *mut c_void,
-    add_parameter_data:
-        unsafe extern "system" fn(*mut c_void, *const u32, *mut i32) -> *mut c_void,
+    add_parameter_data: unsafe extern "system" fn(*mut c_void, *const u32, *mut i32) -> *mut c_void,
 }
 
 /// `IMidiMapping` 虚表（`FUnknown` 3 项＋`getMidiControllerAssignment`）。
 #[repr(C)]
 struct MidiMappingVtbl {
     base: FUnknownVtbl,
-    get_midi_controller_assignment: unsafe extern "system" fn(
-        *mut c_void,
-        i32,
-        i16,
-        i16,
-        *mut u32,
-    ) -> i32,
+    get_midi_controller_assignment:
+        unsafe extern "system" fn(*mut c_void, i32, i16, i16, *mut u32) -> i32,
 }
 
 #[repr(C)]
@@ -669,7 +673,11 @@ unsafe extern "system" fn comp_get_bus_info(
     slot.flags = 1;
     RESULT_OK
 }
-unsafe extern "system" fn comp_get_routing(_this: *mut c_void, _a: *mut c_void, _b: *mut c_void) -> i32 {
+unsafe extern "system" fn comp_get_routing(
+    _this: *mut c_void,
+    _a: *mut c_void,
+    _b: *mut c_void,
+) -> i32 {
     RESULT_NOT_IMPLEMENTED
 }
 unsafe extern "system" fn comp_activate_bus(
@@ -793,7 +801,10 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
     // 左声道用通道 0、右声道用通道 1；无弯音点时因子为 1（既有测试
     // 不受影响）。这是夹具的可观测手段，不是真实效果器的语义。
     if inner.effect {
-        if data.num_inputs < 1 || data.inputs.is_null() || data.num_outputs < 1 || data.outputs.is_null()
+        if data.num_inputs < 1
+            || data.inputs.is_null()
+            || data.num_outputs < 1
+            || data.outputs.is_null()
         {
             return RESULT_NOT_IMPLEMENTED;
         }
@@ -833,8 +844,9 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
                 for point_index in 0..point_count {
                     let mut offset: i32 = 0;
                     let mut value: f64 = 0.5;
-                    let code =
-                        unsafe { (queue_vtbl.get_point)(queue, point_index, &mut offset, &mut value) };
+                    let code = unsafe {
+                        (queue_vtbl.get_point)(queue, point_index, &mut offset, &mut value)
+                    };
                     if code < 0 {
                         continue;
                     }
@@ -862,10 +874,8 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
                 cursor += 1;
             }
             unsafe {
-                *out_l.add(sample) =
-                    *in_l.add(sample) * gain * (1.0 + (bend_l - 0.5)) as f32;
-                *out_r.add(sample) =
-                    *in_r.add(sample) * gain * (1.0 + (bend_r - 0.5)) as f32;
+                *out_l.add(sample) = *in_l.add(sample) * gain * (1.0 + (bend_l - 0.5)) as f32;
+                *out_r.add(sample) = *in_r.add(sample) * gain * (1.0 + (bend_r - 0.5)) as f32;
             }
         }
         return RESULT_OK;
@@ -896,19 +906,9 @@ unsafe extern "system" fn proc_process(this: *mut c_void, data: *mut ProcessData
             // NoteOn 速度在联合＋8（长度在＋4），NoteOff 速度在联合＋4：
             // 与宿主 `vst3.rs` 的 `Event` 保持一致（⛔ 不可凭 SDK 印象改）。
             let velocity = if event.event_type == 0 {
-                f32::from_le_bytes([
-                    event.data[8],
-                    event.data[9],
-                    event.data[10],
-                    event.data[11],
-                ])
+                f32::from_le_bytes([event.data[8], event.data[9], event.data[10], event.data[11]])
             } else {
-                f32::from_le_bytes([
-                    event.data[4],
-                    event.data[5],
-                    event.data[6],
-                    event.data[7],
-                ])
+                f32::from_le_bytes([event.data[4], event.data[5], event.data[6], event.data[7]])
             };
             let note_id = match event.event_type {
                 0 => i32::from_le_bytes([
@@ -1112,7 +1112,10 @@ unsafe extern "system" fn ctrl_set_param_norm(this: *mut c_void, _id: u32, value
 unsafe extern "system" fn ctrl_set_handler(_this: *mut c_void, _handler: *mut c_void) -> i32 {
     RESULT_OK
 }
-unsafe extern "system" fn ctrl_create_view(_this: *mut c_void, _name: *const c_char) -> *mut c_void {
+unsafe extern "system" fn ctrl_create_view(
+    _this: *mut c_void,
+    _name: *const c_char,
+) -> *mut c_void {
     ptr::null_mut()
 }
 
@@ -1226,7 +1229,11 @@ unsafe extern "system" fn factory_get_info(_this: *mut c_void, info: *mut PFacto
 unsafe extern "system" fn factory_count(_this: *mut c_void) -> i32 {
     6
 }
-unsafe extern "system" fn factory_get_class(_this: *mut c_void, index: i32, info: *mut PClassInfo) -> i32 {
+unsafe extern "system" fn factory_get_class(
+    _this: *mut c_void,
+    index: i32,
+    info: *mut PClassInfo,
+) -> i32 {
     let slot = unsafe { &mut *info };
     slot.cardinality = 0;
     match index {
