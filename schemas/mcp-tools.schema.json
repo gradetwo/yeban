@@ -1882,7 +1882,7 @@
             },
             "effectGroup": {
               "type": "string",
-              "description": "可选: 只返回某个器件分组的参数 (id 逐字取自 effect_params.rs::EFFECT_GROUPS, 如 reverb/eq/channelStrip); 未知分组 ⇒ INVALID_PARAMETER_RANGE (unknownEffectGroup, 带 availableGroups); 给出时隐含 includeEffectParams:true"
+              "description": "可选: 只返回某个器件分组的参数 (id 逐字取自 effect_params 模块的 EFFECT_GROUPS 常量, 如 reverb/eq/channelStrip); 未知分组 ⇒ INVALID_PARAMETER_RANGE (unknownEffectGroup, 带 availableGroups); 给出时隐含 includeEffectParams:true"
             }
           }
         },

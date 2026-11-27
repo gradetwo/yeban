@@ -1952,13 +1952,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "includeEffectParams",
                 "boolean",
                 false,
-                "可选: true 时在同一次会话模式响应里返回引擎认的**全部效果器参数**（`data.effectParams[]`: 规范名 / canonicalName / aliases / unit / min / max / default / doc / group / consumed）与分组表 `data.effectGroups[]`；数据逐条取自 effect_params.rs::EFFECT_GROUPS（与 insertDevice 校验同一份词表）。consumed:true = 引擎真的消费；未列出的名字只存储不生效（由 insertDevice 的 warnings 点名）。与 directory 同给 ⇒ INVALID_PARAMETER_RANGE",
+                "可选: true 时在同一次会话模式响应里返回引擎认的**全部效果器参数**（`data.effectParams[]`: 规范名 / canonicalName / aliases / unit / min / max / default / doc / group / consumed）与分组表 `data.effectGroups[]`；数据逐条取自 effect_params 模块的 EFFECT_GROUPS 常量（与 insertDevice 校验同一份词表）。consumed:true = 引擎真的消费；未列出的名字只存储不生效（由 insertDevice 的 warnings 点名）。与 directory 同给 ⇒ INVALID_PARAMETER_RANGE",
             ),
             param(
                 "effectGroup",
                 "string",
                 false,
-                "可选: 只返回某个器件分组的参数（id 逐字取自 effect_params.rs::EFFECT_GROUPS，如 reverb / eq / channelStrip）；未知分组 ⇒ INVALID_PARAMETER_RANGE（unknownEffectGroup，带 availableGroups）。给出时隐含 includeEffectParams:true",
+                "可选: 只返回某个器件分组的参数（id 逐字取自 effect_params 模块的 EFFECT_GROUPS 常量，如 reverb / eq / channelStrip）；未知分组 ⇒ INVALID_PARAMETER_RANGE（unknownEffectGroup，带 availableGroups）。给出时隐含 includeEffectParams:true",
             ),
         ],
         // 会话模式没有业务失败面（空 registry 是合法状态）；目录模式的

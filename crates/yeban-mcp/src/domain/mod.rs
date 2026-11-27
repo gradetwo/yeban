@@ -6391,7 +6391,7 @@ fn plan_list_instruments(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault
                 "reason": "unknownEffectGroup",
                 "effectGroup": group,
                 "availableGroups": available,
-                "hint": "分组 id 逐字来自 effect_params.rs::EFFECT_GROUPS; 不猜近似名",
+                "hint": "分组 id 逐字来自 effect_params 模块的 EFFECT_GROUPS 常量; 不猜近似名",
             }),
         ));
     }
@@ -6438,7 +6438,7 @@ fn plan_list_instruments(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault
         data["effectParams"] = serde_json::json!(params);
         data["effectParamCount"] = serde_json::json!(params.len());
         data["effectParamSource"] = serde_json::json!(
-            "crates/yeban-mcp/src/effect_params.rs::EFFECT_GROUPS (与 insertDevice 校验同一份词表)"
+            "effect_params 模块的 EFFECT_GROUPS 常量 (与 insertDevice 校验同一份词表)"
         );
         data["storedOnlyPolicy"] = serde_json::json!(
             "未列出的参数名会被存储但引擎不消费, 由 insertDevice 的 warnings[].unrecognisedParams 点名; 本表每条的 consumed:true 都表示引擎真的消费"
