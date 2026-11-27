@@ -7086,14 +7086,10 @@ mod tests {
     /// | `dialogs/preset_library.slint` | 1 | 预设行点击 |
     /// | `dialogs/startup_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
     /// | `dialogs/template_chooser.slint` | 1 | 清空搜索（T-FIX-293，左栏同款 × 按钮） |
-    const KNOWN_ROLELESS_CLICKABLES: [&str; 89] = [
+    const KNOWN_ROLELESS_CLICKABLES: [&str; 84] = [
         "app.slint :: Rectangle { :: root.engine-error = \"\";",
         "app.slint :: TouchArea { :: root.ai-drawer-open = false; root.musical-pr-open = true;",
         "app.slint :: TouchArea { :: root.toggle-ai-drawer();",
-        "arrangement.slint :: Rectangle { :: root.zoom-h-step(false);",
-        "arrangement.slint :: Rectangle { :: root.zoom-h-step(true);",
-        "arrangement.slint :: Rectangle { :: root.zoom-v-step(false);",
-        "arrangement.slint :: Rectangle { :: root.zoom-v-step(true);",
         // T-FIX-845：自动化泳道单击面 —— 坐标型指针控件：点击的全部语义在
         // (mouse-x, mouse-y) 里（x→时刻，y→参数值），无障碍动作没有坐标，给不出同
         // 落点的默认动作；把 clicked 体逐字抄进 accessible-action-default，会在读屏
@@ -7101,7 +7097,6 @@ mod tests {
         // 冒充同落点。父泳道已有 accessible-id / accessible-label（读屏可见带名与跟
         // 随播放头的当前值）；无指针的等价写点路径是 MCP yeban_edit_automation
         //（显式 {tick, value}，同一 Op 族，可逆）。
-        "arrangement.slint :: TouchArea { :: root.select-track(trk.id); root.automation-lane-click( self.mouse-x, root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);",
         "arrangement.slint :: add-track-btm-r-touch := TouchArea { :: root.add-track();",
         "arrangement.slint :: add-track-btm-touch := TouchArea { :: root.add-track();",
         "arrangement.slint :: add-track-right-touch := TouchArea { :: root.add-track();",
