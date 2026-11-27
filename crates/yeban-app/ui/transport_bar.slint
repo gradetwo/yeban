@@ -674,6 +674,9 @@ export component TransportHeaderBar inherits Rectangle {
     callback open-cmd-palette();
     callback toggle-hotspots();
     callback revert-to-last-commit();
+    // T-FIX-676：顶栏保存入口 —— 复用 MainWindow 既有的 `save-project` 回调
+    // （与 Ctrl+S / 应用菜单同一落点），⛔ 不新造保存路径。
+    callback save-project();
 
     height: 48px;
     // 二期质感: 栏体走 §10 面板刷 (flat = Theme.header-bg 本身)。
@@ -1285,6 +1288,37 @@ export component TransportHeaderBar inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             alignment: end;
+
+            // T-FIX-676：顶栏保存入口（常显，不随 `overflow` 离场）。只占一个小
+            // 图标位（30px），在右岛最前，⛔ 不挤中间的播放 / 时间码 / BPM 要项。
+            // 落点复用 MainWindow 的 `save-project`（与 Ctrl+S / 应用菜单同一链）。
+            Rectangle {
+                width: 30px;
+                height: 28px;
+                background: Tokens.texture-physical ? Tokens.shell-brush : Tokens.bg-lane2;
+                border-radius: Theme.radius;
+                border-width: 1px;
+                border-color: Tokens.line;
+                accessible-role: button;
+                accessible-id: "transport-save-button";
+                accessible-label: "保存工程 (Ctrl+S)";
+                // `[UI-A11Y-003]` §7.3：默认动作与指针点击逐字同源。
+                accessible-action-default => { root.save-project(); }
+
+                Text {
+                    text: "SAVE";
+                    font-family: Tokens.font-mono;
+                    font-size: 9px;
+                    color: Theme.accent;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                save_touch := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.save-project(); }
+                }
+                TooltipBubble { text: @tr("保存工程 (Ctrl+S)"); is-visible: save_touch.has-hover; }
+            }
 
             // Group F0: ⋯ 溢出按钮（F2，Wang 2026-11-17 裁决；借鉴 Logic Pro
             // 控制栏：位置与速度恒显、次要读数收进可弹出的溢出区）。只在

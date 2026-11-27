@@ -209,9 +209,9 @@ impl ElementRegistry {
         //   `transport-metronome-button`（T-FIX-867 恢复的第五颗走带键）与
         //   `transport-timecode`（只读读数）。
         //
-        // ⚠ 剩下 10 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
-        // 的节点，比指向死文件更假）：
-        //   * `transport-save-button`：顶栏今天没有保存键（保存走宿主菜单）；
+        // ⚠ 剩下 9 条**没有可落的活控件**，因此**没有**改指向（改指 = 登记一个不存在
+        // 的节点，比指向死文件更假）。第 10 条 `transport-save-button` 已由 T-FIX-676
+        // 落到活顶栏（见下方在场登记）：
         //   * `transport-branch-button` / `transport-commit-button` / `transport-revert-button`：
         //     顶栏没有可见键，且 `the_remaining_transport_document_actions_are_not_wired_today`
         //     已登记"能力不存在 / 未接线"；
@@ -281,11 +281,14 @@ impl ElementRegistry {
         );
         // `ROAD-M4-008` 选项 (a)：产品二进制里的**保存**入口（用户够得到的那个按钮）。
         // 它不改工程内容，只是把"保存"交给宿主（`host::wire_save` → `save_action`）。
-        registry.add_known_absent(
+        // T-FIX-676：入口已落到活顶栏 `TransportHeaderBar`（`transport_bar.slint`），
+        // 由 `add_known_absent` 升级为在场登记（⛔ 不再"顶栏没有保存键"）。
+        registry.add(
             "transport-save-button",
             ElementKind::Button,
-            "保存工程",
-            "顶栏没有保存键；保存走宿主菜单",
+            "transport_bar.slint",
+            "保存工程 (Ctrl+S)",
+            false,
         );
         registry.add_known_absent(
             "transport-bpm-field",

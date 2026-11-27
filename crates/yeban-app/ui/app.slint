@@ -1687,6 +1687,8 @@ export component MainWindow inherits Window {
                 toggle-metronome() => { root.toggle-metronome(); }
                 rewind() => { root.transport-rewind(); }
                 revert-to-last-commit => { root.revert-to-last-commit(); }
+                // T-FIX-676：顶栏保存按钮复用 MainWindow 既有 save-project（同 Ctrl+S）。
+                save-project() => { root.save-project(); }
                 change-bpm(b) => { root.transport-set-bpm(b); }
                 change-scale(s) => { root.transport-set-scale(s); }
                 hot-swap-buffer(smp) => {
