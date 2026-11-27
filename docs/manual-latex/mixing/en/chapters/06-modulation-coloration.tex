@@ -14,7 +14,7 @@ Type & Method & Sound \\
 \hline
 Modulated delay & An LFO changes the length of a short delay line; shorter/slower reads as chorus, more feedback/faster reads as flanger & Width, softness, or comb-like movement \\
 Static nonlinearity & Feed the signal into tanh, a soft knee, or hard clipping to create new harmonics & Saturation, compression, a harder edge; odd harmonics read "hard", even read "warm" \\
-Quantization/downsampling & Reduce bit depth or effective sample rate & Grain, steps, old-sampler "dirt" \\
+Quantization/\allowbreak downsampling & Reduce bit depth or effective sample rate & Grain, steps, old-sampler "dirt" \\
 \hline
 \end{tabular}
 \caption{The three principles of modulation and coloration}
@@ -161,7 +161,7 @@ Third-party VST3 effects are another path: the plugin panel can scan and load ef
 \section{How to use and listen}
 
 \begin{enumerate}
-  \item Decide first whether you need "time movement" or "harmonic change". For chorus/flanger/phaser, Yeban has no built-in; for saturation/clipping/grain, use tape/clipper/crusher.
+  \item Decide first whether you need "time movement" or "harmonic change". For chorus/\allowbreak flanger/\allowbreak phaser, Yeban has no built-in; for saturation/clipping/grain, use tape/clipper/crusher.
   \item For tape, set `tape_mix` until you can hear the blend, then push `tape_drive`; use `tape_trim_db` to restore level, not the fader.
   \item For "warm", add `tape_asym`; for "hard", leave it at 0. For brighter, raise `tape_hf_hz`; for darker, lower it.
   \item For the clipper, set `clipper_ceiling_db` first, then push `clipper_drive_db`; a larger `clipper_knee_db` is softer, lower `clipper_mix` keeps transients.

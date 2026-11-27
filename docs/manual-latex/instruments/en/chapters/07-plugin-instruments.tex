@@ -31,13 +31,13 @@ There are two entries: the "Plugins" button in the device rack's local action ro
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}llll@{}}
+\begin{tabular}{@{}p{0.20\linewidth}p{0.30\linewidth}p{0.20\linewidth}p{0.24\linewidth}@{}}
 \hline
 Control & Purpose & Value & Note \\
 \hline
 Extra scan dirs & Append to default search paths & Multiple, separated by \texttt{;} & Affects scanning only; loading still passes the path gate \\
 Scan & Read local VST3s, one row per class & — & Bad plugins stay as red failure rows; the panel is not aborted \\
-Row & One class per row & Class/vendor/instrument or effect/ARA/usable & Module-level failure has an empty class name \\
+Row & One class per row & Class/\allowbreak vendor/\allowbreak instrument or effect/\allowbreak ARA/\allowbreak usable & Module-level failure has an empty class name \\
 Load to current track & Validate-load and write a device definition & Usable rows only & Failure text goes to the result line; no default fallback \\
 \hline
 \end{tabular}
@@ -45,7 +45,7 @@ Load to current track & Validate-load and write a device definition & Usable row
 \label{tab:plugin-panel-controls}
 \end{table}
 
-Default search paths are platform-specific: Linux uses \texttt{\textasciitilde/.vst3} and \texttt{/usr/lib/vst3}; macOS uses \texttt{\textasciitilde/Library/Audio/Plug-Ins/VST3} and \texttt{/Library/Audio/Plug-Ins/VST3}; Windows uses \texttt{\%COMMONPROGRAMFILES\%/VST3}. Extra dirs are operator-supplied; nonexistent dirs are skipped silently.
+Default search paths are platform-specific: Linux uses \texttt{\textasciitilde/.vst3} and \texttt{/usr/lib/vst3}; macOS uses \texttt{\textasciitilde/Library/\allowbreak Audio/\allowbreak Plug-Ins/\allowbreak VST3} and \texttt{/Library/Audio/Plug-Ins/VST3}; Windows uses \texttt{\%COMMON\allowbreak PROGRAMFILES\%/\allowbreak VST3}. Extra dirs are operator-supplied; nonexistent dirs are skipped silently.
 
 Warning: A scan directory is not automatically a loadable directory. The path gate recognizes roots from the \texttt{YEBAN\_VST3\_PATHS} environment variable plus platform defaults; extra dirs typed in the panel only participate in scanning and are not in that root set. To load a plugin found in an extra dir, put the dir into \texttt{YEBAN\_VST3\_PATHS} and restart; otherwise you will see "scanned but load rejected".
 

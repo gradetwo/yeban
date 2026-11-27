@@ -10,11 +10,12 @@ Human hearing spans roughly 20 Hz–20 kHz. Mixing usually divides it into bands
 \begin{center}
 \begin{tikzpicture}[font=\scriptsize, every node/.style={align=center}]
   \foreach \i/\lab in {0/{20–60\\sub}, 1/{60–250\\bass}, 2/{250–500\\low-mid}, 3/{0.5–2k\\mid}, 4/{2–5k\\presence}, 5/{5–10k\\high}, 6/{10k+\\air}} {
-    \fill[black!12] (\i*2.3,0) rectangle ++(2.3,1.2);
-    \draw (\i*2.3,0) rectangle ++(2.3,1.2);
-    \node at (\i*2.3+1.15,0.6) {\lab};
+    \fill[black!12] (\i*2.2,0) rectangle ++(2.2,1.2);
+    \draw (\i*2.2,0) rectangle ++(2.2,1.2);
+    \node at (\i*2.2+1.1,0.6) {\lab};
   }
-  \draw[-{Latex[length=2mm]}] (0,-0.35) -- (16.1,-0.35) node[right] {frequency rises};
+  \draw[-{Latex[length=2mm]}] (0,-0.35) -- (15.4,-0.35);
+  \node[anchor=east] at (15.4,-0.62) {frequency rises};
 \end{tikzpicture}
 \end{center}
 

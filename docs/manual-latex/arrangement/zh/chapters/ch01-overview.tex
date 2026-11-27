@@ -20,10 +20,10 @@
 \begin{figure}[htbp]
   \centering
   \begin{tikzpicture}[font=\small]
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (color) at (0,3.3) {\textbf{音色与氛围层}：合成器长音、采样、环境声、效果音};
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (melody) at (0,2.2) {\textbf{旋律层}：主唱、主奏、副旋律、呼应句};
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (harmony) at (0,1.1) {\textbf{和声层}：铺底、琶音、和弦乐器};
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.2cm, minimum height=0.9cm] (rhythm) at (0,0) {\textbf{节奏层}：鼓、打击、贝斯、节奏吉他/键盘};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (color) at (0,4.05) {\textbf{音色与氛围层}：合成器长音、采样、环境声、效果音};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (melody) at (0,2.7) {\textbf{旋律层}：主唱、主奏、副旋律、呼应句};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (harmony) at (0,1.35) {\textbf{和声层}：铺底、琶音、和弦乐器};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (rhythm) at (0,0) {\textbf{节奏层}：鼓、打击、贝斯、节奏吉他/键盘};
     \draw[->, thick, yebanblue] (rhythm.north) -- (harmony.south);
     \draw[->, thick, yebanblue] (harmony.north) -- (melody.south);
     \draw[->, thick, yebanblue] (melody.north) -- (color.south);
@@ -95,7 +95,7 @@
 \section{在夜半里看四层：六轨演示工程}
 \label{sec:yeban-demo}
 
-夜半启动时默认打开一个演示工程。它不是教程截图，而是一个真实的 \texttt{YebanProjectV1}：六条普通轨加一条主总线，正好可以拿来观察四层怎样分家。
+夜半启动时默认打开一个演示工程。它不是教程截图，而是一个真实的 \texttt{Yeban\allowbreak ProjectV1}：六条普通轨加一条主总线，正好可以拿来观察四层怎样分家。
 
 \begin{longtable}{p{0.18\textwidth}p{0.20\textwidth}p{0.52\textwidth}}
 \toprule
@@ -145,9 +145,9 @@
 \begin{figure}[htbp]
   \centering
   \begin{tikzpicture}[font=\small, node distance=6mm]
-    \node[draw, rounded corners, fill=yebanboxbg, text width=3.1cm, align=left] (pass1) at (0,0) {\textbf{第一遍 骨架}\\鼓 / 贝斯 / 和声根\\目标：八小节站住};
-    \node[draw, rounded corners, fill=yebanboxbg, text width=3.1cm, align=left] (pass2) at (3.6,0) {\textbf{第二遍 主角}\\主旋律 / 主唱\\目标：一句话被记住};
-    \node[draw, rounded corners, fill=yebanboxbg, text width=3.1cm, align=left] (pass3) at (7.2,0) {\textbf{第三遍 颜色}\\弦乐 / 合成器 / 打击\\目标：每层都有活干};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.7cm, align=left] (pass1) at (-4.7,0) {\textbf{第一遍 骨架}\\鼓 / 贝斯 / 和声根\\目标：八小节站住};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.7cm, align=left] (pass2) at (0,0) {\textbf{第二遍 主角}\\主旋律 / 主唱\\目标：一句话被记住};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.7cm, align=left] (pass3) at (4.7,0) {\textbf{第三遍 颜色}\\弦乐 / 合成器 / 打击\\目标：每层都有活干};
     \draw[->, thick, yebanblue] (pass1) -- (pass2);
     \draw[->, thick, yebanblue] (pass2) -- (pass3);
   \end{tikzpicture}

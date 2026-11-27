@@ -49,7 +49,7 @@ A song section is not a container for automation. Yeban has a section entity, bu
 
 \section{How lanes are displayed}
 
-In the arrangement view a track can have several automation lanes. Multiple lanes on one track divide the track row into equal bands in a fixed target order; one target gets one band, and bands do not overlap. Lanes are visible by default. \texttt{Cmd/Ctrl+Shift+A} or \emph{View $\rightarrow$ Show/Hide Automation Lanes} toggles them. The menu label says ``(A)'', but the actual binding includes \texttt{Shift}; pressing bare \texttt{A} does not toggle it.
+In the arrangement view a track can have several automation lanes. Multiple lanes on one track divide the track row into equal bands in a fixed target order; one target gets one band, and bands do not overlap. Lanes are visible by default. \texttt{Cmd/\allowbreak Ctrl+Shift+A} or \emph{View $\rightarrow$ Show/Hide Automation Lanes} toggles them. The menu label says ``(A)'', but the actual binding includes \texttt{Shift}; pressing bare \texttt{A} does not toggle it.
 
 \begin{table}[htbp]
 \centering
@@ -80,12 +80,12 @@ Clicking a lane band adds or edits a point at that position: the horizontal posi
 \hline
 Action & Entry point & Boundary \\
 \hline
-Show/hide & \texttt{Cmd/Ctrl+Shift+A}; View menu & visible by default; no ``selected track only'' filter \\
+Show/hide & \texttt{Cmd/\allowbreak Ctrl+Shift+A}; View menu & visible by default; no ``selected track only'' filter \\
 Add/edit point & click inside a lane band & existing lanes only; within 8 px counts as the same point; new point is linear \\
 Delete point & no UI entry & use MCP \texttt{removeAutomationPoint} \\
 Change curve & no UI entry & write the point's \texttt{curve} through MCP, or edit project JSON \\
 Create lane & no UI entry & write the first point (MCP \texttt{yeban\_edit\_automation}) or edit project JSON \\
-Read/write flags & no UI entry & badges are display-only; change attributes through MCP \texttt{setAutomationLane} \\
+Read/write flags & no UI entry & badges are display-only; change attributes through MCP \texttt{set\allowbreak Automation\allowbreak Lane} \\
 \hline
 \end{tabular}
 \caption{UI edit entry points for automation points}
@@ -163,7 +163,7 @@ Write mode & Designed meaning & Current implementation \\
 \label{tab:automation-write-modes}
 \end{table}
 
-The UI currently paints read/write state as a badge only. There is no switch, record arm, or mode selector. To change \texttt{readEnabled}, \texttt{writeMode} or an explicit \texttt{domain}, use MCP \texttt{yeban\_edit\_notes} with \texttt{kind: "setAutomationLane"} in \texttt{ops}; to remove the whole lane, use \texttt{remove: true} in the same shape. A lane cannot be created empty: the model refuses to persist the implicit shape ``no points, read on, Off, no override''. Write the first point through \texttt{yeban\_edit\_automation}; the lane appears with the point, then its attributes can be changed.
+The UI currently paints read/write state as a badge only. There is no switch, record arm, or mode selector. To change \texttt{readEnabled}, \texttt{writeMode} or an explicit \texttt{domain}, use MCP \texttt{yeban\_edit\_notes} with \texttt{kind: "set\allowbreak Automation\allowbreak Lane"} in \texttt{ops}; to remove the whole lane, use \texttt{remove: true} in the same shape. A lane cannot be created empty: the model refuses to persist the implicit shape ``no points, read on, Off, no override''. Write the first point through \texttt{yeban\_edit\_automation}; the lane appears with the point, then its attributes can be changed.
 
 \subsection{Recording actually writes one point}
 
@@ -310,8 +310,8 @@ Workflow:
 
 \begin{enumerate}
   \item Set the static values first: fader, pan, send amount and device parameter are the ``no automation'' baseline.
-  \item To create a lane, write the first point through MCP so the lane exists; then set read/write and display domain with \texttt{setAutomationLane}.
-  \item In the arrangement view use \texttt{Cmd/Ctrl+Shift+A} to confirm the lane is visible; click points, or write a batch through MCP.
+  \item To create a lane, write the first point through MCP so the lane exists; then set read/write and display domain with \texttt{set\allowbreak Automation\allowbreak Lane}.
+  \item In the arrangement view use \texttt{Cmd/\allowbreak Ctrl+Shift+A} to confirm the lane is visible; click points, or write a batch through MCP.
   \item To record, confirm the lane's \texttt{writeMode} is not \texttt{Off}, start playback, drag the fader/pan/EQ low shelf, and release to write one point.
   \item Read back through \texttt{yeban\_edit\_automation} with \texttt{ticks}; check whether \texttt{source} is \texttt{automation} or \texttt{static}.
   \item Before export confirm the read switch is on; a lane that is off does not apply in export either.

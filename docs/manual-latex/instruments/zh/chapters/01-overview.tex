@@ -11,7 +11,7 @@
 信号再经过本轨的插入效果、推子与声像，最后汇入总线。
 
 \begin{center}
-\begin{tikzpicture}[
+\resizebox{\textwidth}{!}{\begin{tikzpicture}[
   node distance=10mm and 12mm,
   box/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=\small},
   bus/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=\small, fill=black!4},
@@ -30,7 +30,7 @@
   \node[box, right=of audio] (clip) {音频片段};
   \draw[arrow] (audio) -- (clip);
   \draw[arrow] (clip) -| (bus);
-\end{tikzpicture}
+\end{tikzpicture}}
 \end{center}
 
 一条轨至多挂一件音源。若同一条轨上同时存在鼓机、SFZ 与复音合成器的配置，

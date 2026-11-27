@@ -15,7 +15,7 @@ faders; they do not host instruments. After the instrument, a track's signal
 passes its insert effects, fader, and pan before it reaches a bus.
 
 \begin{center}
-\begin{tikzpicture}[
+\resizebox{\textwidth}{!}{\begin{tikzpicture}[
   node distance=10mm and 12mm,
   box/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=\small},
   bus/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=\small, fill=black!4},
@@ -34,7 +34,7 @@ passes its insert effects, fader, and pan before it reaches a bus.
   \node[box, right=of audio] (clip) {Audio clip};
   \draw[arrow] (audio) -- (clip);
   \draw[arrow] (clip) -| (bus);
-\end{tikzpicture}
+\end{tikzpicture}}
 \end{center}
 
 A track has at most one sound source. If a track somehow contains drum machine,

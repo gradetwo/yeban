@@ -108,8 +108,8 @@ Bus processing starts with ``fix the source first, then fix the bus''. A single 
 \hline
  & Device-chain Limiter & Export-dialog limiter & Loudness normalization \\
 \hline
-Position & inside the master insert chain & after the master fader/automation, before quantization & after rendering, before quantization \\
-Parameters & threshold/ceiling/release/lookahead/true peak & fixed 0.9 threshold, 0.95 ceiling, 33-frame lookahead, true-peak detection off & target LUFS + true-peak ceiling (CLI/MCP) \\
+Position & inside the master insert chain & after the master fader/\allowbreak automation, before quantization & after rendering, before quantization \\
+Parameters & threshold/\allowbreak ceiling/\allowbreak release/\allowbreak lookahead/\allowbreak true peak & fixed 0.9 threshold, 0.95 ceiling, 33-frame lookahead, true-peak detection off & target LUFS + true-peak ceiling (CLI/MCP) \\
 Default & exists only when inserted & off & no target, no action \\
 Adjustable & device parameters & on/off only & target and ceiling \\
 Stored in project & yes (device chain) & no (per-export modifier) & no (per-export modifier) \\

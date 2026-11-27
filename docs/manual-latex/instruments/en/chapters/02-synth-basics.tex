@@ -16,7 +16,7 @@ wavetables: \texttt{hollow}, \texttt{organ}, \texttt{vocal},
 the branches are mixed before the low-pass and envelope.
 
 \begin{center}
-\begin{tikzpicture}[
+\resizebox{\textwidth}{!}{\begin{tikzpicture}[
   node distance=9mm and 11mm,
   box/.style={draw, rounded corners=2pt, minimum width=24mm, minimum height=8mm, align=center, font=\small},
   sum/.style={draw, circle, minimum size=6mm, inner sep=0pt, font=\small},
@@ -34,7 +34,7 @@ the branches are mixed before the low-pass and envelope.
   \draw[arrow] (mix) -- (filter);
   \draw[arrow] (filter) -- (env);
   \draw[arrow] (env) -- (out);
-\end{tikzpicture}
+\end{tikzpicture}}
 \end{center}
 
 The filter is a four-pole ladder low-pass. The device clamps cutoff to between

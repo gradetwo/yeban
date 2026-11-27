@@ -24,7 +24,7 @@ and lose all the dynamics. The correct order is to put the device chain at a
 sensible level first, then use the fader for relative balance.
 
 \begin{center}
-\begin{tikzpicture}[
+\resizebox{\textwidth}{!}{\begin{tikzpicture}[
   node distance=8mm and 6mm,
   box/.style={draw, rounded corners=2pt, minimum width=26mm, minimum height=8mm, align=center, font=\small},
   arrow/.style={-{Latex[length=2mm]}, thick}
@@ -39,7 +39,7 @@ sensible level first, then use the fader for relative balance.
   \draw[arrow] (devices) -- (fader);
   \draw[arrow] (fader) -- (bus);
   \draw[arrow] (bus) -- (master);
-\end{tikzpicture}
+\end{tikzpicture}}
 \end{center}
 
 ``Device-chain gain'' in the diagram is the working level inside the devices,

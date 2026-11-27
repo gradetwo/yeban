@@ -20,14 +20,14 @@ The four layers are \textbf{functions}, not a fixed instrumentation. One piano c
 \begin{figure}[htbp]
   \centering
   \begin{tikzpicture}[font=\small]
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (color) at (0,3.3) {\textbf{Colour / atmosphere}: synth pads, samples, ambience, effects};
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (melody) at (0,2.2) {\textbf{Melody}: lead vocal, lead instrument, counter-line, answering phrases};
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (harmony) at (0,1.1) {\textbf{Harmony}: pads, arpeggios, chordal instruments};
-    \node[draw, rounded corners, fill=yebanboxbg, minimum width=8.6cm, minimum height=0.9cm] (rhythm) at (0,0) {\textbf{Rhythm}: drums, percussion, bass, rhythm guitar/keyboard};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (color) at (0,4.05) {\textbf{Colour / atmosphere}: synth pads, samples, ambience, effects};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (melody) at (0,2.7) {\textbf{Melody}: lead vocal, lead instrument, counter-line, answering phrases};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (harmony) at (0,1.35) {\textbf{Harmony}: pads, arpeggios, chordal instruments};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=8.2cm, align=center, minimum height=0.9cm] (rhythm) at (0,0) {\textbf{Rhythm}: drums, percussion, bass, rhythm guitar/keyboard};
     \draw[->, thick, yebanblue] (rhythm.north) -- (harmony.south);
     \draw[->, thick, yebanblue] (harmony.north) -- (melody.south);
     \draw[->, thick, yebanblue] (melody.north) -- (color.south);
-    \node[anchor=west, align=left, text width=3.2cm] at (5.7,1.6) {Bottom to top is not a\\ranking of importance. It is\\``build the skeleton, then\\choose the colour''.};
+    \node[anchor=west, align=left, text width=4.2cm] at (4.8,1.6) {Bottom to top is not a\\ranking of importance.\\It is ``build the skeleton,\\then choose the colour''.};
   \end{tikzpicture}
   \caption{The four functional layers of arrangement. They support one another; they are not a track-count leaderboard.}
   \label{fig:four-layers}
@@ -145,9 +145,9 @@ Only now add strings, synth pads, percussion detail, counter-melodies and answer
 \begin{figure}[htbp]
   \centering
   \begin{tikzpicture}[font=\small]
-    \node[draw, rounded corners, fill=yebanboxbg, text width=3.2cm, align=left] (pass1) at (0,0) {\textbf{Pass 1 -- skeleton}\\drums / bass / harmonic roots\\goal: eight bars stand up};
-    \node[draw, rounded corners, fill=yebanboxbg, text width=3.2cm, align=left] (pass2) at (3.7,0) {\textbf{Pass 2 -- protagonist}\\lead melody / vocal\\goal: one sentence is remembered};
-    \node[draw, rounded corners, fill=yebanboxbg, text width=3.2cm, align=left] (pass3) at (7.4,0) {\textbf{Pass 3 -- colour}\\strings / synths / percussion\\goal: every layer has a job};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.7cm, align=left] (pass1) at (-4.7,0) {\textbf{Pass 1 -- skeleton}\\drums / bass / harmonic roots\\goal: eight bars stand up};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.7cm, align=left] (pass2) at (0,0) {\textbf{Pass 2 -- protagonist}\\lead melody / vocal\\goal: one sentence is remembered};
+    \node[draw, rounded corners, fill=yebanboxbg, text width=3.7cm, align=left] (pass3) at (4.7,0) {\textbf{Pass 3 -- colour}\\strings / synths / percussion\\goal: every layer has a job};
     \draw[->, thick, yebanblue] (pass1) -- (pass2);
     \draw[->, thick, yebanblue] (pass2) -- (pass3);
   \end{tikzpicture}

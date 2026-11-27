@@ -101,7 +101,7 @@ So the GUI-only EQ pass has to stay narrow: use $1$ to $3$ dB of low-shelf gain 
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}p{0.13\linewidth}p{0.50\linewidth}p{0.16\linewidth}p{0.19\linewidth}@{}}
+\begin{tabular}{@{}p{0.12\linewidth}p{0.46\linewidth}p{0.15\linewidth}p{0.17\linewidth}@{}}
 \hline
 Device & Key parameters and ranges & Defaults & GUI reach \\
 \hline
@@ -126,7 +126,7 @@ That is the shared-reverb trap. Put a default \texttt{reverb\_wet} of $0.25$ on 
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}p{0.13\linewidth}p{0.55\linewidth}p{0.15\linewidth}p{0.17\linewidth}@{}}
+\begin{tabular}{@{}p{0.12\linewidth}p{0.50\linewidth}p{0.14\linewidth}p{0.16\linewidth}@{}}
 \hline
 Device & Key parameters and ranges & Defaults & GUI reach \\
 \hline
@@ -150,7 +150,7 @@ The volume lane's nominal vertical axis is $-60$ to $+12$ dB, while the visible 
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}p{0.23\linewidth}p{0.17\linewidth}p{0.18\linewidth}p{0.40\linewidth}@{}}
+\begin{tabular}{@{}p{0.21\linewidth}p{0.16\linewidth}p{0.17\linewidth}p{0.36\linewidth}@{}}
 \hline
 Target & Section & Value & Reason \\
 \hline
@@ -232,7 +232,7 @@ If the export reports ``master clipped N samples, suggested trim X dB'', lower t
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}p{0.36\linewidth}p{0.58\linewidth}@{}}
+\begin{tabular}{@{}p{0.34\linewidth}p{0.54\linewidth}@{}}
 \hline
 Common misreading & What is actually true \\
 \hline
@@ -268,7 +268,7 @@ This table is also the boundary of the chapter: Yeban has no automatic mastering
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}p{0.22\linewidth}p{0.26\linewidth}p{0.22\linewidth}p{0.26\linewidth}@{}}
+\begin{tabular}{@{}p{0.21\linewidth}p{0.25\linewidth}p{0.21\linewidth}p{0.25\linewidth}@{}}
 \hline
 Chinese & English & Chinese & English \\
 \hline
@@ -290,14 +290,14 @@ Chinese & English & Chinese & English \\
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}p{0.21\linewidth}p{0.40\linewidth}p{0.35\linewidth}@{}}
+\begin{tabular}{@{}p{0.27\linewidth}p{0.36\linewidth}p{0.31\linewidth}@{}}
 \hline
 Shot name & UI state & Steps \\
 \hline
 \texttt{walkthrough-console} & Mixer console with at least six tracks; faders, pan, track meters and master meter in one view & Press X or F8, play verse 1, capture \\
 \texttt{walkthrough-eq-low} & Device rack EQ panel showing only the low-shelf gain slider & Select lead vocal, insert EQ, drag low-shelf gain, capture \\
-\texttt{walkthrough-compressor} & Compressor row showing threshold, ratio and the GR string & Insert Compressor from Track menu, click the row to cycle ratio, capture \\
-\texttt{walkthrough-automation} & Arrangement volume lane with section points; lead vocal and chorus boundary visible & Press A, click the lane to add or edit points, capture \\
+\texttt{walkthrough-\allowbreak compressor} & Compressor row showing threshold, ratio and the GR string & Insert Compressor from Track menu, click the row to cycle ratio, capture \\
+\texttt{walkthrough-\allowbreak automation} & Arrangement volume lane with section points; lead vocal and chorus boundary visible & Press A, click the lane to add or edit points, capture \\
 \texttt{walkthrough-export} & WAV export dialog with five controls and the post-export measurement line & File menu, export WAV, export once, capture \\
 \hline
 \end{tabular}
@@ -315,7 +315,7 @@ Section & In-app help anchor \\
 Preparation and reference & \texttt{walkthrough-prep} \\
 Rough balance and gain staging & \texttt{walkthrough-balance-gain} \\
 EQ, dynamics and space & \texttt{walkthrough-processing} \\
-Automation & \texttt{walkthrough-automation} \\
+Automation & \texttt{walkthrough-\allowbreak automation} \\
 Bus and export & \texttt{walkthrough-bus-export} \\
 Pre-export check & \texttt{walkthrough-export-check} \\
 Common misreadings and boundaries & \texttt{walkthrough-boundaries} \\

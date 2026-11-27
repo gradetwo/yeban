@@ -10,11 +10,12 @@
 \begin{center}
 \begin{tikzpicture}[font=\scriptsize, every node/.style={align=center}]
   \foreach \i/\lab in {0/{20–60\\次低频}, 1/{60–250\\低频}, 2/{250–500\\低中频}, 3/{0.5–2k\\中频}, 4/{2–5k\\presence}, 5/{5–10k\\高频}, 6/{10k+\\空气感}} {
-    \fill[black!12] (\i*2.3,0) rectangle ++(2.3,1.2);
-    \draw (\i*2.3,0) rectangle ++(2.3,1.2);
-    \node at (\i*2.3+1.15,0.6) {\lab};
+    \fill[black!12] (\i*2.2,0) rectangle ++(2.2,1.2);
+    \draw (\i*2.2,0) rectangle ++(2.2,1.2);
+    \node at (\i*2.2+1.1,0.6) {\lab};
   }
-  \draw[-{Latex[length=2mm]}] (0,-0.35) -- (16.1,-0.35) node[right] {频率升高};
+  \draw[-{Latex[length=2mm]}] (0,-0.35) -- (15.4,-0.35);
+  \node[anchor=east] at (15.4,-0.62) {频率升高};
 \end{tikzpicture}
 \end{center}
 

@@ -83,7 +83,7 @@ The partial ceiling is 64. Configuration fills from low index upward and stops w
 
 \section{Current state: DSP core only}
 
-Checked before writing: `yeban-dsp/src/modal.rs` has \texttt{ModalModel::String/Beam/Membrane/Plate}, \texttt{ModalParams}, \texttt{ModalVoice}, two-resonator coupling, and the 64-partial ceiling. But `yeban-app`, `yeban-engine`, `yeban-model`, and `yeban-mcp` contain no reference to \texttt{yeban\_dsp::modal} or \texttt{ModalModel}. That means:
+Checked before writing: `yeban-dsp/src/modal.rs` has \texttt{ModalModel::String/\allowbreak Beam/\allowbreak Membrane/\allowbreak Plate}, \texttt{ModalParams}, \texttt{ModalVoice}, two-resonator coupling, and the 64-partial ceiling. But `yeban-app`, `yeban-engine`, `yeban-model`, and `yeban-mcp` contain no reference to \texttt{yeban\_dsp::modal} or \texttt{ModalModel}. That means:
 
 \begin{itemize}
   \item there is no "physical-modeling instrument" device or source type that can be placed on a track;

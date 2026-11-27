@@ -5,7 +5,7 @@
 \NeedsTeXFormat{LaTeX2e}
 \ProvidesPackage{yeban-manual}[2026/11/25 Yeban manual shared style]
 
-\RequirePackage[a4paper,margin=2.2cm,headheight=14pt]{geometry}
+\RequirePackage[a4paper,margin=2.2cm,headheight=28pt]{geometry}
 \RequirePackage{xcolor}
 \RequirePackage{graphicx}
 \RequirePackage{booktabs}
@@ -31,6 +31,8 @@
   \setCJKsansfont{Noto Sans CJK SC}%
 }
 \RequirePackage{makeidx}
+\RequirePackage{needspace}
+\RequirePackage{etoolbox}
 % Chapters name identifiers with underscores inside \texttt and
 % backtick code spans (pitch_keycenter, tape_drive); the underscore
 % package typesets _ in text mode while keeping math subscripts.
@@ -44,13 +46,24 @@
 
 \setlist{itemsep=2pt,topsep=4pt}
 \captionsetup{font=small,labelfont=bf}
-\titleformat{\chapter}[display]{\normalfont\huge\bfseries\color{yebanblue}}{\chaptertitlename\ \thechapter}{12pt}{\Huge}
-\titleformat{\section}{\normalfont\Large\bfseries\color{yebanblue}}{\thesection}{0.6em}{}
-\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+\titleformat{\chapter}[display]{\normalfont\huge\bfseries\color{yebanblue}}{\chaptertitlename\ \thechapter}{12pt}{\Huge\raggedright\hyphenpenalty=10000}
+\titleformat{\section}{\normalfont\Large\bfseries\color{yebanblue}\hyphenpenalty=10000}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries\hyphenpenalty=10000}{\thesubsection}{0.6em}{}
+% Keep headings with their first lines: never strand a heading at a page foot.
+\let\yeban@section\section
+\renewcommand{\section}{\needspace{11\baselineskip}\yeban@section}
+\let\yeban@subsection\subsection
+\renewcommand{\subsection}{\needspace{8\baselineskip}\yeban@subsection}
+\emergencystretch=3em
+\widowpenalty=10000
+\clubpenalty=10000
+\setlength{\tabcolsep}{4pt}
+\AtBeginEnvironment{table}{\small\setlength{\tabcolsep}{4pt}}
+\AtBeginEnvironment{longtable}{\small\setlength{\tabcolsep}{4pt}}
 
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\small\nouppercase{\leftmark}}
+\fancyhead[L]{\small\begin{minipage}[t]{0.84\textwidth}\nouppercase{\leftmark}\end{minipage}}
 \fancyhead[R]{\small\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
 
@@ -59,8 +72,11 @@
   \par\smallskip\noindent
   \colorbox{#1}{\begin{minipage}{\dimexpr\textwidth-2\fboxsep\relax}#2\end{minipage}}%
   \par\smallskip}
-\newcommand{\tipbox}[1]{\yebanbox{yebanboxbg}{\textbf{Tip.}\ #1}}
-\newcommand{\warnbox}[1]{\yebanbox{yebanwarnbg}{\textbf{Note.}\ #1}}
+% tipbox/warnbox are used as environments at every call site; capture the
+% body in an lrbox so the whole text lands inside the colour box.
+\newsavebox{\yeban@box}
+\newenvironment{tipbox}{\par\smallskip\noindent\begin{lrbox}{\yeban@box}\begin{minipage}{\dimexpr\textwidth-2\fboxsep\relax}\textbf{Tip.}\ }{\end{minipage}\end{lrbox}\colorbox{yebanboxbg}{\usebox{\yeban@box}}\par\smallskip}
+\newenvironment{warnbox}{\par\smallskip\noindent\begin{lrbox}{\yeban@box}\begin{minipage}{\dimexpr\textwidth-2\fboxsep\relax}\textbf{Note.}\ }{\end{minipage}\end{lrbox}\colorbox{yebanwarnbg}{\usebox{\yeban@box}}\par\smallskip}
 \newcommand{\zhbox}[2]{\yebanbox{#1}{#2}}
 
 % Arity compatibility (2026-11-26 assembly): chapters use
@@ -104,7 +120,7 @@
 \newcommand{\classquote}[3]{%
   \par\vspace{6pt}%
   \begin{flushright}%
-    \begin{minipage}{0.62\textwidth}\raggedleft
+    \begin{minipage}{0.70\textwidth}\raggedleft
       \@ifpackageloaded{ctex}{{\kaishu\Large #1}}{{\Large #1}}\par
       \def\yeban@cq@src{#2}\ifx\yeban@cq@src\empty\else
         \vspace{3pt}{\small\color{yebangrey}—— #2}\par\fi

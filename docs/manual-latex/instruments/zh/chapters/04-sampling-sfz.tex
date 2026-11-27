@@ -33,7 +33,7 @@ SFZ 是一个文本定义文件。它不内含 PCM，也不把整份音库塞进
 
 \section{音区、根音与力度层}
 
-SFZ 的每个区域至少回答四件事：覆盖哪些键（\texttt{lokey}/\texttt{hikey}）、覆盖哪些力度（\texttt{lovel}/\texttt{hivel}）、根音在哪（\texttt{pitch_keycenter}，默认 60）、播哪个文件（\texttt{sample}）。音符落在区域内才触发；多个区域同时覆盖同一个键与力度时会叠加，这就是分层采样。
+SFZ 的每个区域至少回答四件事：覆盖哪些键（\texttt{lokey}/\texttt{hikey}）、覆盖哪些力度（\texttt{lovel}/\allowbreak\texttt{hivel}）、根音在哪（\texttt{pitch_keycenter}，默认 60）、播哪个文件（\texttt{sample}）。音符落在区域内才触发；多个区域同时覆盖同一个键与力度时会叠加，这就是分层采样。
 
 \begin{center}
 \begin{tikzpicture}[font=\scriptsize, x=13mm, y=7mm]

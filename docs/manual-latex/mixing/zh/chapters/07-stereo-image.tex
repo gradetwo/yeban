@@ -59,21 +59,21 @@ SFZ 区域 & 区域里的 \texttt{pan}、\texttt{width}、\texttt{position} & �
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}llll@{}}
+\begin{tabular}{@{}p{0.30\linewidth}p{0.22\linewidth}p{0.20\linewidth}p{0.16\linewidth}@{}}
 \hline
 序列化名 & 曲线 & 曲线中心（未走恒等规则） & 中心电平 \\
 \hline
 \texttt{Linear} & $L=1-p$，$R=p$，$p=(pan+1)/2$ & $(0.5,0.5)$ & $-6.02$ dB \\
-\texttt{ConstantPowerMinus3dB} & $L=\cos\theta$，$R=\sin\theta$ & $(\sqrt2/2,\sqrt2/2)$ & $-3.01$ dB \\
-\texttt{ConstantPowerMinus4\_5dB} & $L=\cos^{\alpha}\theta$，$R=\sin^{\alpha}\theta$ & $(0.5957,0.5957)$ & $-4.50$ dB \\
-\texttt{ConstantPowerMinus6dB} & $L=\cos^2\theta$，$R=\sin^2\theta$ & $(0.5,0.5)$ & $-6.02$ dB \\
+\texttt{ConstantPower\allowbreak Minus3dB} & $L=\cos\theta$，$R=\sin\theta$ & $(\sqrt2/2,\sqrt2/2)$ & $-3.01$ dB \\
+\texttt{ConstantPower\allowbreak Minus4\_5dB} & $L=\cos^{\alpha}\theta$，$R=\sin^{\alpha}\theta$ & $(0.5957,0.5957)$ & $-4.50$ dB \\
+\texttt{ConstantPower\allowbreak Minus6dB} & $L=\cos^2\theta$，$R=\sin^2\theta$ & $(0.5,0.5)$ & $-6.02$ dB \\
 \hline
 \end{tabular}
 \caption{四种声相衰减律；$\theta=(pan+1)\pi/4$，$\alpha=0.45/\log_{10}2\approx1.4948677$}
 \label{tab:pan-laws}
 \end{table}
 
-默认是 \texttt{ConstantPowerMinus3dB}。它保证左右能量的平方和恒为 1，扫声相时总能量不塌；线性律保证左右振幅和恒为 1，扫到中间会掉 6 dB；$-4.5$ dB 与 $-6$ dB 是另外两档等功率曲线。工程字段可以直接写上面四个序列化名，但当前界面没有“声相定律”选择器；要改只能直接改工程 JSON 的 \texttt{audio\_config.pan\_law}，当前 MCP 也没有这个写入入口。
+默认是 \texttt{ConstantPower\allowbreak Minus3dB}。它保证左右能量的平方和恒为 1，扫声相时总能量不塌；线性律保证左右振幅和恒为 1，扫到中间会掉 6 dB；$-4.5$ dB 与 $-6$ dB 是另外两档等功率曲线。工程字段可以直接写上面四个序列化名，但当前界面没有“声相定律”选择器；要改只能直接改工程 JSON 的 \texttt{audio\_config.pan\_law}，当前 MCP 也没有这个写入入口。
 
 \subsection{中心恒等，以及 3 dB 台阶}
 
@@ -179,7 +179,7 @@ SFZ 参数 & 含义 & 范围 & 默认 \\
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}llll@{}}
+\begin{tabular}{@{}p{0.14\linewidth}p{0.30\linewidth}p{0.26\linewidth}p{0.22\linewidth}@{}}
 \hline
 开关 & 处理 & 用途 & 边界 \\
 \hline

@@ -45,10 +45,10 @@ The diminished triad lowers both the third and the fifth; the augmented triad ra
 \begin{center}
 \begin{minipage}{\linewidth}
 \centering
-\begin{tikzpicture}[x=2.8cm,y=0.48cm,font=\scriptsize]
-  \foreach \y in {0,3,4,7} {\draw[gray!45] (-0.2,\y) -- (3.2,\y);}
+\begin{tikzpicture}[x=2.8cm,y=0.55cm,font=\scriptsize]
+  \foreach \y in {0,3,4,7} {\draw[gray!45] (0,\y) -- (3.2,\y);}
   \foreach \y/\lab in {0/C4,3/E\flatsym4 (+3),4/E4 (+4),7/G4 (+7)} {
-    \node[left,font=\tiny] at (0,\y) {\lab};
+    \node[left,font=\tiny] at (-0.08,\y) {\lab};
   }
   \foreach \x/\lab in {1.0/major triad,2.5/minor triad} {
     \draw[gray] (\x,-0.3) -- (\x,7.4);

@@ -49,7 +49,7 @@
 
 \section{泳道怎么显示}
 
-编排视图里，每条轨可以有多条自动化泳道；同一条轨的多条泳道按目标类型的固定顺序等分车道行的高度。一个目标一条带，带与带之间不会重叠。默认是展开的；\texttt{Cmd/Ctrl+Shift+A} 或“视图 → 显示 / 隐藏自动化泳道”切换显示。菜单文案写“(A)”，实际绑定是带 \texttt{Shift} 的组合，单按 \texttt{A} 不会切换。
+编排视图里，每条轨可以有多条自动化泳道；同一条轨的多条泳道按目标类型的固定顺序等分车道行的高度。一个目标一条带，带与带之间不会重叠。默认是展开的；\texttt{Cmd/\allowbreak Ctrl+Shift+A} 或“视图 → 显示 / 隐藏自动化泳道”切换显示。菜单文案写“(A)”，实际绑定是带 \texttt{Shift} 的组合，单按 \texttt{A} 不会切换。
 
 \begin{table}[htbp]
 \centering
@@ -80,12 +80,12 @@
 \hline
 操作 & 入口 & 边界 \\
 \hline
-显示/隐藏 & \texttt{Cmd/Ctrl+Shift+A}；视图菜单 & 默认展开；没有“只显示选中轨”的过滤 \\
+显示/隐藏 & \texttt{Cmd/\allowbreak Ctrl+Shift+A}；视图菜单 & 默认展开；没有“只显示选中轨”的过滤 \\
 增/改点 & 在泳道带内点击 & 只能改已存在泳道；8 像素内算同一点；新点为线性 \\
 删点 & 无界面入口 & 走 MCP 的 \texttt{removeAutomationPoint} \\
 改曲线 & 无界面入口 & 走 MCP 写点的 \texttt{curve}，或工程 JSON \\
 新建泳道 & 无界面入口 & 先写第一个点（MCP \texttt{yeban\_edit\_automation}）或改工程 JSON \\
-读/写开关 & 无界面入口 & 角标只显示；改属性走 MCP 的 \texttt{setAutomationLane} \\
+读/写开关 & 无界面入口 & 角标只显示；改属性走 MCP 的 \texttt{set\allowbreak Automation\allowbreak Lane} \\
 \hline
 \end{tabular}
 \caption{自动化点的界面编辑入口}
@@ -163,7 +163,7 @@
 \label{tab:automation-write-modes}
 \end{table}
 
-界面目前只把读/写状态画成角标，没有开关、录制臂或模式选择器。要改 \texttt{readEnabled}、\texttt{writeMode} 或显式 \texttt{domain}，走 MCP 的 \texttt{yeban\_edit\_notes}，在 \texttt{ops} 里给 \texttt{kind: "setAutomationLane"}；把整条泳道取走用同一条里的 \texttt{remove: true}。新建泳道不能先建一条空泳道：模型拒绝持久化“无点、读开、Off、无覆盖”的隐式形状；先用 \texttt{yeban\_edit\_automation} 写第一个点，泳道随点出现，再改属性。
+界面目前只把读/写状态画成角标，没有开关、录制臂或模式选择器。要改 \texttt{readEnabled}、\texttt{writeMode} 或显式 \texttt{domain}，走 MCP 的 \texttt{yeban\_edit\_notes}，在 \texttt{ops} 里给 \texttt{kind: "set\allowbreak Automation\allowbreak Lane"}；把整条泳道取走用同一条里的 \texttt{remove: true}。新建泳道不能先建一条空泳道：模型拒绝持久化“无点、读开、Off、无覆盖”的隐式形状；先用 \texttt{yeban\_edit\_automation} 写第一个点，泳道随点出现，再改属性。
 
 \subsection{录制实际只写一个点}
 
@@ -310,8 +310,8 @@ tick & 小节 & 值 & 意图 \\
 
 \begin{enumerate}
   \item 先定静态值：推子、声相、发送量、设备参数都先摆到“没有自动化时”的基准。
-  \item 要新建泳道时，先用 MCP 写第一个点，让泳道出现；再用 \texttt{setAutomationLane} 设定读/写与显示域。
-  \item 在编排视图按 \texttt{Cmd/Ctrl+Shift+A} 确认泳道可见；点击落点，或走 MCP 批量写点。
+  \item 要新建泳道时，先用 MCP 写第一个点，让泳道出现；再用 \texttt{set\allowbreak Automation\allowbreak Lane} 设定读/写与显示域。
+  \item 在编排视图按 \texttt{Cmd/\allowbreak Ctrl+Shift+A} 确认泳道可见；点击落点，或走 MCP 批量写点。
   \item 需要录制时，先确认泳道 \texttt{writeMode} 不是 \texttt{Off}，再播放，拖推子/声相/EQ 低架，松手写一个点。
   \item 读回：用 \texttt{yeban\_edit\_automation} 的 \texttt{ticks} 查“自动化值/静态值/实际值”，确认 \texttt{source} 是 \texttt{automation} 还是 \texttt{static}。
   \item 导出前确认读开关没有关；关掉的泳道在导出里同样不生效。

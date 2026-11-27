@@ -83,7 +83,7 @@
 
 \section{夜半现状：只有 DSP 核心}
 
-开写前逐项复核：`yeban-dsp/src/modal.rs` 已有 \texttt{ModalModel::String/Beam/Membrane/Plate}、\texttt{ModalParams}、\texttt{ModalVoice}、双共振器耦合与 64 分音上限；但 `yeban-app`、`yeban-engine`、`yeban-model`、`yeban-mcp` 都没有引用 \texttt{yeban\_dsp::modal} 或 \texttt{ModalModel}。也就是说：
+开写前逐项复核：`yeban-dsp/src/modal.rs` 已有 \texttt{ModalModel::String/\allowbreak Beam/\allowbreak Membrane/\allowbreak Plate}、\texttt{ModalParams}、\texttt{ModalVoice}、双共振器耦合与 64 分音上限；但 `yeban-app`、`yeban-engine`、`yeban-model`、`yeban-mcp` 都没有引用 \texttt{yeban\_dsp::modal} 或 \texttt{ModalModel}。也就是说：
 
 \begin{itemize}
   \item 没有可挂到轨道上的“物理建模乐器”设备或音源类型；

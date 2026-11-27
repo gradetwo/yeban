@@ -59,21 +59,21 @@ Pan is not a simple left/right gain pair. It follows the project-level \texttt{a
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}llll@{}}
+\begin{tabular}{@{}p{0.30\linewidth}p{0.22\linewidth}p{0.20\linewidth}p{0.16\linewidth}@{}}
 \hline
 Serialized name & Curve & Curve centre (before the identity rule) & Centre level \\
 \hline
 \texttt{Linear} & $L=1-p$, $R=p$, $p=(pan+1)/2$ & $(0.5,0.5)$ & $-6.02$ dB \\
-\texttt{ConstantPowerMinus3dB} & $L=\cos\theta$, $R=\sin\theta$ & $(\sqrt2/2,\sqrt2/2)$ & $-3.01$ dB \\
-\texttt{ConstantPowerMinus4\_5dB} & $L=\cos^{\alpha}\theta$, $R=\sin^{\alpha}\theta$ & $(0.5957,0.5957)$ & $-4.50$ dB \\
-\texttt{ConstantPowerMinus6dB} & $L=\cos^2\theta$, $R=\sin^2\theta$ & $(0.5,0.5)$ & $-6.02$ dB \\
+\texttt{ConstantPower\allowbreak Minus3dB} & $L=\cos\theta$, $R=\sin\theta$ & $(\sqrt2/2,\sqrt2/2)$ & $-3.01$ dB \\
+\texttt{ConstantPower\allowbreak Minus4\_5dB} & $L=\cos^{\alpha}\theta$, $R=\sin^{\alpha}\theta$ & $(0.5957,0.5957)$ & $-4.50$ dB \\
+\texttt{ConstantPower\allowbreak Minus6dB} & $L=\cos^2\theta$, $R=\sin^2\theta$ & $(0.5,0.5)$ & $-6.02$ dB \\
 \hline
 \end{tabular}
 \caption{The four pan laws; $\theta=(pan+1)\pi/4$, $\alpha=0.45/\log_{10}2\approx1.4948677$}
 \label{tab:pan-laws}
 \end{table}
 
-The default is \texttt{ConstantPowerMinus3dB}: the sum of left and right energy is exactly one, so sweeping pan does not collapse the total energy. The linear law keeps the amplitude sum at one and loses 6 dB in the centre; $-4.5$ dB and $-6$ dB are the other two constant-power curves. The project field accepts the four serialized names above, but the current UI has no pan-law selector; change \texttt{audio\_config.pan\_law} directly in the project JSON, and note that MCP currently has no writer for it.
+The default is \texttt{ConstantPower\allowbreak Minus3dB}: the sum of left and right energy is exactly one, so sweeping pan does not collapse the total energy. The linear law keeps the amplitude sum at one and loses 6 dB in the centre; $-4.5$ dB and $-6$ dB are the other two constant-power curves. The project field accepts the four serialized names above, but the current UI has no pan-law selector; change \texttt{audio\_config.pan\_law} directly in the project JSON, and note that MCP currently has no writer for it.
 
 \subsection{Centre identity and the 3 dB step}
 
@@ -179,7 +179,7 @@ Mono compatibility is not a plug-in; it is a set of switches in the control-room
 \begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{@{}llll@{}}
+\begin{tabular}{@{}p{0.14\linewidth}p{0.30\linewidth}p{0.26\linewidth}p{0.22\linewidth}@{}}
 \hline
 Switch & Processing & Use & Boundary \\
 \hline
