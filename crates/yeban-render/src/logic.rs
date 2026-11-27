@@ -916,6 +916,36 @@ pub const LOGIC_TEMPO_EVENT_LEN: usize = 0x20;
 /// `payload_size = 32N + 16`"。
 pub const LOGIC_TEMPO_PAYLOAD_LEN: usize = 0x30;
 
+/// 一条拍号变化记录的长度（参考实现 §5：`payload_size = 80 + 48*changes + 16`）。
+pub const LOGIC_METER_CHANGE_LEN: usize = 48;
+
+/// 拍号头 / 变化记录里 `+0x0f` 标志位的偏移。
+pub const LOGIC_METER_FLAG_OFFSET: usize = 0x0f;
+
+/// 拍号变化记录里位置（`u32` 小端）的偏移。
+pub const LOGIC_METER_CHANGE_POSITION_OFFSET: usize = 0x04;
+
+/// 拍号变化记录里 `+0x10` 的恒定字（与 `LOGIC_METER_MARKER` 相同）。
+pub const LOGIC_METER_CHANGE_CONST_10_OFFSET: usize = 0x10;
+
+/// 拍号变化记录里 `+0x17` 的恒定字节。
+pub const LOGIC_METER_CHANGE_CONST_17: u8 = 0x88;
+
+/// 拍号变化记录里 `+0x17` 的偏移。
+pub const LOGIC_METER_CHANGE_CONST_17_OFFSET: usize = 0x17;
+
+/// 拍号变化记录里 `secidx`（`u32` 小端，参考实现用 `1,3,5,…`）的偏移。
+pub const LOGIC_METER_CHANGE_SECIDX_OFFSET: usize = 0x18;
+
+/// 拍号变化记录里重复位置（`u32` 小端）的偏移。
+pub const LOGIC_METER_CHANGE_REPEATED_POSITION_OFFSET: usize = 0x1c;
+
+/// 拍号变化记录里 `+0x27` 的恒定字节。
+pub const LOGIC_METER_CHANGE_CONST_27_OFFSET: usize = 0x27;
+
+/// 速度事件 `+0x0f` 的标志：`0x01` = 显式变化点。
+pub const LOGIC_TEMPO_FLAG_CHANGE: u8 = 0x01;
+
 /// 速度事件里的位置（`u64` 小端）＝**速度/记号原点** 38400（= [`LOGIC_NOTE_ORIGIN_TICKS`]）。
 ///
 /// 实测五份文件的第一条速度事件在 `+0x04` 都是 `00 96 00 00 00 00 00 00`（= 38400）；
@@ -1588,11 +1618,8 @@ pub fn is_continuation(line: &[u8]) -> bool {
 pub fn project_data(project: &YebanProjectV1) -> LogicProjectData {
     let mut builder = LogicBuilder::new();
     builder.records.push(song_record(project.bpm));
-    builder.records.push(meter_record(
-        project.time_signature.numerator,
-        project.time_signature.denominator,
-    ));
-    builder.records.push(tempo_record(project.bpm));
+    builder.records.push(meter_record(project, None));
+    builder.records.push(tempo_record(project, None));
 
     builder.write_project_losses(project);
 
@@ -3358,18 +3385,39 @@ fn donor_splice_with(
 
     let mut records: Vec<Vec<u8>> = parsed.iter().map(|record| record.full.to_vec()).collect();
 
-    // (1) 拍号：载荷 +0x0b = 分母的以 2 为底指数、+0x0c = 分子（实测，载荷长度不变）。
-    let exponent = project.time_signature.denominator.trailing_zeros() as u8;
-    records[meter_index][LOGIC_RECORD_HEADER + LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET] = exponent;
-    records[meter_index][LOGIC_RECORD_HEADER + LOGIC_METER_NUMERATOR_OFFSET] =
-        project.time_signature.numerator;
+    // (1) 拍号：无变化时只改头 `+0x0b`/`+0x0c`（载荷长度不变，供体字节逐字节保留）；
+    //     有变化时按 `80 + 48*changes + 16` 重建载荷，供体的 80 字节头原样作为头。
+    if project.time_signature_map.is_empty() {
+        let exponent = project.time_signature.denominator.trailing_zeros() as u8;
+        records[meter_index][LOGIC_RECORD_HEADER + LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET] =
+            exponent;
+        records[meter_index][LOGIC_RECORD_HEADER + LOGIC_METER_NUMERATOR_OFFSET] =
+            project.time_signature.numerator;
+    } else {
+        let header: Vec<u8> = records[meter_index]
+            [LOGIC_RECORD_HEADER..LOGIC_RECORD_HEADER + LOGIC_METER_BODY_LEN]
+            .to_vec();
+        let rebuilt = meter_record(project, Some(&header));
+        records[meter_index] =
+            replace_record_payload(&records[meter_index], &rebuilt[LOGIC_RECORD_HEADER..]);
+    }
 
-    // (2) 速度：载荷 +0x10 的 u32 = round(bpm × 10000)（实测，载荷长度不变）。
-    put_u32_le(
-        &mut records[tempo_index],
-        LOGIC_RECORD_HEADER + LOGIC_TEMPO_VALUE_OFFSET,
-        tempo_ticks(project.bpm),
-    );
+    // (2) 速度：无变化时只改首个事件的 `+0x10`（载荷长度不变，供体字节逐字节保留）；
+    //     有变化时按 `32N + 16` 重建载荷，供体的 32 字节首事件原样作为第一事件。
+    if project.tempo_map.is_empty() {
+        put_u32_le(
+            &mut records[tempo_index],
+            LOGIC_RECORD_HEADER + LOGIC_TEMPO_VALUE_OFFSET,
+            tempo_ticks(project.bpm),
+        );
+    } else {
+        let header: Vec<u8> = records[tempo_index]
+            [LOGIC_RECORD_HEADER..LOGIC_RECORD_HEADER + LOGIC_TEMPO_EVENT_LEN]
+            .to_vec();
+        let rebuilt = tempo_record(project, Some(&header));
+        records[tempo_index] =
+            replace_record_payload(&records[tempo_index], &rebuilt[LOGIC_RECORD_HEADER..]);
+    }
 
     // (3)/(4) 每条被映射 region 的名字与音符。
     //
@@ -3456,6 +3504,14 @@ fn donor_splice_with(
         clamped,
         name_truncated,
     })
+}
+
+/// 用给定记录头（36 字节）替换载荷，并把记录头的载荷长度改写为实际值。
+fn replace_record_payload(record: &[u8], payload: &[u8]) -> Vec<u8> {
+    let mut out = record[..LOGIC_RECORD_HEADER].to_vec();
+    out.extend_from_slice(payload);
+    put_u32_le(&mut out, LOGIC_RECORD_SIZE_OFFSET, payload.len() as u32);
+    out
 }
 
 /// 用**给定的**根头（供体的 24 字节）+ 记录流拼出 `ProjectData`，只把声明长度改写成实际值。
@@ -4576,18 +4632,69 @@ const LOGIC_METER_HEADER_NO_CHANGE: [u8; LOGIC_METER_BODY_LEN] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// 拍号记录：**实测/参考实现**的 96 字节载荷 = 80 字节头 + 16 字节尾。
+/// 拍号记录：**实测/参考实现**的 `80 + 48*changes + 16` 字节载荷。
 ///
-/// 头里 `+0x0b` 是分母的以 2 为底指数（`den = 2^exp`），`+0x0c` 是分子，
-/// `+0x0f` 是 [`LOGIC_METER_NO_CHANGE_FLAG`]（本切片写不出拍号变化，因此恒为"无变化"形态）。
+/// 头里 `+0x0b` 是分母的以 2 为底指数（`den = 2^exp`），`+0x0c` 是分子。
+/// 无变化时 `+0x0f` = [`LOGIC_METER_NO_CHANGE_FLAG`]（0x80）；有变化时头写 0x00，
+/// 每条变化是 48 字节记录，最后一条 `+0x0f` 带 0x80。
 ///
-/// 参考实现（MIT，§5）把这个形状记为 `payload_size = 80 + 48*changes + 16`，其
+/// 参考实现（MIT，§5）把形状记为 `payload_size = 80 + 48*changes + 16`，其
 /// `set_meter_map` 产出的工程被 Logic 打开过；实测五份文件里无变化的拍号载荷都是 96 字节。
-fn meter_record(numerator: u8, denominator: u8) -> Vec<u8> {
-    let mut body = Vec::with_capacity(LOGIC_METER_PAYLOAD_LEN);
-    body.extend_from_slice(&LOGIC_METER_HEADER_NO_CHANGE);
-    body[LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET] = denominator.trailing_zeros() as u8;
-    body[LOGIC_METER_NUMERATOR_OFFSET] = numerator;
+/// `header` 给供体路线复用供体自己的 80 字节头（其余字段逐字节保留）。
+fn meter_record(project: &YebanProjectV1, header: Option<&[u8]>) -> Vec<u8> {
+    let changes = &project.time_signature_map;
+    let mut body = Vec::with_capacity(
+        LOGIC_METER_BODY_LEN
+            + changes.len() * LOGIC_METER_CHANGE_LEN
+            + LOGIC_EVENT_SEQUENCE_TAIL.len(),
+    );
+    match header {
+        Some(bytes) if bytes.len() >= LOGIC_METER_BODY_LEN => {
+            body.extend_from_slice(&bytes[..LOGIC_METER_BODY_LEN]);
+        }
+        _ => body.extend_from_slice(&LOGIC_METER_HEADER_NO_CHANGE),
+    }
+    body[LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET] =
+        project.time_signature.denominator.trailing_zeros() as u8;
+    body[LOGIC_METER_NUMERATOR_OFFSET] = project.time_signature.numerator;
+    body[LOGIC_METER_FLAG_OFFSET] = if changes.is_empty() {
+        LOGIC_METER_NO_CHANGE_FLAG
+    } else {
+        0
+    };
+    for (index, (&tick, signature)) in changes.iter().enumerate() {
+        let mut event = [0u8; LOGIC_METER_CHANGE_LEN];
+        put_u32_le(&mut event, 0, LOGIC_METER_MARKER);
+        let position =
+            u32::try_from(LOGIC_TEMPO_POSITION_TICKS.saturating_add(tick)).unwrap_or(u32::MAX);
+        put_u32_le(&mut event, LOGIC_METER_CHANGE_POSITION_OFFSET, position);
+        event[LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET] =
+            signature.denominator.trailing_zeros() as u8;
+        event[LOGIC_METER_NUMERATOR_OFFSET] = signature.numerator;
+        event[LOGIC_METER_FLAG_OFFSET] = if index + 1 == changes.len() {
+            LOGIC_METER_NO_CHANGE_FLAG
+        } else {
+            0
+        };
+        put_u32_le(
+            &mut event,
+            LOGIC_METER_CHANGE_CONST_10_OFFSET,
+            LOGIC_METER_MARKER,
+        );
+        event[LOGIC_METER_CHANGE_CONST_17_OFFSET] = LOGIC_METER_CHANGE_CONST_17;
+        put_u32_le(
+            &mut event,
+            LOGIC_METER_CHANGE_SECIDX_OFFSET,
+            (2 * index as u32) + 1,
+        );
+        put_u32_le(
+            &mut event,
+            LOGIC_METER_CHANGE_REPEATED_POSITION_OFFSET,
+            position,
+        );
+        event[LOGIC_METER_CHANGE_CONST_27_OFFSET] = LOGIC_METER_CHANGE_CONST_17;
+        body.extend_from_slice(&event);
+    }
     body.extend_from_slice(&LOGIC_EVENT_SEQUENCE_TAIL);
     record(
         LOGIC_SEQUENCE_TAG,
@@ -4616,17 +4723,46 @@ fn meter_record(numerator: u8, denominator: u8) -> Vec<u8> {
 /// ⚠ 在本次改正之前，本函数写的是 **16 字节**载荷：只有第一个字 `0x60`、其余全 0 ——
 /// 也就是说**位置 0、速度 0**，而且没有 16 字节尾。那一处**没有**被登记成偏差，
 /// 是一个此前未被发现的缺陷；现在它按实测与 MIT 参考实现的形状写入。
-fn tempo_record(bpm: f64) -> Vec<u8> {
-    let ticks = tempo_ticks(bpm);
-    let mut body = Vec::with_capacity(LOGIC_TEMPO_PAYLOAD_LEN);
-    body.resize(LOGIC_TEMPO_EVENT_LEN, 0);
+fn tempo_record(project: &YebanProjectV1, header: Option<&[u8]>) -> Vec<u8> {
+    let points: Vec<(u64, f64)> = project
+        .tempo_map
+        .iter()
+        .map(|(&tick, &bpm)| (tick, bpm))
+        .collect();
+    let mut body = Vec::with_capacity(
+        LOGIC_TEMPO_EVENT_LEN
+            + points.len() * LOGIC_TEMPO_EVENT_LEN
+            + LOGIC_EVENT_SEQUENCE_TAIL.len(),
+    );
+    if let Some(bytes) = header.filter(|bytes| bytes.len() >= LOGIC_TEMPO_EVENT_LEN) {
+        body.extend_from_slice(&bytes[..LOGIC_TEMPO_EVENT_LEN]);
+    } else {
+        body.resize(LOGIC_TEMPO_EVENT_LEN, 0);
+    }
     put_u32_le(&mut body, 0, LOGIC_TEMPO_MARKER);
     body[0x04..0x0c].copy_from_slice(&LOGIC_TEMPO_POSITION_TICKS.to_le_bytes());
     body[0x0c] = 0x7F;
     body[0x0f] = LOGIC_TEMPO_FLAG_FIRST;
-    put_u32_le(&mut body, LOGIC_TEMPO_VALUE_OFFSET, ticks);
+    put_u32_le(
+        &mut body,
+        LOGIC_TEMPO_VALUE_OFFSET,
+        tempo_ticks(project.bpm),
+    );
     body[0x14..0x18].copy_from_slice(&LOGIC_TEMPO_EVENT_CONST_14);
     put_u32_le(&mut body, 0x18, LOGIC_TEMPO_ALT_POSITION_BASE);
+    for (&tick, &bpm) in &project.tempo_map {
+        let mut event = vec![0u8; LOGIC_TEMPO_EVENT_LEN];
+        put_u32_le(&mut event, 0, LOGIC_TEMPO_MARKER);
+        let position =
+            u32::try_from(LOGIC_TEMPO_POSITION_TICKS.saturating_add(tick)).unwrap_or(u32::MAX);
+        event[0x04..0x0c].copy_from_slice(&u64::from(position).to_le_bytes());
+        event[0x0c] = 0x7F;
+        event[0x0f] = LOGIC_TEMPO_FLAG_CHANGE;
+        put_u32_le(&mut event, LOGIC_TEMPO_VALUE_OFFSET, tempo_ticks(bpm));
+        event[0x14..0x18].copy_from_slice(&LOGIC_TEMPO_EVENT_CONST_14);
+        put_u32_le(&mut event, 0x18, tempo_alt_position_at_tick(tick, project));
+        body.extend_from_slice(&event);
+    }
     body.extend_from_slice(&LOGIC_EVENT_SEQUENCE_TAIL);
     record(
         LOGIC_SEQUENCE_TAG,
@@ -4635,6 +4771,27 @@ fn tempo_record(bpm: f64) -> Vec<u8> {
         0,
         &body,
     )
+}
+
+/// 速度事件 `+0x18` 的绝对时间缓存：`7_200_000 + round(Σ(Δtick/960)·(60/bpm)·2000)`。
+fn tempo_alt_position_at_tick(tick: u64, project: &YebanProjectV1) -> u32 {
+    let mut seconds = 0.0f64;
+    let mut cursor = 0u64;
+    let mut bpm = project.bpm;
+    for (&point_tick, &point_bpm) in &project.tempo_map {
+        if point_tick >= tick {
+            break;
+        }
+        seconds += (point_tick - cursor) as f64 * 60.0 / (bpm * LOGIC_TICKS_PER_QUARTER as f64);
+        cursor = point_tick;
+        bpm = point_bpm;
+    }
+    seconds += (tick - cursor) as f64 * 60.0 / (bpm * LOGIC_TICKS_PER_QUARTER as f64);
+    let units = (seconds * 2000.0).round();
+    u64::from(LOGIC_TEMPO_ALT_POSITION_BASE)
+        .checked_add(units as u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(u32::MAX)
 }
 
 /// 速度的落盘整数形态：`u32` 小端 `round(bpm × 10000)`；写不下（非有限 / 越界）时写 0。
@@ -5280,6 +5437,19 @@ mod tests {
 
     fn u16_le(bytes: &[u8], at: usize) -> u16 {
         u16::from_le_bytes([bytes[at], bytes[at + 1]])
+    }
+
+    fn u64_le(bytes: &[u8], at: usize) -> u64 {
+        u64::from_le_bytes([
+            bytes[at],
+            bytes[at + 1],
+            bytes[at + 2],
+            bytes[at + 3],
+            bytes[at + 4],
+            bytes[at + 5],
+            bytes[at + 6],
+            bytes[at + 7],
+        ])
     }
 
     /// 所有记录的 `(偏移, tag)`，**只由载荷长度驱动**走完整个 chunk 流。
@@ -10108,5 +10278,144 @@ mod tests {
             .filter(|(_, _, _, _, doc, row_label)| documented_sha256(doc, row_label).is_some())
             .count();
         assert_eq!(located, 9, "九条路径都必须能在文档表里定位到唯一一行");
+    }
+
+    /// 判据：速度 / 拍号变化点必须写成 Logic 的多事件形态，而不是只写顶层值。
+    ///
+    /// 120 BPM、tick 960 起 240 BPM；4/4、tick 1920 起 5/8。速度载荷 = 2×32+16 = 80，
+    /// 拍号载荷 = 80 + 48 + 16 = 144；第二条速度事件的 altpos 必须等于
+    /// `7_200_000 + round(960/960·60/120·2000)` = `7_201_000`。
+    #[test]
+    fn tempo_and_meter_maps_are_written_as_change_events() {
+        let mut project = fixture_project();
+        project.bpm = 120.0;
+        project.time_signature = yeban_model::TimeSignature {
+            numerator: 4,
+            denominator: 4,
+        };
+        project.tempo_map.insert(960, 240.0);
+        project.time_signature_map.insert(
+            1_920,
+            yeban_model::TimeSignature {
+                numerator: 5,
+                denominator: 8,
+            },
+        );
+        let bundle = build_bundle(&project, "000", "Sequences");
+        let records = read_records(&bundle.files["Alternatives/000/ProjectData"]);
+
+        let tempo = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG
+                    && record.body.len() >= LOGIC_TEMPO_PAYLOAD_LEN
+                    && u32_le(&record.body, 0) == LOGIC_TEMPO_MARKER
+            })
+            .expect("速度记录");
+        assert_eq!(
+            tempo.body.len(),
+            2 * LOGIC_TEMPO_EVENT_LEN + LOGIC_EVENT_SEQUENCE_TAIL.len(),
+            "两条速度事件 + 16 字节尾"
+        );
+        assert_eq!(
+            u64_le(&tempo.body, 0x04),
+            LOGIC_TEMPO_POSITION_TICKS,
+            "首事件位置 = 原点"
+        );
+        assert_eq!(u32_le(&tempo.body, LOGIC_TEMPO_VALUE_OFFSET), 1_200_000);
+        assert_eq!(tempo.body[0x0f], LOGIC_TEMPO_FLAG_FIRST);
+        let change = &tempo.body[LOGIC_TEMPO_EVENT_LEN..2 * LOGIC_TEMPO_EVENT_LEN];
+        assert_eq!(
+            u64_le(change, 0x04),
+            LOGIC_TEMPO_POSITION_TICKS + 960,
+            "变化点位置 = 38400 + tick"
+        );
+        assert_eq!(u32_le(change, LOGIC_TEMPO_VALUE_OFFSET), 2_400_000);
+        assert_eq!(change[0x0f], LOGIC_TEMPO_FLAG_CHANGE);
+        assert_eq!(
+            u32_le(change, 0x18),
+            LOGIC_TEMPO_ALT_POSITION_BASE + 1_000,
+            "altpos 必须按分段积分累计"
+        );
+
+        let meter = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG
+                    && record.body.len() >= LOGIC_METER_BODY_LEN
+                    && u32_le(&record.body, 0) == LOGIC_METER_MARKER
+            })
+            .expect("拍号记录");
+        assert_eq!(
+            meter.body.len(),
+            LOGIC_METER_BODY_LEN + LOGIC_METER_CHANGE_LEN + LOGIC_EVENT_SEQUENCE_TAIL.len(),
+            "80 字节头 + 一条 48 字节变化 + 16 字节尾"
+        );
+        assert_eq!(meter.body[LOGIC_METER_FLAG_OFFSET], 0, "有变化时头标志为 0");
+        let change =
+            &meter.body[LOGIC_METER_BODY_LEN..LOGIC_METER_BODY_LEN + LOGIC_METER_CHANGE_LEN];
+        assert_eq!(
+            u32_le(change, LOGIC_METER_CHANGE_POSITION_OFFSET),
+            (LOGIC_TEMPO_POSITION_TICKS + 1_920) as u32
+        );
+        assert_eq!(change[LOGIC_METER_DENOMINATOR_EXPONENT_OFFSET], 3);
+        assert_eq!(change[LOGIC_METER_NUMERATOR_OFFSET], 5);
+        assert_eq!(
+            change[LOGIC_METER_FLAG_OFFSET], LOGIC_METER_NO_CHANGE_FLAG,
+            "最后一条变化带 0x80"
+        );
+        assert_eq!(u32_le(change, LOGIC_METER_CHANGE_SECIDX_OFFSET), 1);
+        assert_eq!(
+            u32_le(change, LOGIC_METER_CHANGE_REPEATED_POSITION_OFFSET),
+            (LOGIC_TEMPO_POSITION_TICKS + 1_920) as u32
+        );
+    }
+
+    /// 判据：供体路线（`--export-logic` 实际走的路径）同样写变化点。
+    #[test]
+    fn donor_export_writes_tempo_and_meter_maps() {
+        let mut project = fixture_project();
+        project.tempo_map.insert(960, 240.0);
+        project.time_signature_map.insert(
+            1_920,
+            yeban_model::TimeSignature {
+                numerator: 5,
+                denominator: 8,
+            },
+        );
+        let bundle = build_bundle_from_donor(&project, "000", "Sequences");
+        let records = read_records(&bundle.files["Alternatives/000/ProjectData"]);
+        let tempo = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG
+                    && record.body.len() >= LOGIC_TEMPO_PAYLOAD_LEN
+                    && u32_le(&record.body, 0) == LOGIC_TEMPO_MARKER
+            })
+            .expect("供体速度记录");
+        assert_eq!(
+            tempo.body.len(),
+            2 * LOGIC_TEMPO_EVENT_LEN + LOGIC_EVENT_SEQUENCE_TAIL.len()
+        );
+        assert_eq!(
+            u64_le(&tempo.body[LOGIC_TEMPO_EVENT_LEN..], 0x04),
+            LOGIC_TEMPO_POSITION_TICKS + 960
+        );
+        let meter = records
+            .iter()
+            .find(|record| {
+                record.tag == LOGIC_SEQUENCE_TAG
+                    && record.body.len() >= LOGIC_METER_BODY_LEN
+                    && u32_le(&record.body, 0) == LOGIC_METER_MARKER
+            })
+            .expect("供体拍号记录");
+        assert_eq!(
+            meter.body.len(),
+            LOGIC_METER_BODY_LEN + LOGIC_METER_CHANGE_LEN + LOGIC_EVENT_SEQUENCE_TAIL.len()
+        );
+        assert_eq!(
+            meter.body[LOGIC_METER_BODY_LEN + LOGIC_METER_NUMERATOR_OFFSET],
+            5
+        );
     }
 }

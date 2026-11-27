@@ -461,6 +461,34 @@ impl AlsBuilder {
     fn write_project_losses(&mut self, project: &YebanProjectV1) {
         let entity = Self::project_entity(project);
 
+        // ⓪ 速度 / 拍号变化映射：LiveSet 子集只有全局 `<Tempo>` / `<TimeSignature>`，
+        //    没有已对账的多事件承载 ⇒ 每个变化点逐条点名，绝不静默丢弃。
+        for (&tick, &bpm) in &project.tempo_map {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 速度变化点 tick={tick} ⇒ {bpm} BPM —— LiveSet \
+                     子集只写全局 `<Tempo>`（工程 bpm {}），多速度事件没有已对账的承载形态",
+                    project.bpm
+                ),
+                false,
+            );
+        }
+        for (&tick, signature) in &project.time_signature_map {
+            self.loss(
+                entity.clone(),
+                format!(
+                    "{LOSS_UNMAPPED_PREFIX} 拍号变化点 tick={tick} ⇒ {}/{} —— LiveSet \
+                     子集只写全局 `<TimeSignature>`（工程拍号 {}/{}），多拍号事件没有已对账的承载形态",
+                    signature.numerator,
+                    signature.denominator,
+                    project.time_signature.numerator,
+                    project.time_signature.denominator
+                ),
+                false,
+            );
+        }
+
         // ① 通道条音量曲线（只在真的搬运了非零增益时才警告）。
         if project.tracks.values().any(|track| track.volume_db != 0.0) {
             self.loss(
@@ -1682,11 +1710,16 @@ mod tests {
     /// ⚠ 第 298 条三件套: ① 判据自报实测新数（2908）；② 常量改成该数；③ 常量旁写明
     /// "前→后 ＋ 原因"。⛔ 判定逻辑（下面两条 `assert_eq!`）本单**一行未改**、判据一条未删。
     ///
+    /// **引脚修订（T-FIX-835）**: 前 **2921** → 后 **3052**（**+131 字节**）。
+    /// 原因: `filled_project()` 自带一个速度变化点（tick 7680 ⇒ 132 BPM）与一个拍号变化点；
+    /// 本单开始把这两类变化点**逐项**写进 ALS 损失表（旧实现静默丢弃），XML 多出两条
+    /// `yeban-loss` 注释 ⇒ 压缩后的字节流长度与摘要随之变化。
+    ///
     /// **引脚修订（demo Solo 修复）**: 前 **2908** → 后 **2921**（**+13 字节**）。
     /// 原因: `filled_project()` 的 Bass 不再预置 `solo_safe: true`，`.als` 的映射损失表
     /// 少一条 "独奏安全 … 未导出" 记录；同一 [`Compression::default`] 下 deflate 流
     /// 的字节边界随之移动，压缩后长度变为 2921。
-    const ALS_FILLED_BYTES: usize = 2921;
+    const ALS_FILLED_BYTES: usize = 3052;
     /// 同一份字节流的 SHA-256（实测）。
     ///
     /// **引脚修订（任务单 `#145`）**: 前
@@ -1695,11 +1728,65 @@ mod tests {
     /// 原因同上: `#142` 改动了 `filled_project()` 的样例内容（合成音频字节 ⇒ clip 的
     /// `asset` 哈希 ＋ `project.assets` 索引进入 XML），压缩后的字节流随之变化。
     ///
+    /// **引脚修订（T-FIX-835）**: 前
+    /// `b5290d03bf1cff233d0367533432a8e4bf006cbf41e76745fae5489e8665dc28` → 后
+    /// `17e736a60495aea2253b8a9845b2cafa2c81162c7662c19fa6fc57629dca32d3`。
+    /// 原因同上: 速度 / 拍号变化点开始进损失表，XML 与压缩字节流都变化。
+    ///
     /// **引脚修订（demo Solo 修复）**: 前
     /// `09e37ea6d6b05fc89db548ce1068e1b8c0662e0a6a37b77a9a635cca914268a8` → 后
     /// `b5290d03bf1cff233d0367533432a8e4bf006cbf41e76745fae5489e8665dc28`。
-    /// 原因同上（Bass 的 `solo_safe` 去掉 ⇒ 映射损失表变化）。
+    /// 原因（Bass 的 `solo_safe` 去掉 ⇒ 映射损失表变化）。
     /// ⚠ 长度与摘要是**两个独立读数**，两者都按同一份实测字节流重钉。
     const ALS_FILLED_SHA256: &str =
-        "b5290d03bf1cff233d0367533432a8e4bf006cbf41e76745fae5489e8665dc28";
+        "17e736a60495aea2253b8a9845b2cafa2c81162c7662c19fa6fc57629dca32d3";
+
+    /// 判据：LiveSet 子集写不出的速度 / 拍号变化点必须**逐项**进损失表。
+    ///
+    /// 旧实现没有这两类条目 ⇒ 本判据对旧代码红；这里同时钉住点数与每个 tick/值。
+    #[test]
+    fn tempo_and_meter_map_points_are_registered_losses() {
+        let mut project = filled_project();
+        project.bpm = 120.0;
+        project.tempo_map.clear();
+        project.time_signature_map.clear();
+        project.tempo_map.insert(960, 240.0);
+        project.tempo_map.insert(1_440, 60.0);
+        project.time_signature_map.insert(
+            1_920,
+            yeban_model::TimeSignature {
+                numerator: 5,
+                denominator: 8,
+            },
+        );
+        let export = export_project(&project).expect("导出");
+        let tempo: Vec<_> = export
+            .losses
+            .iter()
+            .filter(|loss| loss.reason.contains("速度变化点"))
+            .collect();
+        assert_eq!(tempo.len(), 2, "两个速度变化点必须逐条登记");
+        assert!(
+            tempo
+                .iter()
+                .any(|loss| loss.reason.contains("tick=960") && loss.reason.contains("240 BPM")),
+            "tick=960 ⇒ 240 BPM 未点名"
+        );
+        assert!(
+            tempo
+                .iter()
+                .any(|loss| loss.reason.contains("tick=1440") && loss.reason.contains("60 BPM")),
+            "tick=1440 ⇒ 60 BPM 未点名"
+        );
+        let meter: Vec<_> = export
+            .losses
+            .iter()
+            .filter(|loss| loss.reason.contains("拍号变化点"))
+            .collect();
+        assert_eq!(meter.len(), 1, "一个拍号变化点必须逐条登记");
+        assert!(
+            meter[0].reason.contains("tick=1920") && meter[0].reason.contains("5/8"),
+            "tick=1920 ⇒ 5/8 未点名"
+        );
+    }
 }
