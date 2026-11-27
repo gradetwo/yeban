@@ -993,6 +993,114 @@ fn parse_read_ticks(arguments: &Map<String, Value>) -> Result<Vec<u64>, Fault> {
     Ok(extension_pure::read_ticks(&ticks))
 }
 
+/// 解析 `point.tick`：区分非数字、负数、非整数与超出 u64 上限四类失败。
+///
+/// 错误数据必须能直接指导修正：`received` 保留输入文本（超 u64 的整数用
+/// 定点格式避免 f64 科学计数法/舍入回显），并显式给出 `min` / `max` /
+/// `expected` 与一个可重放的 `nextStep`（把 tick 置 0）。
+fn parse_point_tick(arguments: &Map<String, Value>, raw: Option<&Value>) -> Result<u64, Fault> {
+    let max = u64::MAX;
+    let expected = serde_json::json!({
+        "type": "integer",
+        "min": 0,
+        "max": max,
+    });
+    let fault = |message: String, reason: &str, received: Value| {
+        let mut template = arguments.clone();
+        if let Some(point) = template.get_mut("point").and_then(Value::as_object_mut) {
+            point.insert("tick".to_owned(), Value::from(0));
+        }
+        Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            message,
+            serde_json::json!({
+                "field": "point.tick",
+                "reason": reason,
+                "received": received,
+                "min": 0,
+                "max": max,
+                "expected": expected,
+                "nextStep": {
+                    "tool": "yeban_edit_automation",
+                    "arguments": Value::Object(template),
+                    "action": "把 point.tick 改到 0..=18446744073709551615 范围内后重试"
+                }
+            }),
+        )
+    };
+    let Some(raw) = raw else {
+        return Err(fault(
+            "`point.tick` 必须是非负整数, 实际未提供".to_owned(),
+            "missingTick",
+            Value::Null,
+        ));
+    };
+    let Value::Number(number) = raw else {
+        let received = match raw {
+            Value::String(text) => Value::String(text.clone()),
+            other => Value::String(other.to_string()),
+        };
+        return Err(fault(
+            format!("`point.tick` 必须是整数, 实际收到 {received}"),
+            "nonNumericTick",
+            received,
+        ));
+    };
+    // 语义上的 u64 直接接受；2^64 在本仓库的 serde_json 解析里是 f64
+    // （`is_u64()` 为 false），会落到下面的 f64 分支并显式按溢出拒绝，
+    // 不会被 `as_u64()` 的饱和行为静默收成 u64::MAX。
+    if number.is_u64() {
+        return Ok(number.as_u64().unwrap_or(u64::MAX));
+    }
+    if number.is_i64() {
+        let value = number.as_i64().unwrap_or(i64::MIN);
+        return Err(fault(
+            format!("`point.tick` 不能为负数, 实际收到 {value}"),
+            "negativeTick",
+            Value::from(value),
+        ));
+    }
+    let Some(value) = number.as_f64() else {
+        return Err(fault(
+            "`point.tick` 必须是整数, 实际收到超出 JSON 数值范围的值".to_owned(),
+            "nonNumericTick",
+            Value::String(number.to_string()),
+        ));
+    };
+    if !value.is_finite() {
+        return Err(fault(
+            "`point.tick` 必须是有限整数".to_owned(),
+            "nonFiniteTick",
+            Value::String(number.to_string()),
+        ));
+    }
+    if value < 0.0 {
+        return Err(fault(
+            format!("`point.tick` 不能为负数, 实际收到 {number}"),
+            "negativeTick",
+            Value::Number(number.clone()),
+        ));
+    }
+    if value.fract() != 0.0 {
+        return Err(fault(
+            format!("`point.tick` 必须是整数, 实际收到 {number}"),
+            "nonIntegerTick",
+            Value::Number(number.clone()),
+        ));
+    }
+    if value >= max as f64 {
+        // 2^64 在 f64 中可精确表示；用定点格式保留整数文本，避免
+        // serde_json 的最短浮点表示把它写成 ...552000。
+        return Err(fault(
+            format!("`point.tick` 超出 u64 上限 {max}, 实际收到 {value:.0}"),
+            "tickOverflow",
+            Value::String(format!("{value:.0}")),
+        ));
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Ok(value as u64)
+}
+
 /// 解析 `point` 实参 → `(点身份, 模型点)`。
 fn parse_point(
     arguments: &Map<String, Value>,
@@ -1006,13 +1114,7 @@ fn parse_point(
             "`point` 必须是对象, 形如 {\"tick\": 0, \"value\": -6.0, \"curve\": \"Linear\"}",
         )
     })?;
-    let tick = object.get("tick").and_then(Value::as_u64).ok_or_else(|| {
-        Fault::domain_with_data(
-            ErrorCode::InvalidParameterRange,
-            "`point.tick` 必须是非负整数",
-            serde_json::json!({ "field": "point.tick" }),
-        )
-    })?;
+    let tick = parse_point_tick(arguments, object.get("tick"))?;
     let value = object.get("value").and_then(Value::as_f64).ok_or_else(|| {
         Fault::domain_with_data(
             ErrorCode::InvalidParameterRange,
@@ -1225,6 +1327,71 @@ mod tests {
         assert_eq!(plan.unit, "Decibels");
         assert_eq!(plan.domain, Some((-60.0, 12.0)));
         assert_eq!(plan.points.len(), 2);
+    }
+
+    fn point_tick_args(json: &str) -> Map<String, Value> {
+        serde_json::from_str(json).expect("测试参数必须是合法 JSON")
+    }
+
+    fn point_tick_data(json: &str) -> (String, Value) {
+        let project = filled_project();
+        let track = lead(&project);
+        let error = plan(&project, &point_tick_args(json), track).expect_err("该 tick 必须被拒");
+        let Fault::Domain {
+            code,
+            message,
+            data,
+        } = error
+        else {
+            panic!("应当是领域失败");
+        };
+        assert_eq!(code, ErrorCode::InvalidParameterRange);
+        (message, data.expect("tick 错误必须带结构化 data"))
+    }
+
+    #[test]
+    fn point_tick_overflow_reports_exact_u64_boundary_and_replayable_next_step() {
+        let (message, data) = point_tick_data(
+            r#"{"lane":"TrackVolume","point":{"tick":18446744073709551616,"value":0}}"#,
+        );
+        assert_eq!(data["field"], serde_json::json!("point.tick"));
+        assert_eq!(data["reason"], serde_json::json!("tickOverflow"));
+        assert_eq!(
+            data["received"],
+            serde_json::json!("18446744073709551616"),
+            "超 u64 的 received 必须保留整数文本，不能被 f64 化成 ...552000"
+        );
+        assert_eq!(data["min"], serde_json::json!(0));
+        assert_eq!(data["max"], serde_json::json!(u64::MAX));
+        assert_eq!(
+            data["expected"],
+            serde_json::json!({"type":"integer","min":0,"max":u64::MAX})
+        );
+        assert_eq!(
+            data["nextStep"]["arguments"]["point"]["tick"],
+            serde_json::json!(0)
+        );
+        assert!(
+            message.contains("超出 u64 上限 18446744073709551615"),
+            "message 必须给 u64 上界, 实际 {message}"
+        );
+    }
+
+    #[test]
+    fn point_tick_negative_and_non_integer_are_distinguished() {
+        let (_, negative) =
+            point_tick_data(r#"{"lane":"TrackVolume","point":{"tick":-1,"value":0}}"#);
+        assert_eq!(negative["reason"], serde_json::json!("negativeTick"));
+        assert_eq!(negative["received"], serde_json::json!(-1));
+        assert_eq!(negative["min"], serde_json::json!(0));
+        assert_eq!(negative["max"], serde_json::json!(u64::MAX));
+
+        let (_, non_integer) =
+            point_tick_data(r#"{"lane":"TrackVolume","point":{"tick":1.5,"value":0}}"#);
+        assert_eq!(non_integer["reason"], serde_json::json!("nonIntegerTick"));
+        assert_eq!(non_integer["received"], serde_json::json!(1.5));
+        assert_eq!(non_integer["min"], serde_json::json!(0));
+        assert_eq!(non_integer["max"], serde_json::json!(u64::MAX));
     }
 
     #[test]
