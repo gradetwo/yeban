@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use yeban_mcp::dispatch::Dispatcher;
 use yeban_mcp::security::{BearerToken, Channel, RunMode, ScopeSet};
 use yeban_model::EntityId;
-use yeban_model::samples::filled_project;
+use yeban_model::samples::{filled_project, filled_project_assets};
 
 /// 一个临时目录，`Drop` 时删除自己。
 struct Scratch {
@@ -81,7 +81,12 @@ fn a_written_save_reports_a_null_durability_warning() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path.clone(), filled_project(), false)
+        .open_in_memory_with_assets(
+            project_path.clone(),
+            filled_project(),
+            filled_project_assets().into_iter().collect(),
+            false,
+        )
         .expect("注入夹具工程");
 
     let saved = call_tool(
@@ -117,7 +122,12 @@ fn a_skipped_save_reports_a_null_durability_warning() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path, filled_project(), false)
+        .open_in_memory_with_assets(
+            project_path,
+            filled_project(),
+            filled_project_assets().into_iter().collect(),
+            false,
+        )
         .expect("注入夹具工程");
 
     let first = call_tool(

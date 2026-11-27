@@ -1708,7 +1708,10 @@ fn write_sampler_container_project(name: &str) -> PathBuf {
     });
     project.validate().expect("夹具工程必须合法");
     let history = serde_json::to_vec(&CommitGraph::new()).expect("空图谱 JSON");
-    let bytes = write_project_container(&project, &history, &BTreeMap::new()).expect("写真容器");
+    let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .collect();
+    let bytes = write_project_container(&project, &history, &assets).expect("写真容器");
     let path = scratch().join(name);
     std::fs::write(&path, bytes).expect("写容器工程");
     path
@@ -1860,7 +1863,10 @@ fn write_clipping_container_project(name: &str) -> PathBuf {
     }
     project.validate().expect("过载夹具工程必须合法");
     let history = serde_json::to_vec(&CommitGraph::new()).expect("空图谱 JSON");
-    let bytes = write_project_container(&project, &history, &BTreeMap::new()).expect("写真容器");
+    let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .collect();
+    let bytes = write_project_container(&project, &history, &assets).expect("写真容器");
     let path = scratch().join(name);
     std::fs::write(&path, bytes).expect("写容器工程");
     path
