@@ -1624,10 +1624,18 @@ export component StartupChooserDialog inherits Rectangle {
                 // 文字块同构：标题 / 曲风 / BPM 小字 / 详情入口。
                 // （先前用「高 0 锚点 + if 内嵌」时信息块落点比
                 // 声明 y 高 44px、压住顶层封面底边，故改直挂。）
+                // T-FIX-689：信息块 y 必须让标题框（块内 y 2..28）
+                // 完全落在堆叠 Flickable 视口内 —— 视口高 = 列表高
+                // 468 − 72 = 396，标题底 = y + 28 ≤ 396 即 y ≤ 368；
+                // 原 y = stage-h + 8 = 376 时标题底 404，底部 8px
+                // 被视口裁掉。取 stage-h − 4 = 364（标题底 392，
+                // 留 4px 余量），与最前封面底（约 344，含 −2° 旋转
+                // 包围盒）仍有约 20px 间隙，不压图；曲风/BPM/详情
+                // 本就在折叠线以下、靠滚动查看，不在本单范围。
                 for row[row-index] in root.rows : info := Rectangle {
                     property <bool> expanded: root.demo-expanded-index == row-index;
                     x: max(0px, demo-stack.cx - 136px);
-                    y: demo-stack.stage-h + 8px;
+                    y: demo-stack.stage-h - 4px;
                     width: 272px;
                     height: 88px + (self.expanded ? row.details-height : 0px);
                     visible: row-index == demo-stack.top;
