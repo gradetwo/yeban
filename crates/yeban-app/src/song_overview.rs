@@ -1306,6 +1306,12 @@ pub fn wire_song_overview_with_analysis_hook(
     // ⛔ 不再在回调里同步跑完整曲渲染。
     let _assembly_report = refresh_song_overview(ui, &view.borrow(), &state);
 
+    // T-FIX-601：新会话的 `AbCompare` 已是 `default()`（A/B 全空），
+    // 但 `song-overview-ab-status` 是窗口属性，换工程重跑 `wire_callbacks` 时不会
+    // 自动复位，会残留上一个工程的"A 已存 / 对比摘要"。这里在装配末尾显式清空，
+    // 让状态条与空的 compare 一致（唯一写者仍是 capture/compare 回调 + 此处复位）。
+    ui.set_song_overview_ab_status("".into());
+
     // ① 点击跳转播放头：界面只报横坐标分数（0..1），换算 / 吸附 / 夹紧全在这里。
     let weak = ui.as_weak();
     ui.on_song_overview_seek({
