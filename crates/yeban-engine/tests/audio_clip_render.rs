@@ -585,7 +585,7 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSchedule = Vec 头部 24 + placements 计数 8 + dropped_spans 计数 8 + stereo_spans 计数 8（T-FIX-574）"
     );
     assert_eq!(
-        runtime, 52_608,
+        runtime, 52_624,
         "EngineRuntime 的现读值。**T-FIX-68 两容量计数 ＋16 ⇒ 47904；T-FIX-238 回调观测 ＋16 ⇒ 47920**；**`P2`（轨道槽可配）之后从 200112 降到 45648**：\
          声部池（默认 1024 槽）、插入池（65 槽）、混响池、卷积池、声相表、键抽头表\
          全部改成**构造期堆分配**（`Box<[_]>`）⇒ 结构体本身只剩瘦指针，\
@@ -595,7 +595,7 @@ fn the_shape_costs_are_read_not_hand_written() {
          逐边发送量表/平滑器/重放副本；⭐ **S1 第一片**再加 **16 B** = 两个 `u64` 事件计数\
          `strip_output_gain_events` / `strip_output_gain_value_rejects`，⛔ 不新增任何表\
          ——落点复用既有的 `armed_strips`；本判据只要求音频片段**不再**加字节 ——\
-         见 `tests/bus_insert.rs` 的 B5；⭐ **通道条 hpf/dyn-eq/width 片** 再 ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）"
+         见 `tests/bus_insert.rs` 的 B5；⭐ **通道条 hpf/dyn-eq/width 片** 再 ＋3536 B ⇒ 198496 B（通道条 ＋208 × 17 内联槽位）；⭐ **portamento 片** ＋256 B ⇒ 198752 B（池 ＋8，实测）；⭐ **mono-maker 片（`#344`）** ＋544 B ⇒ 199296 B（通道条 ＋32 × 17 内联槽位：side 低通 biquad 5 系数 ＋ 4 状态 ＝ 36 B，对齐后 ＋32）；⭐ **nightfall 片** ＋816 B ⇒ 200112 B（通道条 ＋48 × 17 内联槽位，实测；余量 4688 B）。 ⭐ **192 kHz K 加权标定片（提交 5d33d5ad，fix(dsp): derive and calibrate 192 kHz K-weighting coefficients）＋16 B ⇒ 52 624 B**：`crates/yeban-dsp/src/loudness.rs` 的 `KWeighting` 新增 `calibration_gain: f64`（8 B；仅 192 kHz 档用 +0.0271 dB 标定，其余四档恒 1.0、既有读数逐位不变）；经 `GatedLoudness.k` → `MeterBank.loudness` 嵌套进入 `EngineRuntime`，因 16 B 对齐在父结构上实测 +16 B，故 ⛔ 不是 rt.rs 字段本体变化。bisect 实测：以 54279b3aef（钉数提交）的干净工作树为基线现读 52 608 B，逐提交套用 0b1c9a22 / 3065569c / 154c533b / ce934695 / 529cc00f7 / 3af242f8 后仍为 52 608 B，**只替换 `crates/yeban-dsp/src/loudness.rs` 即变 52 624 B**；同期 `EngineRuntime` 字段表逐字未变、`PendingSceneLaunch` 实测恒 64 B（故 0b1c9a22 的 `start_transport: bool` 被排除）。红线 204800 不变，余量 204800 − 52624 = 152176 B"
     );
     assert!(
         (4_496..=4_848).contains(&snapshot),
