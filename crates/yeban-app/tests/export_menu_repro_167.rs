@@ -439,6 +439,16 @@ fn export_stems_guard_rejects_the_real_project_file_path() {
 ///   和分轨文件都不出现。
 #[test]
 fn stems_guard_sees_the_real_project_file_name() {
+    // ⭐ T-FIX-778：本判据必须拿 STEMS_DIR_LOCK —— 它与主判据共用同一份
+    // 进程级分轨目录（`isolate_stems_dir` 的 USERPROFILE 隔离只分进程、不分
+    // 判据），且它当"工程文件"的 `0001.Lead.wav` 正是臂 3 分轨的第一个落点
+    // 文件名（Lead 是第一条非 master 轨）。不串行时两面都误判：臂 3 的分轨
+    // 先落盘 ⇒ 本判据把臂 3 的 stem 认成"护栏放行了覆盖工程文件"；本判据
+    // 的 `remove_dir_all` 落在臂 3 导出中途 ⇒ 臂 3 写盘失败、manifest 60 秒
+    // 不到（上报人与 T-FIX-719 见到的那一面）。护栏本身没坏，坏的是判据
+    // 的隔离 —— 锁是 71544825 立下的既有约定（主判据与另两个分轨镜像文件
+    // 都已持锁），这里只是补上漏的那一处。
+    let _guard = STEMS_DIR_LOCK.lock().expect("分轨目录锁必须能拿到");
     let scratch = std::env::temp_dir().join(format!(
         "yeban-422-stems-guard-{}-{}",
         std::process::id(),
