@@ -905,14 +905,24 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("sectionName", "string", true, "章节名"),
+            param(
+                "sectionName",
+                "string",
+                true,
+                "章节名 (非空; 用于提案分支内的章节标识)",
+            ),
             enum_param(
                 "stylePreset",
                 true,
                 "风格预设: 合法值见本参数的 enum 数组（来源 yeban-theory::genre::GenreLibrary::ids，总数口径 = enum 数组长度 = GenreLibrary::ids() 的条目数；未知值仍由领域层 STYLE_NOT_FOUND 给出同源清单）",
                 style_preset_enum,
             ),
-            param("bars", "integer", true, "小节数"),
+            param(
+                "bars",
+                "integer",
+                true,
+                "小节数 (正整数; 越界 ⇒ `INVALID_PARAMETER_RANGE`)",
+            ),
             param("scale", "string", false, "音阶"),
             param(
                 "materialSource",
@@ -1180,9 +1190,24 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("trackId", "string", true, "音轨 EntityId"),
-            param("macroIndex", "integer", true, "宏索引"),
-            param("value", "number", true, "目标值"),
+            param(
+                "trackId",
+                "string",
+                true,
+                "音轨 EntityId (26 字符 ULID); 音轨不存在 ⇒ `TRACK_NOT_FOUND`",
+            ),
+            param(
+                "macroIndex",
+                "integer",
+                true,
+                "宏索引 (整数; 须落在该轨宏数组内, 越界 ⇒ `INDEX_OUT_OF_BOUNDS`)",
+            ),
+            param(
+                "value",
+                "number",
+                true,
+                "目标宏值 (按所挂乐器宏的值域解释; 越界由模型层拒绝)",
+            ),
             param(
                 "mappings",
                 "array",
@@ -1326,7 +1351,12 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("proposalId", "string", true, "提案分支 EntityId"),
+            param(
+                "proposalId",
+                "string",
+                true,
+                "提案分支 EntityId (26 字符 ULID); 提案不存在 ⇒ `PROPOSAL_NOT_FOUND`",
+            ),
             param(
                 "commitMessage",
                 "string",
@@ -1343,8 +1373,13 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
         scope: Scope::AppAdmin,
         side_effect: SideEffect::ProjectState,
         params: &[
-            param("proposalId", "string", true, "提案分支 EntityId"),
-            param("reason", "string", true, "拒绝原因"),
+            param(
+                "proposalId",
+                "string",
+                true,
+                "提案分支 EntityId (26 字符 ULID); 提案不存在 ⇒ `PROPOSAL_NOT_FOUND`",
+            ),
+            param("reason", "string", true, "拒绝原因 (非空; 写入归档记录)"),
         ],
         errors: &[ErrorCode::ProposalNotFound],
     },

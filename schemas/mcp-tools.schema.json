@@ -2836,7 +2836,7 @@
               "type": "boolean"
             },
             "bars": {
-              "description": "小节数",
+              "description": "小节数 (正整数; 越界 ⇒ `INVALID_PARAMETER_RANGE`)",
               "type": "integer"
             },
             "beatGrouping": {
@@ -2940,7 +2940,7 @@
               "type": "string"
             },
             "sectionName": {
-              "description": "章节名",
+              "description": "章节名 (非空; 用于提案分支内的章节标识)",
               "type": "string"
             },
             "stylePreset": {
@@ -8362,7 +8362,7 @@
               "type": "boolean"
             },
             "macroIndex": {
-              "description": "宏索引",
+              "description": "宏索引 (整数; 须落在该轨宏数组内, 越界 ⇒ `INDEX_OUT_OF_BOUNDS`)",
               "type": "integer"
             },
             "mappings": {
@@ -8374,11 +8374,11 @@
               "type": "string"
             },
             "trackId": {
-              "description": "音轨 EntityId",
+              "description": "音轨 EntityId (26 字符 ULID); 音轨不存在 ⇒ `TRACK_NOT_FOUND`",
               "type": "string"
             },
             "value": {
-              "description": "目标值",
+              "description": "目标宏值 (按所挂乐器宏的值域解释; 越界由模型层拒绝)",
               "type": "number"
             }
           },
@@ -8484,7 +8484,7 @@
               "type": "string"
             },
             "proposalId": {
-              "description": "提案分支 EntityId",
+              "description": "提案分支 EntityId (26 字符 ULID); 提案不存在 ⇒ `PROPOSAL_NOT_FOUND`",
               "type": "string"
             }
           },
@@ -8508,11 +8508,11 @@
               "type": "string"
             },
             "proposalId": {
-              "description": "提案分支 EntityId",
+              "description": "提案分支 EntityId (26 字符 ULID); 提案不存在 ⇒ `PROPOSAL_NOT_FOUND`",
               "type": "string"
             },
             "reason": {
-              "description": "拒绝原因",
+              "description": "拒绝原因 (非空; 写入归档记录)",
               "type": "string"
             }
           },
