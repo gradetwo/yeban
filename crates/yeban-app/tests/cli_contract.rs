@@ -86,10 +86,18 @@ fn invoke_with_env(args: &[&str], env: &[(&str, &str)]) -> Run {
         .spawn()
         .unwrap_or_else(|error| panic!("无法执行 {bin:?}: {error}"));
 
+    // ⭐ 两根读线程边跑边排空管道：子进程的 stdout 一旦超过 64 KiB 管道缓冲，
+    // 没人读它就写阻塞 —— 旧写法只在退出后才 `wait_with_output()`，`--dump-elements`
+    // （946 行、约 135 KiB）会在这里活活等满 120 秒超时。读线程让"输出大"不再等于"挂住"。
+    let mut stdout_pipe = child.stdout.take().expect("取 stdout 管道");
+    let mut stderr_pipe = child.stderr.take().expect("取 stderr 管道");
+    let stdout_reader = std::thread::spawn(move || read_pipe_to_string(&mut stdout_pipe, "stdout"));
+    let stderr_reader = std::thread::spawn(move || read_pipe_to_string(&mut stderr_pipe, "stderr"));
+
     let deadline = Instant::now() + RUN_TIMEOUT;
-    loop {
+    let status = loop {
         match child.try_wait().expect("try_wait") {
-            Some(_) => break,
+            Some(status) => break status,
             None => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
@@ -102,14 +110,24 @@ fn invoke_with_env(args: &[&str], env: &[(&str, &str)]) -> Run {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
-    }
+    };
 
-    let output = child.wait_with_output().expect("收集输出");
+    let stdout = stdout_reader.join().expect("stdout 读线程");
+    let stderr = stderr_reader.join().expect("stderr 读线程");
     Run {
-        code: output.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: status.code().unwrap_or(-1),
+        stdout,
+        stderr,
     }
+}
+
+/// 把一根管道读到字符串（读线程用；子进程写多少都不阻塞）。
+fn read_pipe_to_string(pipe: &mut impl std::io::Read, name: &str) -> String {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)
+        .unwrap_or_else(|error| panic!("读子进程 {name} 失败: {error}"));
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// 一次性的临时目录（**不用外部 crate**）。
@@ -131,6 +149,92 @@ fn field(line: &str, key: &str) -> Option<String> {
 /// 取以 `prefix` 开头的那一行。
 fn line_with<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     text.lines().find(|line| line.starts_with(prefix))
+}
+
+/// 断言一次调用是**用法错误**：退出码 2、stdout 为空、stderr 点名原因并附上用法文本。
+fn expect_usage(run: &Run, needle: &str) {
+    assert_eq!(run.code, 2, "用法错误必须是退出码 2: {run:?}");
+    assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
+    assert!(
+        run.stderr.contains(needle),
+        "stderr 必须点名 `{needle}`: {run:?}"
+    );
+    assert!(
+        run.stderr.contains("用法:"),
+        "用法错误必须附上用法文本: {run:?}"
+    );
+}
+
+/// 断言一次调用是 **`run_batch` 守卫**的拒绝：退出码 2、stdout 为空、stderr 点名原因。
+///
+/// 与 [`expect_usage`] 的差别：解析期错误会附上完整用法文本，`run_batch` 的
+/// "必须与 `--export-wav` 一起给"守卫只印一行 `用法错误: …`、不附用法文本
+/// （实测）。两类都是响亮的失败，判据按实测分开断，不把一种说成另一种。
+fn expect_usage_reason(run: &Run, needle: &str) {
+    assert_eq!(run.code, 2, "守卫拒绝必须是退出码 2: {run:?}");
+    assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
+    assert!(
+        run.stderr.contains(needle),
+        "stderr 必须点名 `{needle}`: {run:?}"
+    );
+}
+
+/// 演示工程的音符键（通道， 音高， 力度， 起始 tick, 时值），按 (通道， 音高， 起始）排过序。
+///
+/// 与 `--export-midi` 的报告行、`parse_smf` 的回读逐项对账的事实源 —— 不抄
+/// `cli.rs` 单元判据里的 `DEMO_MIDI_NOTES` 常量，同一份工程同一份口径。
+fn demo_note_keys() -> Vec<(u8, u8, u8, u64, u64)> {
+    let project = yeban_app::bridge::demo_project();
+    let mut keys = Vec::new();
+    for entry in project.clip_pool.values() {
+        let Some(notes) = entry.content.notes() else {
+            continue;
+        };
+        for note in notes.values() {
+            keys.push((
+                note.channel.unwrap_or(0),
+                note.pitch,
+                note.velocity,
+                note.start_tick,
+                note.duration_ticks,
+            ));
+        }
+    }
+    keys.sort_unstable();
+    keys
+}
+
+/// 回读一份 `--export-wav` 的产物：断言它非静音，并返回（帧数， 采样率， 声道， 位深， 是否浮点）。
+fn read_wav_shape(path: &Path) -> (u64, u32, u32, u32, bool) {
+    use yeban_render::dither::PcmBuffer;
+    use yeban_render::wav::read_plain_wav;
+    let (format, buffer) = read_plain_wav(path).expect("写出的 WAV 必须可回读");
+    let frames = u64::try_from(buffer.len() / usize::from(format.channels)).expect("帧数");
+    let peak = match &buffer {
+        PcmBuffer::Int16(samples) => samples
+            .iter()
+            .map(|sample| sample.unsigned_abs() as u64)
+            .max()
+            .unwrap_or(0),
+        PcmBuffer::Int24(samples) => samples
+            .iter()
+            .map(|sample| sample.unsigned_abs() as u64)
+            .max()
+            .unwrap_or(0),
+        PcmBuffer::Float32(samples) => u64::from(samples.iter().any(|sample| sample.abs() > 0.0)),
+    };
+    assert!(
+        peak > 0,
+        "导出的 WAV 不能是静音（{} peak = {peak}）",
+        path.display()
+    );
+    (
+        frames,
+        format.sample_rate,
+        u32::from(format.channels),
+        u32::from(format.bits_per_sample),
+        format.is_float,
+    )
 }
 
 /// 从 `yeban_render` 的**公开**逐族常量里取某个 chunk 家族在**可读序**下的实测条数。
@@ -184,44 +288,73 @@ fn write_real_container(dir: &Path, name: &str) -> PathBuf {
 /// 判据 B1: `--help` 与 `--version` 走短路路径、退出码 0、内容是真的。
 #[test]
 fn help_and_version_are_real_and_short_circuit() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let help = invoke(&["--help"]);
+    assert_eq!(help.code, 0, "--help 必须是退出码 0: {help:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        help.stderr.is_empty(),
+        "--help 不该往 stderr 写东西: {help:?}"
+    );
+    assert!(help.stdout.contains("用法:"), "--help 必须是真的用法文本");
+    assert!(help.stdout.contains("--open"), "--help 必须列出 --open");
+    assert!(
+        help.stdout.contains("--save-as"),
+        "--help 必须列出 --save-as"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        help.stdout.contains("--export-midi") && help.stdout.contains("--export-wav"),
+        "--help 必须列出导出开关"
+    );
+
+    let version = invoke(&["--version"]);
+    assert_eq!(version.code, 0, "--version 必须是退出码 0: {version:?}");
+    assert!(
+        version.stderr.is_empty(),
+        "--version 不该往 stderr 写东西: {version:?}"
+    );
+    assert_eq!(
+        version.stdout.trim(),
+        format!("yeban-app {}", env!("CARGO_PKG_VERSION")),
+        "--version 必须是 `yeban-app <版本号>`（与工作区清单同源）"
+    );
+
+    // 短路：`--help --bogus` 仍是 0 —— 未知开关不得抢在短路之前。
+    let short = invoke(&["--help", "--bogus"]);
+    assert_eq!(short.code, 0, "--help 必须短路掉后面的未知开关: {short:?}");
+    assert!(short.stderr.is_empty(), "短路后 stderr 必须为空: {short:?}");
+    assert!(
+        short.stdout.contains("--save-as"),
+        "短路后仍是真的 help 文本（不是一句空话）"
     );
 }
 
 /// 判据 B2: 无头握手行**恰好**出现一次，且工程来源被明写。
 #[test]
 fn headless_handshake_appears_exactly_once_and_names_the_source() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let run = invoke(&["--headless"]);
+    assert_eq!(run.code, 0, "--headless 必须是退出码 0: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.is_empty(),
+        "--headless 不该往 stderr 写东西: {run:?}"
+    );
+    assert_eq!(
+        run.stdout
+            .lines()
+            .filter(|line| *line == "headless ok")
+            .count(),
+        1,
+        "无头握手行必须**恰好**出现一次:\n{}",
+        run.stdout
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        run.stdout
+            .contains("project-source: sample=default (内置演示工程; 未给 --open ⇒ 未读任何文件)"),
+        "工程来源必须明写是演示工程、未读任何文件:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("未构造 MainWindow"),
+        "边界声明必须出现（没有建窗口）:\n{}",
+        run.stdout
     );
 }
 
@@ -231,22 +364,30 @@ fn headless_handshake_appears_exactly_once_and_names_the_source() {
 /// 直接失败，在有显示器环境进阻塞事件循环（由 [`RUN_TIMEOUT`] 变成一次响亮失败）。
 #[test]
 fn slint_backend_headless_sentinel_alone_keeps_the_window_closed() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let run = invoke_with_env(&[], &[("SLINT_BACKEND", "headless")]);
+    assert_eq!(run.code, 0, "哨兵单独给时必须是退出码 0: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.is_empty(),
+        "哨兵路径不该往 stderr 写东西: {run:?}"
+    );
+    assert_eq!(
+        run.stdout
+            .lines()
+            .filter(|line| *line == "headless ok")
+            .count(),
+        1,
+        "哨兵必须等价于 --headless（握手行恰好一次）:\n{}",
+        run.stdout
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        run.stdout.contains("project-source: sample=default"),
+        "哨兵路径的工程来源必须是演示工程:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("未构造 MainWindow"),
+        "哨兵路径必须没有建窗口:\n{}",
+        run.stdout
     );
 }
 
@@ -259,22 +400,54 @@ fn slint_backend_headless_sentinel_alone_keeps_the_window_closed() {
 /// 二进制一致。`tracks-all` **含**主总线，因此普通轨数 = `tracks-all - master-track`。
 #[test]
 fn empty_sample_reports_zero_audio_tracks_and_default_reports_six() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    use yeban_app::cli::Sample;
+    let empty = Sample::Empty.project();
+    assert_eq!(empty.tracks.len(), 1, "empty 必须恰有 1 条轨（主总线）");
+    assert_eq!(
+        empty.tracks.len() - 1,
+        0,
+        "empty 的**非主总线轨**必须是 0 条"
+    );
+    let demo = Sample::Default.project();
+    assert_eq!(demo.tracks.len(), 7, "演示夹具的轨道数变了 ⇒ 本判据需同步");
+    assert_eq!(demo.tracks.len() - 1, 6, "default 的普通轨必须是 6 条");
+
+    let empty_run = invoke(&["--project-sample", "empty", "--headless"]);
+    assert_eq!(
+        empty_run.code, 0,
+        "--project-sample empty 必须是退出码 0: {empty_run:?}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        empty_run
+            .stdout
+            .contains("project-counts: tracks-all=1 master-track=1"),
+        "empty 的轨道数见证必须是 1（1 主总线 ＋ 0 音轨）:\n{}",
+        empty_run.stdout
+    );
+    assert!(
+        empty_run
+            .stdout
+            .contains("project-source: sample=empty (内置空工程 0 音轨 ＋ 1 主总线"),
+        "来源行必须如实说明这是空工程（不许写成演示工程）:\n{}",
+        empty_run.stdout
+    );
+    assert!(
+        empty_run.stdout.contains("view-counts: tracks=0 master=1"),
+        "0 音轨空工程必须**能**被投影（主总线投影到 `master`）:\n{}",
+        empty_run.stdout
+    );
+
+    let demo_run = invoke(&["--project-sample", "default", "--headless"]);
+    assert!(
+        demo_run
+            .stdout
+            .contains("project-counts: tracks-all=7 master-track=1"),
+        "default 的对照读数必须是 7（6 普通 + 1 主总线）:\n{}",
+        demo_run.stdout
+    );
+    assert_ne!(
+        empty_run.stdout, demo_run.stdout,
+        "两个样本必须给出不同的读数（相同 ⇒ 模式没生效，见证是空转）"
     );
 }
 
@@ -291,67 +464,234 @@ fn empty_sample_reports_zero_audio_tracks_and_default_reports_six() {
 /// 这条就红 —— 那正是"没建树"与"未生效"两种失败的样子。
 #[test]
 fn headless_idle_builds_a_real_control_tree_and_reports_a_non_trivial_witness() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let run = invoke(&["--headless-idle", "--idle-seconds", "1"]);
+    assert_eq!(run.code, 0, "--headless-idle 必须是退出码 0: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.is_empty(),
+        "--headless-idle 不该往 stderr 写东西: {run:?}"
     );
+    let witness = line_with(&run.stdout, "headless-idle-witness:")
+        .expect("必须有 headless-idle-witness 见证行");
+    assert_eq!(
+        field(witness, "windows-created").as_deref(),
+        Some("1"),
+        "必须真的建了一个窗口对象: {witness}"
+    );
+    assert_eq!(
+        field(witness, "size").as_deref(),
+        Some("1920x1080"),
+        "见证视口必须是 1920x1080: {witness}"
+    );
+    assert_eq!(
+        field(witness, "rendered").as_deref(),
+        Some("true"),
+        "必须真的渲染了一帧: {witness}"
+    );
+    let lines: usize = field(witness, "lines")
+        .as_deref()
+        .expect("lines")
+        .parse()
+        .expect("lines 必须是数字");
+    assert_eq!(lines, 1080, "必须逐行光栅化 1080 行: {witness}");
+    let pixels: usize = field(witness, "non-black-pixels")
+        .as_deref()
+        .expect("non-black-pixels")
+        .parse()
+        .expect("non-black-pixels 必须是数字");
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        pixels > 0,
+        "必须真的画了非黑像素（空转会被判红）: {witness}"
+    );
+    let permille: usize = field(witness, "non-black-permille")
+        .as_deref()
+        .expect("non-black-permille")
+        .parse()
+        .expect("non-black-permille 必须是数字");
+    assert!(
+        (0..=1000).contains(&permille),
+        "千分比必须在 0..=1000 内: {witness}"
+    );
+    let colors: usize = field(witness, "distinct-colors")
+        .as_deref()
+        .expect("distinct-colors")
+        .parse()
+        .expect("distinct-colors 必须是数字");
+    assert!(colors > 1, "画面必须多于一种颜色: {witness}");
+    let elements: usize = field(witness, "elements")
+        .as_deref()
+        .expect("elements")
+        .parse()
+        .expect("elements 必须是数字");
+    assert!(elements > 0, "控件树必须非空: {witness}");
+    // 见证的 elements 必须与同一命令的 view-counts 同口径。
+    let view = line_with(&run.stdout, "view-counts:").expect("必须有 view-counts 行");
+    assert_eq!(
+        field(view, "elements").as_deref(),
+        Some(elements.to_string().as_str()),
+        "见证的 elements 必须与投影一致: {view} / {witness}"
+    );
+    let idle = line_with(&run.stdout, "headless-idle-idle:").expect("必须有空闲行");
+    assert_eq!(
+        field(idle, "seconds").as_deref(),
+        Some("1"),
+        "空闲行必须报出请求的秒数: {idle}"
+    );
+    let ticks: usize = field(idle, "ticks")
+        .as_deref()
+        .expect("ticks")
+        .parse()
+        .expect("ticks 必须是数字");
+    assert!(ticks > 0, "空闲循环必须真的走了 tick: {idle}");
+    assert!(
+        run.stdout.contains("已构造真 MainWindow"),
+        "必须声明构造了真 MainWindow（不是降级成不建树）:\n{}",
+        run.stdout
     );
 }
 
 /// 判据 B3: `--open` 真容器 ⇒ 打印的读数与工程一致（轨道 / 音符 / 历史 / 资产）。
 #[test]
 fn open_reports_the_real_project_counts() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("open-counts");
+    let path = write_real_container(&dir, "song.yeban");
+    let run = invoke(&["--open", &path.display().to_string(), "--headless"]);
+    assert_eq!(run.code, 0, "--open 必须是退出码 0: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.is_empty(),
+        "--open 不该往 stderr 写东西: {run:?}"
+    );
+
+    let project = yeban_app::bridge::demo_project();
+    assert_eq!(
+        project.tracks.len(),
+        7,
+        "演示夹具的轨道数变了 ⇒ 本判据需同步"
+    );
+    let counts = line_with(&run.stdout, "project-counts:").expect("必须有 project-counts 行");
+    assert_eq!(
+        field(counts, "tracks-all").as_deref(),
+        Some(project.tracks.len().to_string().as_str()),
+        "打印的轨道数必须与工程一致: {counts}"
+    );
+    assert_eq!(
+        field(counts, "master-track").as_deref(),
+        Some("1"),
+        "工程有主总线: {counts}"
+    );
+    assert_eq!(
+        field(counts, "history-bytes").as_deref(),
+        Some("14"),
+        "夹具的 history.dag 是 binary-history（14 字节）: {counts}"
+    );
+    assert_eq!(
+        field(counts, "asset-blobs").as_deref(),
+        Some("1"),
+        "资产池必须如实报告: {counts}"
+    );
+    assert_eq!(
+        field(counts, "midi-notes").as_deref(),
+        Some("6"),
+        "演示夹具的六颗音符: {counts}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        run.stdout.contains("format=yeban-container"),
+        "报告必须明说容器格式:\n{}",
+        run.stdout
     );
+    let opened = line_with(&run.stdout, "opened:").expect("必须有 opened 行");
+    assert!(
+        opened.contains("song.yeban"),
+        "opened 行必须点名打开的文件: {opened}"
+    );
+    assert_eq!(
+        field(opened, "format").as_deref(),
+        Some("yeban-container"),
+        "opened 行必须报出容器格式: {opened}"
+    );
+    let view = line_with(&run.stdout, "view-counts:").expect("--headless 必须给出 view-counts");
+    assert_eq!(
+        field(view, "tracks").as_deref(),
+        Some((project.tracks.len() - 1).to_string().as_str()),
+        "投影的轨道数 = 工程轨道数 - 主总线: {view}"
+    );
+    assert_eq!(
+        field(view, "notes").as_deref(),
+        Some("6"),
+        "界面投影的音符数必须与工程同口径: {view}"
+    );
+    assert_eq!(
+        field(view, "master").as_deref(),
+        Some("1"),
+        "主总线必须出现在投影里: {view}"
+    );
+    assert_eq!(
+        run.stdout
+            .lines()
+            .filter(|line| *line == "headless ok")
+            .count(),
+        1,
+        "无头握手行必须恰好一次:\n{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("未构造 MainWindow"), "边界声明必须出现");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B4: 坏输入 ⇒ **非零退出码 + 精确原因**，不是 panic、不是空工程。
 #[test]
 fn broken_inputs_exit_non_zero_without_panicking() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("broken-inputs");
+    let source = write_real_container(&dir, "good.yeban");
+    let bytes = std::fs::read(&source).expect("读容器");
+    let truncated = dir.join("truncated.yeban");
+    std::fs::write(&truncated, &bytes[..bytes.len() / 2]).expect("写截断容器");
+    let junk = dir.join("junk.bin");
+    std::fs::write(&junk, b"not a zip").expect("写垃圾");
+    let empty = dir.join("empty.bin");
+    std::fs::write(&empty, b"").expect("写空文件");
+
+    // 截断容器：退出码 3，容器裁决原样转达。
+    let run = invoke(&["--open", &truncated.display().to_string(), "--headless"]);
+    assert_eq!(run.code, 3, "截断容器必须是退出码 3: {run:?}");
+    assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.contains("容器被拒绝"),
+        "必须转达容器裁决: {run:?}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        run.stderr.contains("end-of-central-directory"),
+        "必须是**精确**的容器原因: {run:?}"
     );
+
+    // 非容器 / 空文件：明确拒绝，理由精确（不是"未知格式"、不是空工程）。
+    for bad in [&junk, &empty] {
+        let run = invoke(&["--open", &bad.display().to_string(), "--headless"]);
+        assert_eq!(run.code, 3, "非容器必须是退出码 3: {run:?}");
+        assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
+        assert!(run.stderr.contains("不是 `.yeban` 容器"), "实测: {run:?}");
+        assert!(
+            run.stderr.contains("end-of-central-directory"),
+            "必须带上容器的精确原裁决: {run:?}"
+        );
+    }
+
+    // 不存在的文件 / 目录：都是精确的 I/O 裁决，都不是 panic。
+    let missing = dir.join("nope.yeban");
+    for bad in [&missing, &dir] {
+        let run = invoke(&["--open", &bad.display().to_string(), "--headless"]);
+        assert_eq!(run.code, 3, "打不开必须是退出码 3: {run:?}");
+        assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
+        assert!(
+            run.stderr.contains("无法读取"),
+            "实测: {run:?} (path={})",
+            bad.display()
+        );
+        assert!(
+            !run.stderr.contains("panicked"),
+            "坏输入绝不能 panic: {run:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B5: `--open` + `--save-as` ⇒ 落盘文件能被公开入口读回，且**归档等价**；
@@ -450,22 +790,45 @@ fn save_as_without_open_says_it_saved_the_demo_project() {
 /// 判据 B7: 未知开关 / 缺取值 ⇒ 退出码 2 + **用法提示**（不许静默忽略）。
 #[test]
 fn unknown_switches_exit_two_with_usage_on_stderr() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    // 实测过的每一种：退出码 2 + 点名原因 + 用法文本。
+    for (args, needle) in [
+        (&["--bogus"][..], "无法识别的参数 `--bogus`"),
+        (&["--open"][..], "`--open` 需要一个取值"),
+        (&["--open", "--headless"][..], "`--open` 需要一个取值"),
+        (&["--headless=1"][..], "`--headless` 不接受取值"),
+        (&["--project-sample", "nope"][..], "未知的工程样本 `nope`"),
+        (&["--open", "a", "--open", "b"][..], "`--open` 只能给一次"),
+        (&["--export-midi"][..], "`--export-midi` 需要一个取值"),
+        (&["--open="][..], "`--open` 需要一个取值"),
+    ] {
+        let run = invoke(args);
+        expect_usage(&run, needle);
+    }
+
+    // 其余形态（位置参数 / 缺值 / 重复给）：同样是用法错误，只不断言措辞。
+    for args in [
+        vec!["filled"],
+        vec!["--save-as"],
+        vec!["--save-as", "a", "--save-as", "b"],
+        vec!["--export-elements", "a", "--export-elements", "b"],
+        vec!["--export-midi", "a", "--export-midi", "b"],
+    ] {
+        let run = invoke(&args);
+        assert_eq!(run.code, 2, "{args:?} 必须是退出码 2: {run:?}");
+        assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
+        assert!(!run.stderr.is_empty(), "错误必须有可读原因: {run:?}");
+        assert!(
+            run.stderr.contains("用法:"),
+            "用法错误必须附上用法文本: {run:?}"
+        );
+    }
+
+    // 用法文本真的有内容可提示（未知开关的名字当然不在里面）。
+    let usage = yeban_app::cli::usage_text();
+    assert!(usage.contains("--save-as"), "用法文本必须提到 --save-as");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        !usage.contains("无法识别的参数"),
+        "用法文本不该自带一条报错"
     );
 }
 
@@ -483,22 +846,28 @@ fn unknown_switches_exit_two_with_usage_on_stderr() {
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
 fn default_artifact_refuses_the_in_process_mcp_switch() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    // ⚠ 本体只在 `--no-default-features`（不带 `in-process-mcp`）的构建里编译：
+    // 默认构建里 `--enable-mcp-http` 是合法的 GUI 开关，不是拒绝项。
+    // （基线 9e5fb9f7 上该构建目前跑不起来：lib 在无默认特性下有 24 处 E0433，
+    // 且自引用 dev-dependency 会把默认特性重新拉回任何 `cargo test` —— 见回执。）
+    let run = invoke(&["--enable-mcp-http"]);
+    expect_usage(
+        &run,
+        "`--enable-mcp-http` 需要本次构建带 `--features in-process-mcp`",
+    );
+    // `--flag=value` 同样被拒（不接受取值在特性门之前判）。
+    let valued = invoke(&["--enable-mcp-http=1"]);
+    assert_eq!(
+        valued.code, 2,
+        "--enable-mcp-http=1 必须是退出码 2: {valued:?}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        valued.stdout.is_empty(),
+        "失败时 stdout 必须为空: {valued:?}"
+    );
+    assert!(
+        valued.stderr.contains("`--enable-mcp-http` 不接受取值"),
+        "实测: {valued:?}"
     );
 }
 
@@ -513,22 +882,10 @@ fn default_artifact_refuses_the_in_process_mcp_switch() {
 #[cfg(not(feature = "ui-mcp-http"))]
 #[test]
 fn default_artifact_refuses_the_ui_mcp_http_switch() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    let run = invoke(&["--enable-ui-mcp-http"]);
+    expect_usage(
+        &run,
+        "`--enable-ui-mcp-http` 需要本次构建带 `--features ui-mcp-http`",
     );
 }
 
@@ -540,22 +897,10 @@ fn default_artifact_refuses_the_ui_mcp_http_switch() {
 #[cfg(not(feature = "experimental-logic-export"))]
 #[test]
 fn default_artifact_refuses_the_experimental_logic_switch() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    let run = invoke(&["--export-logic", "x.logicx"]);
+    expect_usage(
+        &run,
+        "`--export-logic` 需要本次构建带 `--features experimental-logic-export`",
     );
 }
 
@@ -570,22 +915,10 @@ fn default_artifact_refuses_the_experimental_logic_switch() {
 #[cfg(not(feature = "experimental-als-export"))]
 #[test]
 fn default_artifact_refuses_the_experimental_als_switch() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    let run = invoke(&["--export-als", "x.als"]);
+    expect_usage(
+        &run,
+        "`--export-als` 需要本次构建带 `--features experimental-als-export`",
     );
 }
 
@@ -602,22 +935,12 @@ fn default_artifact_refuses_the_experimental_als_switch() {
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
 fn default_artifact_refuses_the_song_overview_switch() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    // ⚠ 本体只在 `--no-default-features`（不带 `in-process-mcp`）的构建里编译，
+    // 与 `default_artifact_refuses_the_in_process_mcp_switch` 同一条执行限制（见回执）。
+    let run = invoke(&["--export-song-overview", "overview.json"]);
+    expect_usage(
+        &run,
+        "--export-song-overview 需要本次构建带 `--features in-process-mcp`",
     );
 }
 
@@ -632,22 +955,12 @@ fn default_artifact_refuses_the_song_overview_switch() {
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
 fn default_artifact_refuses_the_apply_ops_switch() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    // ⚠ 本体只在 `--no-default-features`（不带 `in-process-mcp`）的构建里编译，
+    // 与 `default_artifact_refuses_the_in_process_mcp_switch` 同一条执行限制（见回执）。
+    let run = invoke(&["--apply-ops", "ops.json"]);
+    expect_usage(
+        &run,
+        "--apply-ops 需要本次构建带 `--features in-process-mcp`",
     );
 }
 
@@ -662,45 +975,102 @@ fn default_artifact_refuses_the_apply_ops_switch() {
 #[cfg(not(feature = "in-process-mcp"))]
 #[test]
 fn default_artifact_refuses_the_export_stems_switch() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    // ⚠ 本体只在 `--no-default-features`（不带 `in-process-mcp`）的构建里编译，
+    // 与 `default_artifact_refuses_the_in_process_mcp_switch` 同一条执行限制（见回执）。
+    let run = invoke(&["--export-stems", "stems"]);
+    expect_usage(
+        &run,
+        "--export-stems 需要本次构建带 `--features in-process-mcp`",
     );
 }
 
 /// 判据 B8: `--export-elements` 与 `--dump-elements` 同源（同一批行、同一个字节数）。
 #[test]
 fn export_elements_matches_dump_elements() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("export-elements");
+    let source = write_real_container(&dir, "src.yeban");
+    let target = dir.join("elements.txt");
+    let saved = dir.join("out.yeban");
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--dump-elements",
+        "--export-elements",
+        &target.display().to_string(),
+        "--save-as",
+        &saved.display().to_string(),
+    ]);
+    assert_eq!(run.code, 0, "导出 + 保存必须是退出码 0: {run:?}");
+
+    // 落盘的内容 = 打到 stdout 的那一串元素行（同源，不是第二份生成器）。
+    let dumped: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("element "))
+        .collect();
+    assert!(!dumped.is_empty(), "必须有元素行:\n{}", run.stdout);
+    let file = std::fs::read_to_string(&target).expect("读导出文件");
+    assert_eq!(
+        file.lines().count(),
+        dumped.len(),
+        "行数必须一致（落盘 {} 行，stdout {} 行）",
+        file.lines().count(),
+        dumped.len()
+    );
+    for line in &dumped {
+        assert!(file.contains(line), "导出文件必须含 `{line}`");
+    }
+    let exported = line_with(&run.stdout, "exported:").expect("必须有 exported: 行");
+    assert_eq!(
+        field(exported, "lines").as_deref(),
+        Some(dumped.len().to_string().as_str()),
+        "导出的行数必须是实际落盘行数: {exported}"
+    );
+    assert_eq!(
+        field(exported, "bytes").as_deref(),
+        Some(file.len().to_string().as_str()),
+        "导出的字节数必须是实际落盘字节数: {exported}"
+    );
+    assert!(saved.exists(), "两个都给时保存也要发生");
+    let saved_bytes = std::fs::read(&saved).expect("读保存的工程");
+
+    // 导出失败 ⇒ **不**写工程（顺序是契约：先导出，再保存）。
+    let blocked = dir.join("blocked").join("elements.txt");
+    let failed = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-elements",
+        &blocked.display().to_string(),
+        "--save-as",
+        &saved.display().to_string(),
+    ]);
+    assert_eq!(failed.code, 5, "导出失败是退出码 5: {failed:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        failed.stdout.is_empty(),
+        "失败时 stdout 必须为空: {failed:?}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        failed.stderr.contains("导出元素清单"),
+        "必须说清是导出元素清单失败: {failed:?}"
     );
+    assert!(!blocked.exists(), "失败不得留下目标文件");
+    assert!(
+        !dir.join("blocked").exists(),
+        "失败不得凭空造出目录（更不许留半个文件）"
+    );
+    assert_eq!(
+        std::fs::read(&saved).expect("旧文件仍在"),
+        saved_bytes,
+        "被拒绝的保存绝不能碰旧文件"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(yeban_app::save::TEMP_INFIX))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B9: 只读目录下 `--save-as` ⇒ 退出码 4，且**原文件一字未改**（原子替换的可观测后果）。
@@ -762,68 +1132,144 @@ fn save_as_into_a_read_only_directory_exits_four_and_keeps_the_old_file() {
 /// 3. 释放锁之后**同一条命令必须成功**，且排他持有者把自己的锁文件收走。
 #[test]
 fn save_as_is_refused_while_the_project_lock_is_held() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_app::project_lock::lock::{LockMode, acquire, lock_path};
+    let dir = scratch_dir("locked-save");
+    let source = write_real_container(&dir, "src.yeban");
+    let target = dir.join("locked.yeban");
+    let first = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--save-as",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(first.code, 0, "先放一个真容器: {first:?}");
+    let before = std::fs::read(&target).expect("读原文");
+
+    // 与保存路径**同一个实现、同一把锁**。
+    let guard = acquire(&target, LockMode::ExclusiveWrite).expect("取排他写建议锁");
+    let refused = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--save-as",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(refused.code, 4, "持锁时保存必须是退出码 4: {refused:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        refused.stdout.is_empty(),
+        "失败时 stdout 必须为空: {refused:?}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        refused.stderr.contains(".yeban.lock"),
+        "拒绝必须点名被占用的锁文件: {refused:?}"
     );
+    assert!(
+        refused.stderr.contains(&target.display().to_string()),
+        "拒绝必须点名企图写入的工程: {refused:?}"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("旧文件仍在"),
+        before,
+        "被拒绝的保存绝不能碰旧文件"
+    );
+    drop(guard);
+
+    // 释放之后同一份保存必须成功 ⇒ 拒绝的原因只能是那把锁。
+    let after = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--save-as",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(after.code, 0, "锁释放后必须能保存: {after:?}");
+    assert!(
+        !lock_path(&target).exists(),
+        "成功的排他保存必须把自己的锁文件收走（不留残留锁）: {}",
+        lock_path(&target).display()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B10（**反转**）: 裸 `project.json` 必须被**明确拒绝** —— 容器是唯一工程格式
 /// （ADR-0001 D43）。旧判据在这里断言"能打开 + `format=project-json`"。
 #[test]
 fn open_rejects_a_bare_project_json_with_a_precise_reason() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_model::container::{ContainerLimits, read_container};
+    let dir = scratch_dir("bare-json");
+    let source = write_real_container(&dir, "src.yeban");
+    let bytes = std::fs::read(&source).expect("读容器");
+    let json = read_container(&bytes, &ContainerLimits::default())
+        .expect("真容器")
+        .get("project.json")
+        .expect("必有 project.json")
+        .data
+        .clone();
+    let bare = dir.join("project.json");
+    std::fs::write(&bare, &json).expect("写裸 JSON");
+
+    // 旧判据在这里断言"能打开 + format=project-json"。反转之后它必须**失败**。
+    let run = invoke(&["--open", &bare.display().to_string(), "--headless"]);
+    assert_eq!(run.code, 3, "裸 project.json 必须是退出码 3: {run:?}");
+    assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
+    assert!(run.stderr.contains("不是 `.yeban` 容器"), "实测: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.contains("end-of-central-directory"),
+        "必须带上容器的精确原裁决: {run:?}"
     );
+
+    // 用法文本里不再有裸 JSON 读法。
+    let usage = yeban_app::cli::usage_text();
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        !usage.contains("裸") && !usage.contains("project-json"),
+        "用法不得再提裸 JSON 读法"
     );
+
+    // 内容本身没问题：同一份 JSON 在真容器里就能打开（拒绝的是容器边界）。
+    let wrapped = dir.join("wrapped.yeban");
+    let ok = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--save-as",
+        &wrapped.display().to_string(),
+    ]);
+    assert_eq!(ok.code, 0, "容器必须能打开并另存: {ok:?}");
+    assert!(wrapped.exists(), "另存的文件必须真的在");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B11: `--print-shortcuts` 是无窗口路径，且退出 0（CI 与人核对策略表的入口）。
 #[test]
 fn print_shortcuts_is_a_batch_command() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "--print-shortcuts 必须是退出码 0: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.is_empty(),
+        "--print-shortcuts 不该往 stderr 写东西: {run:?}"
     );
+    let expected = yeban_app::cli::shortcut_lines();
+    let stdout_lines: Vec<&str> = run.stdout.lines().collect();
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        stdout_lines.len() > expected.len(),
+        "表后面必须还有批处理报告（只印表、没有批处理尾 = 形态错了）"
     );
+    // 表在前、批处理报告在后：stdout 的前 N 行必须逐字等于 shortcut_lines()。
+    for (index, line) in expected.iter().enumerate() {
+        assert_eq!(
+            stdout_lines[index], line,
+            "第 {index} 行必须与 shortcut_lines() 逐字一致"
+        );
+    }
+    // 批处理尾：握手行恰好一次，表里至少有一条未实现标记。
+    assert_eq!(
+        run.stdout
+            .lines()
+            .filter(|line| *line == "headless ok")
+            .count(),
+        1,
+        "无头握手行必须恰好一次:\n{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("(未实现)"), "表里必须标出未实现的键");
+    assert!(run.stdout.contains("界面直达键"), "表后必须有界面直达键段");
 }
 
 /// 判据 B11b: 快捷键表**说能用**的键, 解析 + 宿主必须真的接受; 表里标 `(未实现)` 的键,
@@ -851,23 +1297,85 @@ fn print_shortcuts_is_a_batch_command() {
 /// `tests/live_ui_mcp.rs` 的判据 16 用真事件源直接见证。
 #[test]
 fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::{Focus, InputContext};
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "--print-shortcuts 必须是退出码 0: {run:?}");
+    let rows = shortcut_rows();
+    let stdout_lines: Vec<&str> = run.stdout.lines().collect();
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        stdout_lines.len() >= 4 + rows.len(),
+        "stdout 必须完整印出 {} 行快捷键表（实际 {} 行）",
+        rows.len(),
+        stdout_lines.len()
     );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    assert_eq!(
+        stdout_lines[0], "# 快捷键策略表 (yeban-app scaffold)",
+        "表头第一行必须逐字一致"
     );
+
+    let mut canvas = InputContext::new();
+    canvas.set_focus(Focus::MainCanvas);
+    let mut composing = InputContext::new();
+    composing.set_focus(Focus::TextInput);
+    composing.begin_composition();
+    let mut unimplemented = 0usize;
+    for (index, row) in rows.iter().enumerate() {
+        let rendered = stdout_lines[4 + index];
+        // 平台折叠：非 macOS 上 `Cmd/Ctrl+` 印成 `Ctrl+`（与 shortcut_lines 同款）。
+        let label = row.label.replace(
+            "Cmd/Ctrl+",
+            if cfg!(target_os = "macos") {
+                "Cmd+"
+            } else {
+                "Ctrl+"
+            },
+        );
+        assert!(
+            rendered.contains(&label),
+            "第 {index} 行必须印出规范写法 `{label}`: {rendered}"
+        );
+        // 解析：画布聚焦列与合成态列必须等于 InputContext::resolve 的 Debug。
+        assert!(
+            rendered.contains(&format!("{:?}", canvas.resolve(row.key, row.modifiers))),
+            "第 {index} 行的画布列必须等于 resolve 的结果: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("{:?}", composing.resolve(row.key, row.modifiers))),
+            "第 {index} 行的合成态列必须等于 resolve 的结果: {rendered}"
+        );
+        // 合成态下除 F5/F6 外一切都被输入法吞掉。
+        if !matches!(
+            composing.resolve(row.key, row.modifiers),
+            yeban_app::input::Resolution::ConsumedByIme
+        ) {
+            assert!(
+                label.contains("F5") || label.contains("F6"),
+                "合成态下非 F5/F6 的键必须被输入法吞掉: {rendered}"
+            );
+        }
+        // 落地状态：表的主张必须等于宿主自己的陈述；未实现的行必须带标记。
+        assert_eq!(
+            row.implemented,
+            action_has_implementation(row.action),
+            "第 {index} 行（{}）的主张与宿主陈述分叉",
+            row.label
+        );
+        if row.implemented {
+            assert!(
+                !rendered.contains(UNIMPLEMENTED_MARKER),
+                "已实现的行不该带未实现标记: {rendered}"
+            );
+        } else {
+            assert!(
+                rendered.contains(UNIMPLEMENTED_MARKER),
+                "未实现的行必须带标记: {rendered}"
+            );
+            unimplemented += 1;
+        }
+    }
+    assert_eq!(unimplemented, 1, "未实现条目必须恰好是 AuditionMain 一条");
 }
 
 /// 判据 B11c: `Delete/Backspace → 删除` 已落地 —— 宿主认它, 快捷表也说能用, 渲染不带标记。
@@ -878,22 +1386,41 @@ fn shortcut_table_status_matches_the_resolution_and_host_pipeline() {
 /// "三面之一分叉"; 本判据的失败信息直接点名"删除被回退了"。
 #[test]
 fn delete_selection_is_implemented_in_the_host_table_and_rendered_output() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_app::cli::shortcut_rows;
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::{Focus, InputContext};
+    let rows = shortcut_rows();
+    let row = rows
+        .iter()
+        .find(|row| row.label.contains("Delete/Backspace → 删除"))
+        .expect("表里必须有删除行");
+    assert!(row.implemented, "删除键必须已实现");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        action_has_implementation(row.action),
+        "宿主必须消费删除动作"
+    );
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "--print-shortcuts 必须是退出码 0: {run:?}");
+    let rendered = run
+        .stdout
+        .lines()
+        .find(|line| line.contains("Delete/Backspace → 删除"))
+        .expect("渲染输出里必须有删除行");
+    assert!(
+        rendered.contains("Action(DeleteSelection)"),
+        "渲染行必须解析到 DeleteSelection: {rendered}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        !rendered.contains(yeban_app::cli::UNIMPLEMENTED_MARKER),
+        "删除行不该带未实现标记: {rendered}"
+    );
+    // 解析口径：画布聚焦下这一键解析到 DeleteSelection。
+    let mut canvas = InputContext::new();
+    canvas.set_focus(Focus::MainCanvas);
+    assert_eq!(
+        format!("{:?}", canvas.resolve(row.key, row.modifiers)),
+        "Action(DeleteSelection)",
+        "画布聚焦下删除键必须解析到 DeleteSelection"
     );
 }
 
@@ -909,23 +1436,59 @@ fn delete_selection_is_implemented_in_the_host_table_and_rendered_output() {
 /// 用真事件源见证 —— 本判据只回答"这个动作有没有落点"。
 #[test]
 fn zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
-    );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
-    );
+    use yeban_app::cli::shortcut_rows;
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::Action;
+    let rows = shortcut_rows();
+    let zoom: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.action,
+                Action::ZoomIn
+                    | Action::ZoomOut
+                    | Action::ZoomToSelection
+                    | Action::ZoomToFit
+                    | Action::VerticalZoomIn
+                    | Action::VerticalZoomOut
+            )
+        })
+        .collect();
+    assert_eq!(zoom.len(), 6, "缩放族必须恰好 6 条（水平/垂直/选区/总览）");
+    for row in &zoom {
+        assert!(row.implemented, "{} 必须已实现", row.label);
+        assert!(
+            action_has_implementation(row.action),
+            "宿主必须消费 {}",
+            row.label
+        );
+    }
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "--print-shortcuts 必须是退出码 0: {run:?}");
+    for row in &zoom {
+        let label = row.label.replace(
+            "Cmd/Ctrl+",
+            if cfg!(target_os = "macos") {
+                "Cmd+"
+            } else {
+                "Ctrl+"
+            },
+        );
+        let rendered = run
+            .stdout
+            .lines()
+            .find(|line| line.contains(&label))
+            .unwrap_or_else(|| panic!("渲染输出里必须有 `{label}` 行"));
+        assert!(
+            rendered.contains(&format!("Action({:?})", row.action)),
+            "渲染行必须解析到 {:?}: {rendered}",
+            row.action
+        );
+        assert!(
+            !rendered.contains(yeban_app::cli::UNIMPLEMENTED_MARKER),
+            "缩放行不该带未实现标记: {rendered}"
+        );
+    }
 }
 
 /// 判据 B11e: `Cmd/Ctrl+D → 复制到下一格` 已落地 —— 宿主认它, 快捷表也说能用, 渲染不带 `(未实现)`。
@@ -940,22 +1503,40 @@ fn zoom_shortcuts_are_implemented_in_the_host_table_and_rendered_output() {
 /// 本判据只回答"这个动作有没有落点"。
 #[test]
 fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_app::cli::shortcut_rows;
+    use yeban_app::host::action_has_implementation;
+    use yeban_app::input::{Focus, InputContext};
+    let rows = shortcut_rows();
+    let row = rows
+        .iter()
+        .find(|row| row.label.contains("复制到下一格"))
+        .expect("表里必须有复制行");
+    assert!(row.implemented, "复制键必须已实现");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        action_has_implementation(row.action),
+        "宿主必须消费复制动作"
+    );
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "--print-shortcuts 必须是退出码 0: {run:?}");
+    let rendered = run
+        .stdout
+        .lines()
+        .find(|line| line.contains("复制到下一格"))
+        .expect("渲染输出里必须有复制行");
+    assert!(
+        rendered.contains("Action(Duplicate)"),
+        "渲染行必须解析到 Duplicate: {rendered}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        !rendered.contains(yeban_app::cli::UNIMPLEMENTED_MARKER),
+        "复制行不该带未实现标记: {rendered}"
+    );
+    let mut canvas = InputContext::new();
+    canvas.set_focus(Focus::MainCanvas);
+    assert_eq!(
+        format!("{:?}", canvas.resolve(row.key, row.modifiers)),
+        "Action(Duplicate)",
+        "画布聚焦下复制键必须解析到 Duplicate"
     );
 }
 
@@ -993,22 +1574,42 @@ fn duplicate_shortcut_is_implemented_in_the_host_table_and_rendered_output() {
 /// （那里 `Shift+Enter` 仍然不消费 —— 那一台装配没有提案来源，本判据说的是"有没有落点"）。
 #[test]
 fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    use yeban_app::cli::{UNIMPLEMENTED_MARKER, shortcut_rows};
+    use yeban_app::host::action_has_implementation;
+    let rows = shortcut_rows();
+    let unimplemented: Vec<_> = rows.iter().filter(|row| !row.implemented).collect();
+    assert_eq!(unimplemented.len(), 1, "未实现条目必须恰好一条");
+    assert_eq!(
+        unimplemented[0].label, "[ → 试听主线",
+        "唯一未实现的必须是试听主线（`[`）"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        !action_has_implementation(unimplemented[0].action),
+        "宿主也必须把试听主线列为未实现"
+    );
+    // 渲染：恰好一行带 (未实现) 标记（表头那句说明不含 Action(…)，不计）。
+    let run = invoke(&["--print-shortcuts"]);
+    assert_eq!(run.code, 0, "--print-shortcuts 必须是退出码 0: {run:?}");
+    let marked: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.contains(UNIMPLEMENTED_MARKER) && line.contains("Action("))
+        .collect();
+    assert_eq!(marked.len(), 1, "带标记的渲染行必须恰好一条: {marked:?}");
+    assert!(
+        marked[0].contains("[ → 试听主线"),
+        "带标记的行必须是试听主线: {}",
+        marked[0]
+    );
+    // 反向：采纳 AI 建议已实现（Shift+Enter 不再是未实现）。
+    let accept = rows
+        .iter()
+        .find(|row| row.label.contains("采纳 AI 建议"))
+        .expect("表里必须有采纳 AI 建议行");
+    assert!(accept.implemented, "Shift+Enter 采纳 AI 建议已实现");
+    assert!(
+        action_has_implementation(accept.action),
+        "宿主必须消费采纳 AI 建议"
     );
 }
 
@@ -1017,23 +1618,109 @@ fn the_ai_suggestion_and_audition_keys_are_still_declared_unimplemented() {
 /// （① 回读 / ② 逐音符 / ③ PPQ 头 / ④ 确定性，全部在**进程级**再证一次）。
 #[test]
 fn export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    use yeban_render::midi::{MidiFormat, parse_smf, track_chunks};
+    let dir = scratch_dir("export-midi");
+    let source = write_real_container(&dir, "song.yeban");
+    let target = dir.join("song.mid");
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-midi",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(run.code, 0, "--export-midi 必须是退出码 0: {run:?}");
+    let exported = line_with(&run.stdout, "exported-midi:").expect("必须有 exported-midi: 行");
+
+    // 报告行**自描述**：落点 / 字节数 / PPQ / 格式 / 轨道 / 音符 / 来源。
+    assert!(exported.contains("song.mid"), "{exported}");
+    assert_eq!(field(exported, "ppq").as_deref(), Some("960"), "{exported}");
+    assert_eq!(
+        field(exported, "format").as_deref(),
+        Some("parallel"),
+        "{exported}"
+    );
+    assert_eq!(
+        field(exported, "tracks").as_deref(),
+        Some("1"),
+        "{exported}"
+    );
+    assert_eq!(field(exported, "notes").as_deref(), Some("6"), "{exported}");
+    assert_eq!(
+        field(exported, "tempos").as_deref(),
+        Some("1"),
+        "{exported}"
+    );
+    assert_eq!(
+        field(exported, "channelsReused").as_deref(),
+        Some("0"),
+        "exported-midi: 必须披露复用通道数: {exported}"
+    );
+    assert_eq!(
+        field(exported, "maxTracksPerChannel").as_deref(),
+        Some("1"),
+        "exported-midi: 必须披露单通道最大轨数: {exported}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        exported.contains(yeban_app::save::TEMP_INFIX),
+        "必须用临时文件（原子落盘）: {exported}"
     );
+    assert!(
+        exported.contains("from=") && exported.contains("song.yeban"),
+        "exported-midi: 行必须说清来源: {exported}"
+    );
+    let bytes = std::fs::read(&target).expect("文件必须真的在");
+    assert_eq!(
+        field(exported, "bytes").as_deref(),
+        Some(bytes.len().to_string().as_str()),
+        "打印的字节数必须是实际落盘字节数: {exported}"
+    );
+
+    // 字节能被 SMF 读取面读回；chunk 布局 = MThd + conductor + 一条音符轨。
+    let chunks = track_chunks(&bytes).expect("chunk 布局");
+    assert_eq!(&chunks[0].fourcc, b"MThd");
+    assert_eq!(chunks.len(), 3);
+    for chunk in &chunks[1..] {
+        let payload = &bytes[chunk.payload.clone()];
+        assert_eq!(payload[payload.len() - 3..], [0xFF, 0x2F, 0x00]);
+    }
+    let parsed = parse_smf(&bytes).expect("回读");
+    assert_eq!(parsed.format, MidiFormat::Parallel);
+    assert_eq!(parsed.ppq, 960);
+    assert_eq!(&bytes[12..14], &[0x03, 0xC0], "0x03C0 = 960");
+
+    // 逐音符：（通道， 音高， 力度， 起始 tick, 时值）与工程一致。
+    let mut actual: Vec<(u8, u8, u8, u64, u64)> =
+        parsed.notes.iter().map(|note| note.key()).collect();
+    actual.sort_unstable();
+    assert_eq!(actual, demo_note_keys(), "六颗音符逐项一致");
+
+    // 同一工程两次导出 ⇒ 逐字节相同。
+    let second = dir.join("song-again.mid");
+    let again = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-midi",
+        &second.display().to_string(),
+    ]);
+    assert_eq!(again.code, 0, "第二次导出必须成功: {again:?}");
+    assert_eq!(
+        std::fs::read(&target).expect("读第一次"),
+        std::fs::read(&second).expect("读第二次"),
+        "同一工程的两次导出必须逐字节相同"
+    );
+    assert!(
+        run.stdout.lines().any(|line| line == "headless ok"),
+        "无窗口路径必须打印握手行"
+    );
+    // 没有 `.tmp-` 残留（原子替换的痕迹）。
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(yeban_app::save::TEMP_INFIX))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 C（回归）: `--export-wav` **单独**（不给 `--headless`，也不给
@@ -1048,23 +1735,53 @@ fn export_midi_writes_a_parseable_deterministic_smf_from_the_real_binary() {
 /// 而不是导出实现（实现早有 `--headless` 下的正面判据）。
 #[test]
 fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    let dir = scratch_dir("export-wav");
+    let source = write_real_container(&dir, "song.yeban");
+    let target = dir.join("song.wav");
+    // 刻意不带 `--headless`：钉的是路由谓词自己（`--export-wav` 在 batch() 里）。
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &target.display().to_string(),
+        "--wav-seconds",
+        "8",
+    ]);
+    assert_eq!(run.code, 0, "--export-wav 必须是退出码 0: {run:?}");
+    let line = line_with(&run.stdout, "exported-wav:").expect("必须有 exported-wav 报告行");
+    assert!(line.contains("from="), "报告行必须明说来源: {line}");
+    assert!(line.contains("source="), "报告行必须登记音源: {line}");
+    assert_eq!(
+        field(line, "frames").as_deref(),
+        Some("384000"),
+        "帧数必须与请求的 8 秒一致: {line}"
     );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+
+    // 回读：帧数 / 采样率 / 声道与请求一致（24-bit 整数 PCM），且非静音。
+    let (frames, sample_rate, channels, bits, is_float) = read_wav_shape(&target);
+    assert_eq!(sample_rate, 48_000, "采样率");
+    assert_eq!(channels, 2, "声道");
+    assert_eq!(bits, 24, "位深");
+    assert!(!is_float, "整数 PCM");
+    assert_eq!(frames, 48_000 * 8, "帧数与请求一致");
+
+    // 同一工程两次导出 ⇒ 逐字节相同（确定性）。
+    let again = dir.join("song-again.wav");
+    let second = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &again.display().to_string(),
+        "--wav-seconds",
+        "8",
+    ]);
+    assert_eq!(second.code, 0, "第二次导出必须成功: {second:?}");
+    assert_eq!(
+        std::fs::read(&target).expect("读第一次"),
+        std::fs::read(&again).expect("读第二次"),
+        "同一工程的两次导出必须逐字节相同"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B16: `--export-wav` 的**位深 / 采样率 / 时长 / 精确帧数**可被 CLI 选，
@@ -1081,23 +1798,109 @@ fn export_wav_runs_on_the_windowless_path_from_the_real_binary() {
 ///    ⛔ 不是"静默忽略"（本仓对修饰开关的一贯纪律）。
 #[test]
 fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays_compatible() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    let dir = scratch_dir("export-wav-shape");
+    let source = write_real_container(&dir, "song.yeban");
+
+    // 16-bit / 44100 / 1 秒：报告行与回读的形状都必须跟着走。
+    let s16 = dir.join("s16.wav");
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &s16.display().to_string(),
+        "--wav-bit-depth",
+        "16",
+        "--wav-sample-rate",
+        "44100",
+        "--wav-seconds",
+        "1",
+    ]);
+    assert_eq!(run.code, 0, "16-bit/44100 导出必须是退出码 0: {run:?}");
+    let line = line_with(&run.stdout, "exported-wav:").expect("必须有 exported-wav 行");
+    assert_eq!(
+        field(line, "sample_rate").as_deref(),
+        Some("44100"),
+        "{line}"
     );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+    assert_eq!(field(line, "bits").as_deref(), Some("16"), "{line}");
+    let (frames, sample_rate, channels, bits, is_float) = read_wav_shape(&s16);
+    assert_eq!(
+        (frames, sample_rate, channels, bits),
+        (44_100, 44_100, 2, 16),
+        "回读的形状必须与请求一致"
     );
+    assert!(!is_float, "16-bit 必须是整数 PCM");
+
+    // --wav-frames 48000 ⇒ 1 秒 @48k（帧数原样使用）。
+    let f = dir.join("f.wav");
+    let run2 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &f.display().to_string(),
+        "--wav-frames",
+        "48000",
+    ]);
+    assert_eq!(run2.code, 0, "--wav-frames 导出必须是退出码 0: {run2:?}");
+    let (frames2, _, _, _, _) = read_wav_shape(&f);
+    assert_eq!(frames2, 48_000, "显式帧数必须原样使用");
+
+    // 默认：不给时长/位深/采样率 ⇒ 48k/24-bit，时长取工程可闻末端（不再截成 8 秒）。
+    let d = dir.join("d.wav");
+    let run3 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &d.display().to_string(),
+    ]);
+    assert_eq!(run3.code, 0, "默认导出必须是退出码 0: {run3:?}");
+    let line3 = line_with(&run3.stdout, "exported-wav:").expect("必须有 exported-wav 行");
+    assert_eq!(
+        field(line3, "sample_rate").as_deref(),
+        Some("48000"),
+        "默认采样率必须是 48000: {line3}"
+    );
+    assert_eq!(
+        field(line3, "bits").as_deref(),
+        Some("24"),
+        "默认位深必须是 24: {line3}"
+    );
+    assert_eq!(
+        field(line3, "secondsSource").as_deref(),
+        Some("projectEnd"),
+        "默认时长必须取工程可闻末端: {line3}"
+    );
+    let expected_end =
+        yeban_app::export_wav::project_audible_end_seconds(&yeban_app::bridge::demo_project())
+            .expect("演示工程必须有可闻末端");
+    let reported_end: f64 = field(line3, "projectEndSeconds")
+        .expect("projectEndSeconds")
+        .parse()
+        .expect("projectEndSeconds 必须是数字");
+    assert!(
+        (reported_end - expected_end).abs() < 0.002,
+        "回执的末端秒数必须与工程一致: {line3}"
+    );
+    let (frames3, _, _, _, _) = read_wav_shape(&d);
+    assert_eq!(
+        frames3,
+        (expected_end * 48_000.0).round() as u64,
+        "默认导出的帧数必须是末端 × 采样率"
+    );
+
+    // 互斥：--wav-frames + --wav-seconds 同给 ⇒ 用法错误（不许静默丢一个）。
+    let clash = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &dir.join("x.wav").display().to_string(),
+        "--wav-frames",
+        "100",
+        "--wav-seconds",
+        "1",
+    ]);
+    expect_usage(&clash, "`--wav-frames` 与 `--wav-seconds` 互斥");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据（审评 2026-10-31，P1-1）：`--render-threads` 只改耗时、不改字节 ——
@@ -1105,23 +1908,51 @@ fn export_wav_bit_depth_sample_rate_and_seconds_are_selectable_and_default_stays
 /// （固定顺序汇聚；非法值已由上一判据第 ④ 节覆盖）。
 #[test]
 fn export_wav_render_threads_change_only_time_not_bytes() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    let dir = scratch_dir("export-wav-threads");
+    let source = write_real_container(&dir, "song.yeban");
+    let t4 = dir.join("t4.wav");
+    let run4 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &t4.display().to_string(),
+        "--render-threads",
+        "4",
+        "--wav-seconds",
+        "1",
+    ]);
+    assert_eq!(run4.code, 0, "--render-threads 4 必须是退出码 0: {run4:?}");
+    let t0 = dir.join("t0.wav");
+    let run0 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-wav",
+        &t0.display().to_string(),
+        "--wav-seconds",
+        "1",
+    ]);
+    assert_eq!(run0.code, 0, "默认线程数必须是退出码 0: {run0:?}");
+    assert_eq!(
+        std::fs::read(&t4).expect("读 4 线程产物"),
+        std::fs::read(&t0).expect("读默认产物"),
+        "--render-threads 只改时间、不改字节"
     );
-    assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
-    );
+    // 报告行的 digest 也必须相同（同一份产物）。
+    let digest4 = field(
+        line_with(&run4.stdout, "exported-wav:").expect("t4 报告行"),
+        "digest",
+    )
+    .expect("digest");
+    let digest0 = field(
+        line_with(&run0.stdout, "exported-wav:").expect("t0 报告行"),
+        "digest",
+    )
+    .expect("digest");
+    assert_eq!(digest4, digest0, "digest 必须相同");
+    // 修饰开关单独给 ⇒ 退出码 2 + 精确原因（run_batch 守卫，不附用法文本）。
+    let alone = invoke(&["--headless", "--render-threads", "2"]);
+    expect_usage_reason(&alone, "`--render-threads` 必须与 `--export-wav` 一起给");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据：`--loudness-target` / `--true-peak-ceiling` 的用法护栏与真二进制落点。
@@ -1133,46 +1964,239 @@ fn export_wav_render_threads_change_only_time_not_bytes() {
 /// - 真二进制：演示工程 `--loudness-target -16` ⇒ 退出码 0 且 stdout 多一行 `loudness:`。
 #[test]
 fn export_wav_loudness_switches_are_guarded_and_reach_the_target() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("export-wav-loudness");
+    let source = write_real_container(&dir, "song.yeban");
+    let target = dir.join("loud.wav");
+    let src = source.display().to_string();
+    let wav = dir.join("x.wav").display().to_string();
+    let run = invoke(&[
+        "--open",
+        &src,
+        "--export-wav",
+        &target.display().to_string(),
+        "--loudness-target",
+        "-16",
+        "--wav-seconds",
+        "1",
+    ]);
+    assert_eq!(run.code, 0, "--loudness-target -16 必须是退出码 0: {run:?}");
+    let loudness = line_with(&run.stdout, "loudness:").expect("必须有 loudness: 行");
+    let achieved: f64 = field(loudness, "achieved")
+        .as_deref()
+        .expect("achieved")
+        .parse()
+        .expect("achieved 必须是数字");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        (achieved - (-16.0)).abs() <= 0.5,
+        "实测响度必须落在目标 ±0.5 LU 内: {loudness}"
     );
+    assert_eq!(
+        field(loudness, "bound").as_deref(),
+        Some("LoudnessTarget"),
+        "目标赢 ⇒ bound 必须是 LoudnessTarget: {loudness}"
+    );
+    let peak: f64 = field(loudness, "truePeak")
+        .as_deref()
+        .expect("truePeak")
+        .parse()
+        .expect("truePeak 必须是数字");
+    assert!(peak <= 0.0, "真峰值不得超 0 dBTP: {loudness}");
+
+    // 真峰值上限收紧时仍达标，且峰值受上限约束。
+    let capped = dir.join("capped.wav");
+    let run2 = invoke(&[
+        "--open",
+        &src,
+        "--export-wav",
+        &capped.display().to_string(),
+        "--loudness-target",
+        "-16",
+        "--true-peak-ceiling",
+        "-1.0",
+        "--wav-seconds",
+        "1",
+    ]);
+    assert_eq!(run2.code, 0, "带真峰值上限必须是退出码 0: {run2:?}");
+    let loudness2 = line_with(&run2.stdout, "loudness:").expect("必须有 loudness: 行");
+    let achieved2: f64 = field(loudness2, "achieved")
+        .as_deref()
+        .expect("achieved")
+        .parse()
+        .expect("achieved 必须是数字");
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        (achieved2 - (-16.0)).abs() <= 0.5,
+        "收紧上限后实测响度仍须落在目标 ±0.5 LU 内: {loudness2}"
     );
+    let peak2: f64 = field(loudness2, "truePeak")
+        .as_deref()
+        .expect("truePeak")
+        .parse()
+        .expect("truePeak 必须是数字");
+    assert!(
+        peak2 <= -1.0,
+        "真峰值必须受 -1.0 dBTP 上限约束: {loudness2}"
+    );
+
+    // 守卫：越界 / 非数字 / 重复给 ⇒ 用法错误（附用法文本）；单独给 ⇒ 退出码 2 + 精确原因
+    // （run_batch 守卫只印原因行、不附用法文本 —— 见 expect_usage_reason）。
+    for (args, needle, with_usage) in [
+        (
+            vec![
+                "--open",
+                &src,
+                "--export-wav",
+                &wav,
+                "--loudness-target",
+                "-71",
+                "--wav-seconds",
+                "1",
+            ],
+            "`--loudness-target` 的取值 `-71` 非法",
+            true,
+        ),
+        (
+            vec![
+                "--open",
+                &src,
+                "--export-wav",
+                &wav,
+                "--loudness-target",
+                "1",
+                "--wav-seconds",
+                "1",
+            ],
+            "`--loudness-target` 的取值 `1` 非法",
+            true,
+        ),
+        (
+            vec![
+                "--open",
+                &src,
+                "--export-wav",
+                &wav,
+                "--loudness-target",
+                "abc",
+                "--wav-seconds",
+                "1",
+            ],
+            "`--loudness-target` 的取值 `abc` 非法",
+            true,
+        ),
+        (
+            vec![
+                "--open",
+                &src,
+                "--export-wav",
+                &wav,
+                "--loudness-target",
+                "NaN",
+                "--wav-seconds",
+                "1",
+            ],
+            "`--loudness-target` 的取值 `NaN` 非法",
+            true,
+        ),
+        (
+            vec![
+                "--open",
+                &src,
+                "--export-wav",
+                &wav,
+                "--true-peak-ceiling",
+                "0.5",
+                "--wav-seconds",
+                "1",
+            ],
+            "`--true-peak-ceiling` 的取值 `0.5` 非法",
+            true,
+        ),
+        (
+            vec![
+                "--open",
+                &src,
+                "--export-wav",
+                &wav,
+                "--loudness-target",
+                "-16",
+                "--loudness-target",
+                "-17",
+                "--wav-seconds",
+                "1",
+            ],
+            "`--loudness-target` 只能给一次",
+            true,
+        ),
+        (
+            vec!["--headless", "--loudness-target", "-16"],
+            "`--loudness-target` 必须与 `--export-wav` 一起给",
+            false,
+        ),
+        (
+            vec!["--headless", "--true-peak-ceiling", "-0.5"],
+            "`--true-peak-ceiling` 必须与 `--export-wav` 一起给",
+            false,
+        ),
+    ] {
+        let run = invoke(&args);
+        if with_usage {
+            expect_usage(&run, needle);
+        } else {
+            expect_usage_reason(&run, needle);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B13: `--export-midi` 的失败语义与既有 CLI 一致 —— 非容器输入 ⇒ 退出码 **3**
 /// 且一个字节都不写；目标不可写 ⇒ 退出码 **5**、精确原因、**不留下半个文件**。
 #[test]
 fn export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("export-midi-failures");
+    let junk = dir.join("junk.bin");
+    std::fs::write(&junk, b"not a zip at all").expect("写垃圾");
+    let target = dir.join("never.mid");
+    let run = invoke(&[
+        "--open",
+        &junk.display().to_string(),
+        "--export-midi",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(run.code, 3, "非容器输入复用 --open 的退出码 3: {run:?}");
+    assert!(run.stdout.is_empty(), "失败时 stdout 必须为空: {run:?}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        run.stderr.contains("不是 `.yeban` 容器"),
+        "必须转达容器的精确裁决: {run:?}"
     );
+    assert!(!target.exists(), "打开失败 ⇒ 一个字节都不许写出去");
+
+    // 目标路径不可写 ⇒ 退出码 5 + 精确原因 + **不留下半个文件**。
+    let source = write_real_container(&dir, "src.yeban");
+    let blocked = dir.join("missing").join("out.mid");
+    let run2 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-midi",
+        &blocked.display().to_string(),
+    ]);
+    assert_eq!(run2.code, 5, "写不出去是退出码 5: {run2:?}");
+    assert!(run2.stdout.is_empty(), "失败时 stdout 必须为空: {run2:?}");
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        run2.stderr.contains("导出 MIDI 到") && run2.stderr.contains("写临时文件"),
+        "必须说清是导出 MIDI 失败以及精确的 I/O 动作: {run2:?}"
     );
+    assert!(!blocked.exists(), "失败不得留下目标文件");
+    assert!(
+        !dir.join("missing").exists(),
+        "失败不得凭空造出目录（更不许留半个文件）"
+    );
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("列目录")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(yeban_app::save::TEMP_INFIX))
+        .collect();
+    assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B14: 带 `experimental-als-export` 时，`--export-als` 写出 Gzip 文档并把
@@ -1183,30 +2207,160 @@ fn export_midi_failures_reuse_the_existing_exit_codes_and_write_nothing() {
 #[cfg(feature = "experimental-als-export")]
 #[test]
 fn export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    use yeban_render::als::{build_live_set_xml, export_project};
+    let dir = scratch_dir("export-als");
+    let source = write_real_container(&dir, "song.yeban");
+    let target = dir.join("song.als");
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-als",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(run.code, 0, "--export-als 必须是退出码 0: {run:?}");
+    let line = line_with(&run.stdout, "exported-als:").expect("必须有 exported-als: 行");
+    assert!(line.contains("song.als"), "{line}");
+    assert_eq!(field(line, "tracks").as_deref(), Some("7"), "{line}");
+    assert_eq!(field(line, "clips").as_deref(), Some("3"), "{line}");
+    assert_eq!(field(line, "notes").as_deref(), Some("6"), "{line}");
+    assert_eq!(field(line, "losses").as_deref(), Some("18"), "{line}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        line.contains(yeban_app::save::TEMP_INFIX),
+        "必须用临时文件（原子落盘）: {line}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        line.contains("from=") && line.contains("song.yeban"),
+        "报告行必须说清来源: {line}"
     );
+
+    // 落盘字节 = 同一工程的库内导出逐字节相等（不是"差不多"）。
+    let bytes = std::fs::read(&target).expect("文件必须真的在");
+    assert_eq!(
+        field(line, "bytes").as_deref(),
+        Some(bytes.len().to_string().as_str()),
+        "打印的字节数必须是实际落盘字节数: {line}"
+    );
+    let expected = export_project(&yeban_app::bridge::demo_project()).expect("库内导出");
+    assert_eq!(
+        bytes, expected.bytes,
+        "二进制写出的 .als 必须逐字节等于同一工程的库内导出"
+    );
+    assert_eq!(expected.mapped_tracks, 7, "库内导出的轨道数");
+    assert_eq!(expected.mapped_clips, 3, "库内导出的片段数");
+    assert_eq!(expected.mapped_notes, 6, "库内导出的音符数");
+    assert_eq!(expected.losses.len(), 18, "库内导出的损失条数");
+
+    // gzip 形态：魔数 + deflate 方法 + 尾部 ISIZE（未压缩长度）。
+    assert_eq!(&bytes[..2], &[0x1F, 0x8B], "必须是 gzip 魔数开头");
+    assert_eq!(bytes[2], 8, "压缩方法必须是 deflate");
+    let isize = u32::from_le_bytes(
+        bytes[bytes.len() - 4..]
+            .try_into()
+            .expect("gzip 尾部 ISIZE"),
+    );
+    // 未压缩长度不钉死数字：探针的 12706 来自二进制另存的容器（created_at 是 13 位
+    // 墙钟），本夹具的 created_at 是 0，短 12 字节 —— 长度的事实源是同一工程的库内 XML。
+    let document = build_live_set_xml(&yeban_app::bridge::demo_project());
+    assert_eq!(
+        isize as usize,
+        document.xml.len(),
+        "gzip 尾部声明的未压缩长度必须等于同一工程的库内 XML 长度"
+    );
+
+    // 真解压回读（unix）：确实是一份能解开的 XML 文档。
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("gzip")
+            .arg("-dc")
+            .arg(&target)
+            .output()
+            .expect("unix 测试宿主必须有 gzip");
+        assert!(
+            out.status.success(),
+            "gzip -dc 必须成功: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.stdout.len(),
+            document.xml.len(),
+            "解出的 XML 长度必须等于同一工程的库内 XML 长度"
+        );
+        assert!(out.stdout.starts_with(b"<?xml"), "解出的内容必须是 XML");
+        let xml = String::from_utf8(out.stdout).expect("XML 必须是 UTF-8");
+        assert!(xml.contains("<Ableton"), "XML 必须是 LiveSet 文档");
+        assert!(xml.contains("yeban-loss"), "XML 必须带损失注释");
+    }
+
+    // 损失表：18 条全打印（不截断、不静默），每条都有可读原因。
+    let losses = line_with(&run.stdout, "als-losses:").expect("必须有 als-losses: 行");
+    assert_eq!(field(losses, "count").as_deref(), Some("18"), "{losses}");
+    let printed: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("als-loss:"))
+        .collect();
+    assert_eq!(printed.len(), 18, "18 条损失必须全打印");
+    assert!(
+        printed.iter().all(|line| line.contains("reason=")),
+        "每条损失必须有可读原因"
+    );
+    assert!(
+        !run.stdout.contains("als-losses-truncated"),
+        "18 条不该被截断"
+    );
+
+    // 同一工程两次导出 ⇒ 逐字节相同。
+    let second = dir.join("song-again.als");
+    let again = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-als",
+        &second.display().to_string(),
+    ]);
+    assert_eq!(again.code, 0, "第二次导出必须成功: {again:?}");
+    assert_eq!(
+        std::fs::read(&target).expect("读第一次"),
+        std::fs::read(&second).expect("读第二次"),
+        "同一工程的两次导出必须逐字节相同"
+    );
+
+    // 不给 --open ⇒ 导出演示工程，来源行如实写 sample=default。
+    let noopen = dir.join("sample.als");
+    let run2 = invoke(&["--export-als", &noopen.display().to_string()]);
+    assert_eq!(run2.code, 0, "不给 --open 也能导出演示工程: {run2:?}");
+    let line2 = line_with(&run2.stdout, "exported-als:").expect("必须有 exported-als: 行");
+    assert!(
+        line2.contains("from=sample=default"),
+        "不给 --open ⇒ from=sample=default: {line2}"
+    );
+
+    // 目标路径不可写 ⇒ 退出码 5 + 精确原因 + 不留下半个文件。
+    let blocked = dir.join("missing").join("out.als");
+    let run3 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-als",
+        &blocked.display().to_string(),
+    ]);
+    assert_eq!(run3.code, 5, "写不出去是退出码 5: {run3:?}");
+    assert!(run3.stdout.is_empty(), "失败时 stdout 必须为空: {run3:?}");
+    assert!(
+        run3.stderr.contains("导出 .als 到") && run3.stderr.contains("写临时文件"),
+        "必须说清是导出 ALS 失败以及精确的 I/O 动作: {run3:?}"
+    );
+    assert!(!blocked.exists(), "失败不得留下目标文件");
+    assert!(
+        !dir.join("missing").exists(),
+        "失败不得凭空造出目录（更不许留半个文件）"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B15: 带 `experimental-logic-export` 时，`--export-logic` 写出 `.logicx`
 /// **bundle 目录**（四个文件）并把映射损失表逐条打到 stdout。
 ///
 /// 与 B14 同一条思路，但产物是多文件目录：因此它另外钉住 ① 目录与四个文件真的在、
-/// ② `ProjectData` 的**供体**头部（`23 47 C0 AB` / 版本码 `0x09CF` / 声明长度 @0x10 /
+/// ② `ProjectData` 的**供体**头部（`23 47 C0 AB` / 版本码 `0x09d0` / 声明长度 @0x10 /
 /// `gnoS` @0x18）、③ `MetaData.plist` 是二进制 plist（`bplist00`）、④ 两次导出**逐文件**相同、
 /// ⑤ 目标被普通文件挡住时退出 5。
 ///
@@ -1216,23 +2370,137 @@ fn export_als_writes_a_gzip_document_and_prints_the_loss_summary() {
 #[cfg(feature = "experimental-logic-export")]
 #[test]
 fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("export-logic");
+    let source = write_real_container(&dir, "song.yeban");
+    let target = dir.join("out.logicx");
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-logic",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(run.code, 0, "--export-logic 必须是退出码 0: {run:?}");
+    let line = line_with(&run.stdout, "exported-logic:").expect("必须有 exported-logic: 行");
+    assert!(line.contains("out.logicx"), "{line}");
+    assert_eq!(field(line, "files").as_deref(), Some("4"), "{line}");
+    assert_eq!(field(line, "bytes").as_deref(), Some("294270"), "{line}");
+    assert_eq!(field(line, "regions").as_deref(), Some("1"), "{line}");
+    assert_eq!(field(line, "notes").as_deref(), Some("6"), "{line}");
+    assert_eq!(field(line, "losses").as_deref(), Some("46"), "{line}");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        line.contains("from=") && line.contains("song.yeban"),
+        "报告行必须说清来源: {line}"
     );
+
+    // bundle 里恰好是这 4 个文件（不多不少）。
+    let mut found = Vec::new();
+    let mut stack = vec![target.clone()];
+    while let Some(path) = stack.pop() {
+        for entry in std::fs::read_dir(&path).expect("列 bundle 目录") {
+            let path = entry.expect("目录项").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                found.push(
+                    path.strip_prefix(&target)
+                        .expect("相对路径")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            "Alternatives/000/DisplayState.plist",
+            "Alternatives/000/MetaData.plist",
+            "Alternatives/000/ProjectData",
+            "Resources/ProjectInformation.plist",
+        ],
+        "bundle 必须恰好是这 4 个文件"
+    );
+
+    // ProjectData 的供体头部：魔数 / 版本码 0x09d0 / 声明长度 / Song 标记。
+    let project_data =
+        std::fs::read(target.join("Alternatives/000/ProjectData")).expect("读 ProjectData");
+    assert_eq!(
+        project_data.len(),
+        266_151,
+        "ProjectData 必须是 266151 字节"
+    );
+    assert_eq!(
+        &project_data[..4],
+        &[0x23, 0x47, 0xC0, 0xAB],
+        "供体头部魔数"
+    );
+    assert_eq!(
+        u16::from_le_bytes(project_data[4..6].try_into().expect("版本码")),
+        0x09d0,
+        "根头版本码必须是 0x09d0（旧判据写的 0x09CF 是错的，已同步修正）"
+    );
+    // 根头 0x18 字节（logic_read.rs 的格式表）；@0x10 声明的是根头**之后**的记录区长度。
+    assert_eq!(
+        u32::from_le_bytes(project_data[0x10..0x14].try_into().expect("声明长度")) as usize,
+        project_data.len() - 0x18,
+        "声明长度 @0x10 必须等于文件长度减去 24 字节根头"
+    );
+    assert_eq!(
+        &project_data[0x18..0x1c],
+        b"gnoS",
+        "Song 记录标记必须在 0x18"
+    );
+
+    // MetaData.plist 是二进制 plist（完整损失表在它的 YebanMappingLosses 键里）。
+    let meta = std::fs::read(target.join("Alternatives/000/MetaData.plist")).expect("读 MetaData");
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        meta.starts_with(b"bplist00"),
+        "MetaData.plist 必须是二进制 plist"
     );
+
+    // 损失表：46 条计数，印 20 条后截断，截断行明说还剩 26 条。
+    let losses = line_with(&run.stdout, "logic-losses:").expect("必须有 logic-losses: 行");
+    assert_eq!(field(losses, "count").as_deref(), Some("46"), "{losses}");
+    let printed: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("logic-loss:"))
+        .collect();
+    assert_eq!(printed.len(), 20, "必须恰好印 20 条损失行");
+    let truncated = line_with(&run.stdout, "logic-losses-truncated:").expect("必须有截断行");
+    assert!(
+        truncated.contains("and 26 more"),
+        "截断行必须明说还剩 26 条: {truncated}"
+    );
+
+    // 同一工程两次导出 ⇒ 每个文件逐字节相同。
+    let second = dir.join("out2.logicx");
+    let again = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-logic",
+        &second.display().to_string(),
+    ]);
+    assert_eq!(again.code, 0, "第二次导出必须成功: {again:?}");
+    for rel in &found {
+        assert_eq!(
+            std::fs::read(target.join(rel)).expect("读第一次"),
+            std::fs::read(second.join(rel)).expect("读第二次"),
+            "{rel} 两次导出必须逐字节相同"
+        );
+    }
+
+    // 不给 --open ⇒ 导出演示工程，来源行如实写 sample=default。
+    let noopen = dir.join("sample.logicx");
+    let run2 = invoke(&["--export-logic", &noopen.display().to_string()]);
+    assert_eq!(run2.code, 0, "不给 --open 也能导出演示工程: {run2:?}");
+    let line2 = line_with(&run2.stdout, "exported-logic:").expect("必须有 exported-logic: 行");
+    assert!(
+        line2.contains("from=sample=default"),
+        "不给 --open ⇒ from=sample=default: {line2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B15b（`#200`）: `--export-logic` 的目标目录**必须**以 `.logicx` 结尾。
@@ -1249,23 +2517,69 @@ fn export_logic_writes_a_bundle_directory_and_prints_the_loss_summary() {
 #[cfg(feature = "experimental-logic-export")]
 #[test]
 fn export_logic_forces_the_logicx_suffix_and_prints_the_actual_path() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
+    let dir = scratch_dir("export-logic-suffix");
+    let source = write_real_container(&dir, "song.yeban");
+
+    // 不带后缀 ⇒ 补 .logicx，且不留裸 `hello`。
+    let bare = dir.join("hello");
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-logic",
+        &bare.display().to_string(),
+    ]);
+    assert_eq!(run.code, 0, "不带后缀的导出必须是退出码 0: {run:?}");
+    let line = line_with(&run.stdout, "exported-logic:").expect("必须有 exported-logic: 行");
     assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+        line.contains("hello.logicx"),
+        "报告行必须印**实际**落点（补后缀后的路径）: {line}"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        dir.join("hello.logicx").is_dir(),
+        "bundle 必须落在 hello.logicx"
     );
+    assert!(!bare.exists(), "不许留下裸 `hello`");
+
+    // 已带后缀 ⇒ 不再叠加。
+    let suffixed = dir.join("foo.logicx");
+    let run2 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-logic",
+        &suffixed.display().to_string(),
+    ]);
+    assert_eq!(run2.code, 0, "已带后缀的导出必须是退出码 0: {run2:?}");
+    assert!(suffixed.is_dir(), "foo.logicx 必须保持 foo.logicx");
+    assert!(
+        !dir.join("foo.logicx.logicx").exists(),
+        "不许叠加第二个 .logicx"
+    );
+
+    // 挡路：一个普通文件占了 bundle 该在的位置 ⇒ 退出码 5 + 精确原因 + 原文件无损。
+    let blocked = dir.join("blocked.logicx");
+    std::fs::write(&blocked, b"in the way").expect("写挡路文件");
+    let run3 = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-logic",
+        &blocked.display().to_string(),
+    ]);
+    assert_eq!(run3.code, 5, "bundle 目录建不出来是退出码 5: {run3:?}");
+    assert!(run3.stdout.is_empty(), "失败时 stdout 必须为空: {run3:?}");
+    assert!(
+        run3.stderr.contains("创建 bundle 目录"),
+        "必须说清是创建 bundle 目录失败: {run3:?}"
+    );
+    assert!(
+        run3.stderr.contains("Not a directory (os error 20)"),
+        "必须带上精确的系统原因: {run3:?}"
+    );
+    assert_eq!(
+        std::fs::read(&blocked).expect("挡路文件仍在"),
+        b"in the way",
+        "失败的导出绝不能碰挡路文件"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// 判据 B10（T-FIX-565；T-FIX-384 的跟进）: `--open` + `--import-audio` + `--save-as`
@@ -1436,21 +2750,75 @@ fn import_audio_save_as_round_trips_asset_through_the_real_binary() {
 #[cfg(feature = "experimental-logic-export")]
 #[test]
 fn export_logic_loss_table_names_the_donor_timbres_and_the_device_chain_gap() {
-    // 新 UI 重构: 旧组件树的视觉/交互契约不再成立; 核对同一条宿主接线的声明与注册。
-    let aether_app = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/app.slint"),
-    )
-    .expect("读 app.slint");
-    let aether_host = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
-    )
-    .expect("读 host.rs");
-    assert!(
-        aether_app.contains("callback accept-ai-proposal("),
-        "新 UI 契约面必须声明 callback accept-ai-proposal("
+    use yeban_render::logic::LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES;
+    let dir = scratch_dir("export-logic-losses");
+    let source = write_real_container(&dir, "song.yeban");
+    let target = dir.join("out.logicx");
+    let run = invoke(&[
+        "--open",
+        &source.display().to_string(),
+        "--export-logic",
+        &target.display().to_string(),
+    ]);
+    assert_eq!(run.code, 0, "--export-logic 必须是退出码 0: {run:?}");
+
+    // 供体音色：第一条 loss 行必须点名三条轨各自的音色。
+    let scope = run
+        .stdout
+        .lines()
+        .find(|line| line.contains("Studio Grand"))
+        .expect("损失表必须点名供体音色");
+    assert_eq!(
+        scope.matches("Studio Grand").count(),
+        2,
+        "恰好两条轨是 Studio Grand"
     );
     assert!(
-        aether_host.contains("on_accept_ai_proposal"),
-        "宿主接线层必须注册 on_accept_ai_proposal"
+        scope.contains("Epic Cloud Formation"),
+        "第 3 轨必须是 Epic Cloud Formation"
     );
+    // 设备链缺口：同一行必须明说用户工程的设备链一个都不会出现在 .logicx 里。
+    assert!(
+        scope.contains("用户工程里挂的 EQ / 混响 / 采样器一个都不会出现在 `.logicx` 里"),
+        "必须明说设备链缺口（不是含糊的部分丢失）"
+    );
+
+    // chunk 家族：登记表条数 = ProjectData 里的实际落盘条数（每个家族都验）；
+    // 打印行则受 20 行上限约束：3 条范围说明 + 17 个家族 = 20 行，第 18 个家族
+    // （GenM）是第 21 条损失，落在打印上限之外 —— 它在完整表里（MetaData.plist），
+    // 不在 stdout，截断行须明说（B15 已断 "and 26 more"）。
+    let project_data =
+        std::fs::read(target.join("Alternatives/000/ProjectData")).expect("读 ProjectData");
+    for (index, (tag, expected)) in LOGIC_OWNER_DONOR_3T_CHUNK_FAMILIES.iter().enumerate() {
+        let landed: Vec<u8> = tag.as_bytes().iter().rev().copied().collect();
+        let landed_str = String::from_utf8(landed.clone()).expect("落盘 tag 是 ASCII");
+        let actual = project_data
+            .windows(4)
+            .filter(|window| *window == landed.as_slice())
+            .count();
+        assert_eq!(
+            actual, *expected,
+            "chunk 家族 {tag}（落盘字节 {landed_str}）：ProjectData 里实际 {actual} 条，登记表说 {expected} 条"
+        );
+        let sentence = format!(
+            "chunk 家族 `{tag}`（落盘字节 `{landed_str}`）由供体**原样携带** {expected} 条"
+        );
+        if index < 17 {
+            assert!(
+                run.stdout.contains(&sentence),
+                "损失表必须逐条印出 chunk 家族条数: {sentence}"
+            );
+        } else {
+            assert_eq!(*tag, "GenM", "第 18 个家族必须是 GenM");
+            assert!(
+                !run.stdout.contains(&sentence),
+                "GenM 是第 21 条损失，须在 20 行打印上限之外"
+            );
+            assert!(
+                run.stdout.contains("logic-losses-truncated:"),
+                "被截断的家族必须有截断行作证"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
