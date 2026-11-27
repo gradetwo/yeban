@@ -14825,6 +14825,109 @@ fn clipping_warning_line(clipped_samples: u64, suggested_trim_db: f32) -> String
     )
 }
 
+/// SFZ 解码读数的**汇总计数**（只从 `WavExportReport.sfz_decoded` 抄数，
+/// ⛔ 不在这里重新解码，也不另造一套 SFZ 口径）。
+///
+/// 为什么单独汇总：GUI 回执只有一行、每个字段都要短；逐份 `SfzDecodeReport`
+/// 的完整明细仍由 CLI 的 `sfz(...)` 段与记法行承担。这里保留足以判断
+/// “缺样本 / 静音 / 未加载 / 不可读”的计数，以及 `unmatched_note_count`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SfzExportCounts {
+    tracks: usize,
+    regions: usize,
+    decoded_samples: usize,
+    silent_regions: usize,
+    builtin_silent_regions: usize,
+    missing_samples: usize,
+    not_loaded_samples: usize,
+    unreadable_samples: usize,
+    unreadable_not_found: usize,
+    unreadable_unsupported: usize,
+    unreadable_other: usize,
+    unmatched_notes: usize,
+}
+
+fn sfz_export_counts(decoded: &[(EntityId, crate::sfz_load::SfzDecodeReport)]) -> SfzExportCounts {
+    let mut counts = SfzExportCounts::default();
+    for (_, report) in decoded {
+        counts.tracks += 1;
+        counts.regions += report.regions;
+        counts.decoded_samples += report.decoded_samples;
+        counts.silent_regions += report.silent_region_count;
+        counts.builtin_silent_regions += report.builtin_silent_region_count;
+        counts.missing_samples += report.missing_sample_paths.len();
+        counts.not_loaded_samples += report.not_loaded_sample_paths.len();
+        counts.unreadable_samples += report.unreadable_samples.len();
+        counts.unreadable_not_found += report.unreadable_not_found_count();
+        counts.unreadable_unsupported += report.unreadable_unsupported_format_count();
+        counts.unreadable_other += report.unreadable_other_count();
+        counts.unmatched_notes += report.unmatched_note_count;
+    }
+    counts
+}
+
+/// GUI 导出回执里的 SFZ 字段：**只在走了模型 SFZ 链条时追加**。
+///
+/// 空 `sfz_decoded`（没有 `TrackV3.sampler` / `--sfz` 旁路 / 最小音源）⇒ 返回空
+/// ⇒ 干净回执逐字不变（与 CLI 的 `sfz(...)` 段仅在有内容时出现同一口径）。
+/// 字段必须放在 `clipping_note` **之前**：后者是既有契约的最后一条（`#229`/`#230`）。
+fn sfz_export_receipt_fields(counts: SfzExportCounts) -> Vec<String> {
+    if counts.tracks == 0 {
+        return Vec::new();
+    }
+    vec![
+        format!("sfz_tracks={}", counts.tracks),
+        format!("sfz_regions={}", counts.regions),
+        format!("sfz_samples={}", counts.decoded_samples),
+        format!("sfz_silent_regions={}", counts.silent_regions),
+        format!(
+            "sfz_builtin_silent_regions={}",
+            counts.builtin_silent_regions
+        ),
+        format!("sfz_missing={}", counts.missing_samples),
+        format!("sfz_not_loaded={}", counts.not_loaded_samples),
+        format!("sfz_unreadable={}", counts.unreadable_samples),
+        format!("sfz_unreadable_not_found={}", counts.unreadable_not_found),
+        format!(
+            "sfz_unreadable_unsupported={}",
+            counts.unreadable_unsupported
+        ),
+        format!("sfz_unreadable_other={}", counts.unreadable_other),
+        format!("sfz_unmatched_notes={}", counts.unmatched_notes),
+    ]
+}
+
+/// 缺样本/静音区域的**可见警告**（`None` = 不需要显示）。
+///
+/// 与 `audio_clips_skipped` 的警告同形：只在非零时追加，绝不把“导出完成”
+/// 当成没事发生。`builtin_silent_regions` 是 `sample=*silence` 的显式选择，
+/// 从“意外静音”中扣除；但静音区域总数仍如实进 `sfz_silent_regions` 字段。
+fn sfz_export_warning(counts: SfzExportCounts) -> Option<String> {
+    if counts.tracks == 0 {
+        return None;
+    }
+    let missing_or_unreadable =
+        counts.missing_samples + counts.not_loaded_samples + counts.unreadable_samples;
+    let unexpected_silent = counts
+        .silent_regions
+        .saturating_sub(counts.builtin_silent_regions);
+    if missing_or_unreadable == 0 && unexpected_silent == 0 {
+        return None;
+    }
+    let mut details = Vec::new();
+    if missing_or_unreadable != 0 {
+        details.push(format!("{missing_or_unreadable} 个样本缺失/不可读"));
+    }
+    if unexpected_silent != 0 {
+        details.push(format!("{unexpected_silent} 个区域静音"));
+    }
+    Some(format!(
+        "⚠ SFZ 解码缺样本：{}（{} 份解码报告）",
+        details.join("，"),
+        counts.tracks
+    ))
+}
+
 /// 导出成功后的**实测行**：真峰值 / 积分响度 / 响度范围。
 ///
 /// 三个值都来自 `WavExportReport`（`measure_master` 一次算出的同一批读数）；
@@ -19911,6 +20014,7 @@ pub fn wire_module_actions_with_shared(
                             // ⭐ `T-FIX-57`：落地路径先单独取一份 —— 成功提示条要
                             // 把它**整条**写给用户看（见 `report_export_success`）。
                             let landed = report.path.display().to_string();
+                            let sfz_counts = sfz_export_counts(&report.sfz_decoded);
                             let mut fields = vec![
                                 "outcome=ok".to_owned(),
                                 format!("path={landed}"),
@@ -19925,6 +20029,11 @@ pub fn wire_module_actions_with_shared(
                                 // structured receipt (CLI already reports the same numbers).
                                 format!("audio_clips_rendered={}", report.audio_clips_rendered),
                                 format!("audio_clips_skipped={}", report.audio_clips_skipped.len()),
+                                // ⭐ T-FIX-503：模型 SFZ 链条的解码读数必须进 GUI 回执。
+                                // CLI 的 `sfz(...)` 段已在 cli.rs 打出同一份报告；GUI 之前
+                                // 只发“导出完成”，缺样本导致的静音区域完全不可见。这里
+                                // 只抄 `WavExportReport.sfz_decoded` 的计数，⛔ 不重新解码。
+                                // 放在 `clipping_note` 之前：后者仍是最后一条字段。
                                 // ⭐ `D-EX-1`：**峰值读数恒发**。`#229` 旧门是"只有削波才发"，于是
                                 // "贴轨但没削平"那一格永远看不见任何数（创作轮里我就把这格判错过一次：
                                 // 引擎自报 `headroomDb = 5.18e-07`，回执却什么都没有）。这四个数**早就算好了**
@@ -19961,6 +20070,8 @@ pub fn wire_module_actions_with_shared(
                                         .map_or_else(|| "null".to_owned(), |v| format!("{v:.2}"))
                                 ),
                             ];
+                            // SFZ 解码读数（只在 `sfz_decoded` 非空时追加）。
+                            fields.extend(sfz_export_receipt_fields(sfz_counts));
                             // ⭐ 任务单 `#229`：**削波时再多一条字段**，内容是 CLI 的同一条
                             // [`crate::export_wav::WavExportReport::clipping_note`]（`clippedSamples` /
                             // `suggestedTrimDb` / 最响的源都在里面）。⛔ 不削波时**这条不加**
@@ -20016,6 +20127,11 @@ pub fn wire_module_actions_with_shared(
                                     "⚠ 导出缺少音频素材：{} 个音频片段被跳过",
                                     report.audio_clips_skipped.len()
                                 ));
+                            }
+                            // T-FIX-503：缺样本/静音区域不是“导出完成”的静默附注。
+                            // 与上面 audio_clips_skipped 的警告同形（非零才追加）。
+                            if let Some(sfz_warning) = sfz_export_warning(sfz_counts) {
+                                warnings.push(sfz_warning);
                             }
                             let warning = warnings.join(" ");
                             let success_line = if report.render_empty {
@@ -30452,6 +30568,77 @@ mod tests {
             "坏图⛔ 不许进图像表"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T-FIX-503：GUI 导出回执必须把 `WavExportReport.sfz_decoded` 的缺样本/
+    /// 静音读数发出来，并在非零时产生与 `audio_clips_skipped` 同形的可见警告。
+    ///
+    /// 红对照：删掉 `sfz_export_receipt_fields` 里任一字段（尤其 `sfz_missing` /
+    /// `sfz_silent_regions`）或删掉 `sfz_export_warning` 的追加 ⇒ 本判据红。
+    #[test]
+    fn gui_export_receipt_names_sfz_missing_and_silent_regions() {
+        use crate::sfz_load::SfzDecodeReport;
+        use std::path::PathBuf;
+        use yeban_engine::sfz_instrument::NotationShiftSource;
+        use yeban_model::EntityId;
+
+        let track = EntityId::new();
+        let report = SfzDecodeReport {
+            path: PathBuf::from("kit.sfz"),
+            bytes: 128,
+            regions: 3,
+            referenced_sample_paths: vec!["kick.wav".to_owned(), "snare.wav".to_owned()],
+            decoded_samples: 1,
+            missing_sample_paths: vec!["kick.wav".to_owned()],
+            not_loaded_sample_paths: Vec::new(),
+            silent_region_count: 2,
+            builtin_silent_region_count: 0,
+            unreadable_samples: Vec::new(),
+            unreadable_sample_reasons: Vec::new(),
+            plan_bytes: 0,
+            notation: None,
+            notation_shift: 0,
+            notation_source: NotationShiftSource::None,
+            declared_shifts: Vec::new(),
+            key_range: None,
+            unmatched_note_count: 0,
+            unmatched_note_pitches: Vec::new(),
+        };
+        let counts = super::sfz_export_counts(&[(track, report)]);
+        let fields = super::sfz_export_receipt_fields(counts);
+        let receipt = super::module_receipt("export-wav", &fields);
+        assert!(
+            receipt.contains(":sfz_tracks=1"),
+            "SFZ 解码读数必须进回执: {receipt}"
+        );
+        assert!(
+            receipt.contains(":sfz_missing=1"),
+            "缺样本计数必须进回执（issue 明确点名 sfz_missing）: {receipt}"
+        );
+        assert!(
+            receipt.contains(":sfz_silent_regions=2"),
+            "静音区域计数必须进回执（issue 明确点名 sfz_silent_regions）: {receipt}"
+        );
+        assert!(
+            receipt.contains(":sfz_unreadable=0"),
+            "不可读计数也必须如实出现: {receipt}"
+        );
+        let warning =
+            super::sfz_export_warning(counts).expect("缺样本/静音区域 > 0 时必须产生可见警告");
+        assert!(warning.contains("SFZ"), "警告要点名 SFZ: {warning}");
+        assert!(
+            warning.contains("1 个样本缺失"),
+            "警告要带缺样本数: {warning}"
+        );
+        assert!(
+            warning.contains("2 个区域静音"),
+            "警告要带静音区域数: {warning}"
+        );
+
+        // 空 `sfz_decoded` ⇒ 字段与警告都为空，干净回执逐字不变。
+        let empty = super::sfz_export_counts(&[]);
+        assert!(super::sfz_export_receipt_fields(empty).is_empty());
+        assert!(super::sfz_export_warning(empty).is_none());
     }
 }
 
