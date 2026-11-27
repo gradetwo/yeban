@@ -511,7 +511,7 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
         host::ProductionLoop::without_engine()
     });
     // ⭐ T-FIX-422：启动装配的真实工程路径（与上面 `project_dir` 同一个来源）。
-    if let Some(path) = project_path {
+    if let Some(path) = project_path.clone() {
         engine
             .engine_handle()
             .borrow_mut()
@@ -1290,6 +1290,10 @@ fn run_gui(options: &Options) -> Result<Vec<String>, cli::CliError> {
     // 之后装配：它安装保存点初值 + 三个三选 callback + 窗口 close 拦截。
     // 保存点初值 = 此刻的 head（从文件打开的工程即"已保存"态），启动瞬间不弹框。
     host::wire_quit_guard(&ui, &undo_port);
+
+    // ⭐ T-FIX-796 / ARCH-SYS-001：定时草稿 + 启动期崩溃恢复提示 + 残留临时文件清理。
+    // 放在退出保护之后：恢复出来的会话会以当时 head 重设保存点，不误报脏。
+    host::wire_autosave_and_recovery(&ui, &undo_port, project_path, 0);
 
     // 新手引导首次启动自动打开（line/onboarding-help）：只在真实装配里判，
     // 无头 / 测试装配不跑这一句；落盘状态说弹过或走完过就不再弹。

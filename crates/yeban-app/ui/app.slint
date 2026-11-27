@@ -350,6 +350,9 @@ export component MainWindow inherits Window {
     callback new-project-save-and-continue();
     callback new-project-discard-and-continue();
     callback new-project-cancel();
+    // T-FIX-796：恢复对话框「恢复第 n 份草稿」/「放弃并隔离」。
+    callback recovery-accept(int);
+    callback recovery-discard(int);
     callback normalize-track-heights();
     callback monitor-switch(string);
     callback device-param-changed(string, string, float);
@@ -854,6 +857,11 @@ export component MainWindow inherits Window {
     // T-FIX-927：新建保护三选框（有未保存改动时拦「新建空白工程」）。
     // 唯一写者是宿主（host::wire_new_project）：dirty 置 true，三选后复位 false。
     in-out property <bool> new-project-confirm-open: false;
+    // T-FIX-796：崩溃恢复提示（宿主 wire_recovery 唯一写者）。
+    in-out property <bool> recovery-prompt-open: false;
+    in-out property <string> recovery-message: "";
+    in-out property <[string]> recovery-paths: [];
+    in-out property <[string]> recovery-notices: [];
     in-out property <[string]> scene-color-labels: [];
     in-out property <[color]> scene-colors: [];
     in-out property <string> scene-launch-status: "";
@@ -3126,6 +3134,84 @@ export component MainWindow inherits Window {
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 的原因逐条列在 `recovery-notices` 里（默认不静默）。
+        if root.recovery-prompt-open : Rectangle {
+            z: 9900;
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+            background: rgba(0, 0, 0, 80%);
+            Rectangle {
+                x: (parent.width - 520px) / 2;
+                y: (parent.height - 320px) / 2;
+                width: 520px;
+                height: 320px;
+                background: Tokens.bg-panel;
+                border-radius: Tokens.radius-md;
+                border-width: 1px;
+                border-color: Tokens.gold-deep;
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text {
+                        text: @tr("检测到未保存的自动保存草稿");
+                        color: Tokens.ink-0;
+                        font-size: Tokens.font-size-lg;
+                        font-weight: 600;
+                    }
+                    Text {
+                        text: root.recovery-message;
+                        color: Tokens.ink-1;
+                        font-size: Tokens.font-size-sm;
+                        wrap: word-wrap;
+                    }
+                    for notice in root.recovery-notices : Text {
+                        text: notice;
+                        color: Tokens.warn-amber;
+                        font-size: Tokens.font-size-xs;
+                        wrap: word-wrap;
+                    }
+                    for draft[idx] in root.recovery-paths : Rectangle {
+                        min-height: 38px;
+                        background: Tokens.gold-deep;
+                        border-radius: Tokens.radius-sm;
+                        TouchArea {
+                            accessible-role: button;
+                            accessible-label: @tr("恢复草稿");
+                            accessible-action-default => { root.recovery-accept(idx); }
+                            clicked => { root.recovery-accept(idx); }
+                        }
+                        Text {
+                            text: @tr("恢复草稿") + " " + draft;
+                            color: Tokens.ink-0;
+                            font-size: Tokens.font-size-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        min-height: 38px;
+                        background: Tokens.bg-void;
+                        border-radius: Tokens.radius-sm;
+                        TouchArea {
+                            accessible-role: button;
+                            accessible-label: @tr("放弃草稿并隔离");
+                            accessible-action-default => { root.recovery-discard(-1); }
+                            clicked => { root.recovery-discard(-1); }
+                        }
+                        Text {
+                            text: @tr("放弃草稿并隔离");
+                            color: Tokens.ink-1;
+                            font-size: Tokens.font-size-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
                         }
                     }
                 }

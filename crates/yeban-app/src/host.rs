@@ -2094,6 +2094,229 @@ pub fn wire_automation_lane_cycle_curve(ui: &MainWindow, port: &Rc<UndoPort>) {
 }
 
 // ===========================================================================
+/// T-FIX-796 / ARCH-SYS-001：自动保存草稿 + 崩溃恢复提示接线。
+///
+/// 纯逻辑（间隔/路径/扫描/分类/隔离）住在 [`crate::autosave`]，写盘复用
+/// [`crate::save`] 的原子落盘原语；草稿与正式工程扩展名不同，绝不覆盖正式文件。
+pub fn wire_autosave_and_recovery(
+    ui: &MainWindow,
+    port: &Rc<UndoPort>,
+    project_path: Option<std::path::PathBuf>,
+    quanta: u64,
+) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    thread_local! {
+        static AUTOSAVE_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+        static RECOVERY_PATHS: RefCell<Vec<std::path::PathBuf>> = const { RefCell::new(Vec::new()) };
+    }
+
+    let Some(project_path) = project_path else {
+        // 无活跃工程 ⇒ 没有自动保存落点；这是明确裁决并留痕，不静默。
+        let receipt = module_receipt(
+            "autosave",
+            &[
+                "outcome=skipped".to_owned(),
+                "reason=no-active-project".to_owned(),
+            ],
+        );
+        apply_module_receipt(ui, &receipt, true);
+        return;
+    };
+
+    // ---- 启动期扫描：完整草稿给恢复入口，残缺/临时文件显式告警并处置 ----
+    let dir = project_path.parent().unwrap_or(std::path::Path::new("."));
+    let report = crate::autosave::sweep(dir);
+    let mut notices: Vec<String> = Vec::new();
+    for corrupt in &report.corrupt_drafts {
+        match crate::autosave::quarantine(corrupt) {
+            Ok(target) => notices.push(format!(
+                "残缺草稿已隔离: {} → {}",
+                corrupt.display(),
+                target.display()
+            )),
+            Err(error) => notices.push(format!(
+                "残缺草稿隔离失败: {}（{error}）",
+                corrupt.display()
+            )),
+        }
+    }
+    for temp in &report.stale_temps {
+        match std::fs::remove_file(temp) {
+            Ok(()) => notices.push(format!("残留临时文件已清理: {}", temp.display())),
+            Err(error) => notices.push(format!(
+                "残留临时文件清理失败: {}（{error}）",
+                temp.display()
+            )),
+        }
+    }
+    let complete = report.complete_drafts.clone();
+    RECOVERY_PATHS.with(|slot| *slot.borrow_mut() = complete.clone());
+    ui.set_recovery_paths(slint::ModelRc::new(slint::VecModel::from(
+        complete
+            .iter()
+            .map(|path| slint::SharedString::from(path.display().to_string()))
+            .collect::<Vec<_>>(),
+    )));
+    ui.set_recovery_notices(slint::ModelRc::new(slint::VecModel::from(
+        notices
+            .iter()
+            .map(|notice| slint::SharedString::from(notice.as_str()))
+            .collect::<Vec<_>>(),
+    )));
+    ui.set_recovery_message(slint::SharedString::from(format!(
+        "工程 {} 旁发现 {} 份可恢复草稿；恢复后作为新会话打开，原正式工程不动。",
+        project_path.display(),
+        complete.len()
+    )));
+    ui.set_recovery_prompt_open(!complete.is_empty() || !notices.is_empty());
+
+    {
+        let weak = ui.as_weak();
+        let port = Rc::clone(port);
+        ui.on_recovery_accept(move |index| {
+            let Some(ui) = weak.upgrade() else { return };
+            let path = RECOVERY_PATHS.with(|slot| {
+                let slot = slot.borrow();
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|i| slot.get(i).cloned())
+            });
+            let Some(path) = path else {
+                let receipt = module_receipt(
+                    "autosave-recovery",
+                    &["outcome=error".to_owned(), "reason=bad-index".to_owned()],
+                );
+                apply_module_receipt(&ui, &receipt, false);
+                return;
+            };
+            let runtime = PortOpenProject {
+                port: Rc::clone(&port),
+                production: None,
+                quanta,
+                after: Rc::new(|_, _, _| Ok(())),
+            };
+            let result = runtime.open_runtime(&ui, &path);
+            let (receipt, ok) = match &result {
+                Ok(()) => (
+                    module_receipt(
+                        "autosave-recovery",
+                        &[
+                            "outcome=recovered".to_owned(),
+                            format!("path={}", path.display()),
+                        ],
+                    ),
+                    true,
+                ),
+                Err(message) => (
+                    module_receipt(
+                        "autosave-recovery",
+                        &[
+                            "outcome=error".to_owned(),
+                            format!("path={}", path.display()),
+                            format!("message={message}"),
+                        ],
+                    ),
+                    false,
+                ),
+            };
+            if ok {
+                ui.set_recovery_prompt_open(false);
+                // 恢复出来的内容以当前 head 为保存点：不把恢复误判成未保存改动。
+                if port.try_project().is_some() {
+                    crate::dirty_guard::mark_saved(port.display().head);
+                }
+            }
+            apply_module_receipt(&ui, &receipt, ok);
+        });
+    }
+
+    {
+        let weak = ui.as_weak();
+        ui.on_recovery_discard(move |_| {
+            let Some(ui) = weak.upgrade() else { return };
+            let paths = RECOVERY_PATHS.with(|slot| slot.borrow().clone());
+            for path in &paths {
+                match crate::autosave::quarantine(path) {
+                    Ok(target) => {
+                        let receipt = module_receipt(
+                            "autosave-recovery",
+                            &[
+                                "outcome=discarded".to_owned(),
+                                format!("to={}", target.display()),
+                            ],
+                        );
+                        apply_module_receipt(&ui, &receipt, true);
+                    }
+                    Err(error) => {
+                        let receipt = module_receipt(
+                            "autosave-recovery",
+                            &[
+                                "outcome=error".to_owned(),
+                                format!("path={}", path.display()),
+                                format!("message={error}"),
+                            ],
+                        );
+                        apply_module_receipt(&ui, &receipt, false);
+                    }
+                }
+            }
+            RECOVERY_PATHS.with(|slot| slot.borrow_mut().clear());
+            ui.set_recovery_prompt_open(false);
+        });
+    }
+
+    // ---- 后台定时草稿写出（UI 线程定时器，不阻塞实时音频线程）----
+    let weak = ui.as_weak();
+    let port = Rc::clone(port);
+    let draft_path = crate::autosave::draft_path(&project_path);
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(crate::autosave::interval_secs()),
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let Some(project) = port.try_project() else {
+                return;
+            };
+            let archive = yeban_model::container::ProjectArchive {
+                project: project.clone(),
+                history_dag: Vec::new(),
+                proposals: None,
+                assets: Vec::new(),
+                embedded_presets: Vec::new(),
+                load_notes: Vec::new(),
+            };
+            match crate::save::save_archive_file(&archive, &draft_path) {
+                Ok(report) => {
+                    let receipt = module_receipt(
+                        "autosave",
+                        &[
+                            "outcome=saved".to_owned(),
+                            format!("path={}", report.path.display()),
+                            format!("bytes={}", report.bytes),
+                        ],
+                    );
+                    apply_module_receipt(&ui, &receipt, true);
+                }
+                Err(error) => {
+                    let receipt = module_receipt(
+                        "autosave",
+                        &["outcome=error".to_owned(), format!("message={error:?}")],
+                    );
+                    apply_module_receipt(&ui, &receipt, false);
+                    ui.set_module_status(slint::SharedString::from(format!(
+                        "自动保存草稿失败: {error:?}"
+                    )));
+                    ui.set_module_status_succeeded(false);
+                }
+            }
+        },
+    );
+    AUTOSAVE_TIMER.with(|slot| *slot.borrow_mut() = Some(timer));
+}
+
 // 混音台（控制台 Tab 2）的**写入面**：推子 / 声相 / 静音 / 独奏
 // ===========================================================================
 //
