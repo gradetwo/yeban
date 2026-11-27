@@ -13,13 +13,30 @@ use std::path::{Path, PathBuf};
 
 use yeban_model::ids::EntityId;
 use yeban_model::project::{
-    AutomationTarget, DeviceDefinition, DeviceKind, MacroParameter, ParameterValue,
+    AutomationTarget, ClipContent, DeviceDefinition, DeviceKind, MacroParameter, ParameterValue,
 };
 use yeban_tui::app::{App, AutomationKind};
 
 /// 夹具：演示工程 + 一条带两个参数的设备 + 一个宏；返回 `(app, 轨道, 一条真实路由边)`。
 fn fixture() -> (App, EntityId, EntityId) {
     let mut project = yeban_model::samples::demo_project();
+    // T-FIX-799：本夹具走 `with_project`（空归档），演示工程的音频片段引用
+    // 没有对应资产字节 ⇒ 保存会被资产门拒绝。自动化判据不需要音频，先摘掉
+    // 音频片段与它的摆放，避免一个与自动化无关的资产门把套件染红。
+    let audio_ids: Vec<EntityId> = project
+        .clip_pool
+        .iter()
+        .filter(|(_, clip)| matches!(clip.content, ClipContent::Audio { .. }))
+        .map(|(id, _)| *id)
+        .collect();
+    for id in &audio_ids {
+        project.clip_pool.remove(id);
+    }
+    for track in project.tracks.values_mut() {
+        track
+            .clips
+            .retain(|_, placement| !audio_ids.contains(&placement.clip_id));
+    }
     let track_id = *project.tracks.keys().next().expect("演示工程至少一轨");
     let edge_id = *project
         .routing_graph
@@ -360,7 +377,10 @@ fn six_lanes_survive_a_save_and_reopen() {
         let value = mid_value(&app);
         app.set_automation_value(value);
         // 第二个点：换一个小节，验证多点排序与身份都随归档往返。
+        // `set_automation_value` 在已有选中点时按**选中点**的 tick 写；换小节后
+        // 先用 `a` 在新光标处落点，再改值，否则会更新第一个点而不是新增第二个。
         app.cursor_bar += 2;
+        app.add_automation_point_at_cursor();
         app.set_automation_value(
             value
                 + app

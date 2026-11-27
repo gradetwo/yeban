@@ -87,13 +87,14 @@ Vi 层。
 | 另存为 | `Ctrl+Shift+S` | 同键 → 提示用 `:w <path>` | 形态适配 |
 | 打开工程 | `Ctrl+O` | 同键 → 提示用 `:open <path>` | 形态适配 |
 | 撤销 / 重做 | `Ctrl+Z` / `Ctrl+Shift+Z` | 同键；另加 Vi `u`（可带计数）/ `Ctrl+R`（二期 K3 改判） | 已接（走 `UndoPort`，与 GUI 同一撤销栈） |
-| 删除选区 | `Delete` / `Backspace` | 同键 → 片段网格焦点下删光标处片段摆放 | 已接（摆放级，经撤销端口） |
+| 删除选区 | `Delete` / `Backspace` | 同键 → 轨道焦点下删选中轨；片段网格焦点下删光标处片段摆放；主总线轨道拒绝 | 已接（T-FIX-799；删轨走 `bridge::track_delete_ops_on`，与 GUI `track-delete` 同源） |
 | 片段平移 | （GUI 鼠标拖动，无键） | 片段网格焦点下 `H` / `L` 按小节平移（计数 = 小节数） | TUI 新增（经撤销端口） |
 | 播放头定位 | （GUI 点标尺） | `:seek <小节号（1 起）>` | TUI 命令 |
 | 工程速度 | （GUI 走带区 BPM 框） | `:tempo <BPM>` | TUI 命令（经撤销端口） |
 | 强制保存 | `ui/force_save`（GUI 保存按钮） | `:w!`（无路径响亮报错；有路径原子落盘） | 已接（T-FIX-81；与 `save_to` 同一落点） |
 | 重载音频引擎 | `ui/reload_engine`（GUI 控制面动作） | `:reload` / `:reload-engine` | 已接（T-FIX-81；`EngineHost::reload`，回执带代数/版本/轨数） |
 | 新建轨道 | （GUI 轨头「+」） | `:track [midi|audio|aux]` | TUI 命令（经撤销端口，建完自动选中） |
+| 删除轨道 | 轨头/菜单 `track-delete` | 轨道焦点 `Delete` / `Backspace`；或 `:track delete` | 已接（T-FIX-799；与 GUI 同一 `bridge::track_delete_ops_on`，主总线响亮拒绝，整批一步撤销） |
 | 新建片段 | （GUI 网格双击空位） | `:clip`（选中轨 + 小节光标处，4 小节） | TUI 命令（经撤销端口） |
 | 选中轨静音 | `M` | `M`（同） | 已接 |
 | 选中轨独奏 | `S` | `S`（同） | 已接 |

@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use yeban_model::ids::EntityId;
 use yeban_model::project::TrackKind;
 use yeban_tui::app::App;
+use yeban_tui::keymap::Pane;
 
 fn app() -> App {
     App::with_demo().expect("demo app")
@@ -121,4 +122,79 @@ fn track_command_rejects_unknown_kind_with_usage() {
         "未知类型必须报用法：{last}"
     );
     assert_eq!(app.track_ids.len(), before, "⛔ 不许悄悄建轨");
+}
+
+/// T-FIX-799 红对照：轨道焦点 Delete 必须删选中内容轨，且一步可撤销。
+#[test]
+fn delete_on_track_focus_removes_selected_track_and_is_undoable() {
+    let mut app = app();
+    assert_eq!(app.focus, Pane::Tracks, "夹具必须从轨道焦点开始");
+    let before = app.track_ids.len();
+    let track_id = app.track_ids[0];
+    let track_name = app.project.tracks[&track_id].name.clone();
+
+    app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+
+    assert!(
+        !app.project.tracks.contains_key(&track_id),
+        "轨道焦点 Delete 必须删掉选中轨 `{track_name}`"
+    );
+    assert_eq!(app.track_ids.len(), before - 1, "轨道列表必须同步少一条");
+    let last = app.log.last().cloned().unwrap_or_default();
+    assert!(
+        last.contains("删除轨道") && last.contains(&track_name),
+        "删轨回执必须点名删了哪条轨：{last}"
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert!(
+        app.project.tracks.contains_key(&track_id),
+        "Ctrl+Z 必须恢复刚删的轨道（一步撤销）"
+    );
+}
+
+/// T-FIX-799 红对照：主总线不可删，拒绝理由必须逐字响亮。
+#[test]
+fn delete_on_master_track_is_loudly_rejected() {
+    let mut app = app();
+    let master = app.project.master_bus_track_id;
+    let master_index = app
+        .track_ids
+        .iter()
+        .position(|id| *id == master)
+        .expect("demo 的 track_ids 必须包含主总线");
+    app.selected = master_index;
+    let before = app.track_ids.len();
+
+    app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+
+    assert_eq!(app.track_ids.len(), before, "主总线绝不能被删掉");
+    assert!(app.project.tracks.contains_key(&master), "主总线仍在工程里");
+    let last = app.log.last().cloned().unwrap_or_default();
+    assert!(
+        last.contains("主总线（Master）不可删除"),
+        "拒绝理由必须逐字响亮：{last}"
+    );
+}
+
+/// T-FIX-799：`:track delete` 与轨道焦点 Delete 同一落点（删选中内容轨）。
+#[test]
+fn track_delete_command_removes_the_selected_track() {
+    let mut app = app();
+    let before = app.track_ids.len();
+    let track_id = app.track_ids[0];
+    let track_name = app.project.tracks[&track_id].name.clone();
+
+    app.execute_command("track delete");
+
+    assert!(
+        !app.project.tracks.contains_key(&track_id),
+        "`:track delete` 必须删掉选中轨 `{track_name}`"
+    );
+    assert_eq!(app.track_ids.len(), before - 1, "轨道列表必须同步少一条");
+    let last = app.log.last().cloned().unwrap_or_default();
+    assert!(
+        last.contains("已删除轨道") && last.contains(&track_name),
+        "命令回执必须点名删了哪条轨：{last}"
+    );
 }

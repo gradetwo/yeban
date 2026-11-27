@@ -1245,6 +1245,30 @@ impl App {
         }
     }
 
+    /// 删除选中轨（轨道焦点下 GUI `Delete`/`Backspace` 与 `:track delete` 的共同落点）。
+    ///
+    /// 配方与 GUI 的 `track-delete` 回调同源：`bridge::track_delete_ops_on`
+    /// 先断开所有引用该轨的边、再取走路由节点、最后取走音轨，整批一步撤销。
+    /// 主总线由 bridge 逐字拒绝（「主总线（Master）不可删除」），这里照原样回执。
+    pub fn delete_selected_track(&mut self) {
+        let Some(track_id) = self.selected_track_id() else {
+            self.log_line(format!(
+                "删除轨道被拒绝：{}",
+                bridge::TRACK_DELETE_NO_TRACK_REASON
+            ));
+            return;
+        };
+        let Some(track) = self.project.tracks.get(&track_id).cloned() else {
+            self.log_line("删除轨道被拒绝：选中的轨已不在工程里，先重新选一条轨".to_owned());
+            return;
+        };
+        let name = track.name.clone();
+        match bridge::track_delete_ops_on(&self.project, Some(&track)) {
+            Ok(ops) => self.commit_edit("tui: delete track", ops, &format!("已删除轨道 `{name}`")),
+            Err(reason) => self.log_line(format!("删除轨道被拒绝：{reason}")),
+        }
+    }
+
     /// 删除光标处片段（片段网格焦点下 GUI `Delete`/`Backspace` 的落点）。
     /// 走 `Op::RemoveClipPlacement`（只删摆放，片段池条目不动），可撤销。
     pub fn delete_clip_at_cursor(&mut self) {
@@ -3479,15 +3503,15 @@ impl App {
                     Some(ListView::Notes { .. }) => self.delete_selected_note(),
                     Some(ListView::Pool { .. }) => self.delete_selected_pool_entry(),
                     Some(ListView::Automation { .. }) => self.remove_automation_point_at_cursor(),
-                    None => {
-                        if self.focus == Pane::Grid {
-                            self.delete_clip_at_cursor();
-                        } else {
+                    None => match self.focus {
+                        Pane::Grid => self.delete_clip_at_cursor(),
+                        Pane::Tracks => self.delete_selected_track(),
+                        Pane::Inspector => {
                             self.log_line(
-                                "删除选区只在片段网格焦点下接入（Tab 切焦点）".to_owned(),
+                                "删除轨道/片段需先 Tab 到轨道或片段焦点（当前是检查器）".to_owned(),
                             );
                         }
-                    }
+                    },
                 }
             }
             other => {
@@ -3955,8 +3979,13 @@ impl App {
                 other => self.log_line(format!("用法：:device [on|off|status]（收到 `{other}`）")),
             },
             "track" => {
-                // :track [midi|audio|aux] —— 新建一条轨并选中它。
-                // 配方与 GUI 新建轨同源（`bridge::track_create_ops`），经撤销端口提交。
+                // :track [midi|audio|aux|delete] —— 新建一条轨并选中它，或删除选中轨。
+                // 新建配方与 GUI 新建轨同源（`bridge::track_create_ops`）；
+                // 删除配方与 GUI `track-delete` 同源（`bridge::track_delete_ops_on`）。
+                if rest == "delete" {
+                    self.delete_selected_track();
+                    return;
+                }
                 let parsed = match rest {
                     "midi" => Some((NewTrackKind::Midi, "MIDI")),
                     "audio" => Some((NewTrackKind::Audio, "音频")),
@@ -3966,9 +3995,9 @@ impl App {
                 match parsed {
                     None => {
                         let usage = if rest.is_empty() {
-                            "用法：:track [midi|audio|aux]".to_owned()
+                            "用法：:track [midi|audio|aux|delete]".to_owned()
                         } else {
-                            format!("用法：:track [midi|audio|aux]（收到 `{rest}`）")
+                            format!("用法：:track [midi|audio|aux|delete]（收到 `{rest}`）")
                         };
                         self.log_line(usage);
                     }
