@@ -225,7 +225,7 @@ $ unzip -l /tmp/demo.yeban                          # 写出来的是**标准 ZI
 | ④ 32 / B4 | 截断容器 / 空文件 / 垃圾 / 随机字节 / 缺失文件 / **目录** | 退出码 `3`；stderr 带**精确**原因（容器裁决或"不是 `.yeban` 容器"）；stdout 为空；`code != 101`（不是 panic）；**绝不**退化成空工程 |
 | ⑤ 33 / B5 | `--save-as` 写出的文件能被 `open_project_file` 读回 | 工程逐字段相等；**归档**（`history.dag` + 资产池）逐字段相等；打印 `bytes=` == 实际落盘字节 |
 | ⑥ 34 / B9 | 只读目录 ⇒ 非零退出 + 原文件未被破坏 | 退出码 `4`；旧文件字节**一字未改**；无临时文件残留（注入 2 证明这条真的能区分"原子替换"与"就地覆盖"） |
-| ⑦ 35 / B5 | 两次 `--save-as` 的确定性 | 两次文件字节 `==`；两次打印的 `bytes=` 相同；两次都用了临时文件（`temp=` 里的 ULID 不同 —— 它是"真的建了临时文件"的痕迹） |
+| ⑦ 35 / B5 | 两次 `--save-as` 的确定性 | **round-trip 路径**（`--open` → `--save-as`，B5）：两次文件字节 `==`；两次打印的 `bytes=` 相同；**样本路径**（无 `--open` 的 `--save-as`，见 `save_as_sample_is_deterministic_except_created_at`）：两次打印的 `bytes=` 相同，文件字节除 `project.json` 的 `metadata.created_at_unix_ms`（13 位墙钟毫秒，#215 要求真实创建时间）外全部 `==`；两次都用了临时文件（`temp=` 里的 ULID 不同 —— 它是"真的建了临时文件"的痕迹） |
 | ⑧ 36 / B7 | 未知开关 / 缺取值 / 重复 / 未知样本 | 退出码 `2` + stderr 带原因**和**完整用法提示（**不许**静默忽略） |
 | 37 / B6 | `--save-as` 无 `--open` ⇒ 演示工程**并明说** | `project-source: sample=default` + `未读任何文件` + `from=sample=default`；且**不**出现 `view-counts`（保存不需要投影） |
 | 38 / B8 | `--export-elements` 与 `--dump-elements` 同源 | 落盘行集合 == stdout 元素行；`bytes=` == 文件长度；导出失败 ⇒ 退出 `5` 且**不**写工程 |

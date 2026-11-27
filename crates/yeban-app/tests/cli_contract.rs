@@ -696,6 +696,8 @@ fn broken_inputs_exit_non_zero_without_panicking() {
 
 /// 判据 B5: `--open` + `--save-as` ⇒ 落盘文件能被公开入口读回，且**归档等价**；
 /// 两次保存的字节完全相同（确定性）。
+/// 本判据覆盖 round-trip 路径；样本路径（无 `--open`）见
+/// `save_as_sample_is_deterministic_except_created_at`。
 #[test]
 fn save_as_round_trips_and_is_deterministic_from_the_real_binary() {
     let dir = scratch_dir("save");
@@ -754,6 +756,115 @@ fn save_as_round_trips_and_is_deterministic_from_the_real_binary() {
     assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 判据 B5（样本路径补充）：无 `--open` 的两次 `--save-as`（内置样本）⇒
+/// 除 `project.json` 的 `metadata.created_at_unix_ms` 外字节完全相同。
+///
+/// 为什么不是字节 `==`：样本 `--save-as` 是**创建**一份新工程（#215），
+/// `load_project_with_clock` 在样本分支只取一次时钟，写的是真实墙钟
+/// （`crates/yeban-app/src/cli.rs` 的样本分支；B6 判据钉了 `created_at_unix_ms > 0`，
+/// 因为 BWF 起源日期需要它）。两次运行的墙钟不同 ⇒ `project.json` 里的这一字段不同，
+/// 其余内容（`history.dag`、资产池 blob、`project.json` 的其余字段）必须逐字节相同。
+/// 台账 `docs/ledger/app-cli-notes.md:216` 判据 ⑦ 的字节 `==` 只覆盖 round-trip 路径。
+#[test]
+fn save_as_sample_is_deterministic_except_created_at() {
+    let dir = scratch_dir("sample-determinism");
+    let first = dir.join("sample-a.yeban");
+    let second = dir.join("sample-b.yeban");
+
+    let mut printed_bytes = Vec::new();
+    for target in [&first, &second] {
+        let run = invoke(&["--save-as", target.to_str().expect("utf8")]);
+        assert_eq!(run.code, 0, "stderr={}", run.stderr);
+        let saved = line_with(&run.stdout, "saved:").expect("必须有 saved: 行");
+        let expected = std::fs::metadata(target).expect("文件在").len();
+        assert_eq!(
+            field(saved, "bytes").as_deref(),
+            Some(expected.to_string().as_str()),
+            "打印的字节数必须是实际落盘字节数: {saved}"
+        );
+        printed_bytes.push(field(saved, "bytes").expect("bytes="));
+    }
+    assert_eq!(printed_bytes[0], printed_bytes[1], "两次保存字节数必须相同");
+
+    // 逐条目比对容器：条目名/顺序相同；除 project.json 外逐字节相同；
+    // project.json 解析后除 created_at_unix_ms 外逐字段相同。
+    let (names_a, entries_a) = read_container_entries(&first);
+    let (names_b, entries_b) = read_container_entries(&second);
+    assert_eq!(names_a, names_b, "两次保存的容器条目名/顺序必须相同");
+    let mut stamps = Vec::new();
+    for name in &names_a {
+        if name == "project.json" {
+            let mut a: serde_json::Value =
+                serde_json::from_slice(&entries_a[name]).expect("project.json 必须是 JSON");
+            let mut b: serde_json::Value =
+                serde_json::from_slice(&entries_b[name]).expect("project.json 必须是 JSON");
+            let stamp = |v: &serde_json::Value| {
+                v.get("metadata")
+                    .and_then(|m| m.get("created_at_unix_ms"))
+                    .and_then(serde_json::Value::as_u64)
+            };
+            let stamp_a = stamp(&a);
+            let stamp_b = stamp(&b);
+            assert!(
+                stamp_a.is_some_and(|v| v > 0),
+                "第一次保存必须写真实创建时刻（实得 {stamp_a:?} ⇒ BWF 起源日期会退回 1970-01-01）"
+            );
+            assert!(
+                stamp_b.is_some_and(|v| v > 0),
+                "第二次保存必须写真实创建时刻（实得 {stamp_b:?} ⇒ BWF 起源日期会退回 1970-01-01）"
+            );
+            stamps.push((stamp_a.unwrap(), stamp_b.unwrap()));
+            for v in [&mut a, &mut b] {
+                if let Some(meta) = v
+                    .get_mut("metadata")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    meta.remove("created_at_unix_ms");
+                }
+            }
+            assert_eq!(a, b, "project.json 除 created_at_unix_ms 外必须逐字段相同");
+        } else {
+            assert_eq!(
+                entries_a[name], entries_b[name],
+                "条目 {name} 必须逐字节相同（history.dag / 资产池 blob 也不例外）"
+            );
+        }
+    }
+    // 两次的创建时刻都是 13 位墙钟毫秒（BWF 起源日期需要真实时间，见 B6）。
+    for (a, b) in stamps {
+        assert!(
+            (1_000_000_000_000..10_000_000_000_000).contains(&a),
+            "创建时刻必须是 13 位墙钟毫秒: {a}"
+        );
+        assert!(
+            (1_000_000_000_000..10_000_000_000_000).contains(&b),
+            "创建时刻必须是 13 位墙钟毫秒: {b}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 把 `.yeban` 容器按条目读成（条目名顺序，条目名 → 原始字节）。
+fn read_container_entries(
+    path: &Path,
+) -> (Vec<String>, std::collections::BTreeMap<String, Vec<u8>>) {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).expect("打开容器");
+    let mut archive = zip::ZipArchive::new(file).expect("容器必须是 zip");
+    let mut names = Vec::new();
+    let mut entries = std::collections::BTreeMap::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("条目在");
+        let name = entry.name().expect("条目名").into_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("读条目");
+        names.push(name.clone());
+        entries.insert(name, bytes);
+    }
+    (names, entries)
 }
 
 /// 判据 B6: `--save-as` 不给 `--open` ⇒ 保存演示工程，并且**在输出里明说**这一点。
