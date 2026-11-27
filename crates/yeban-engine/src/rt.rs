@@ -2294,10 +2294,16 @@ fn render_lane_track_source(
     // --- 音频片段：单声道素材双声道同值累加 ---
     if let Some(clips) = current.audio_clip_schedule(&track) {
         share.lane_scratch[..frames].fill(0.0);
-        crate::audio_clip::mix_into(clips, block_start_frame, &mut share.lane_scratch[..frames]);
+        share.lane_scratch_r[..frames].fill(0.0);
+        crate::audio_clip::mix_into(
+            clips,
+            block_start_frame,
+            &mut share.lane_scratch[..frames],
+            &mut share.lane_scratch_r[..frames],
+        );
         for frame in 0..frames {
             share.track_scratch[frame] += share.lane_scratch[frame];
-            share.track_scratch_r[frame] += share.lane_scratch[frame];
+            share.track_scratch_r[frame] += share.lane_scratch_r[frame];
         }
     }
 }
@@ -2586,7 +2592,13 @@ fn render_branch(
         // 共用同一套立体声下游（合取 `pair_track`）；`stereo_track` 本身的
         // 定义与覆盖度计数一位不动。
         let lane_active = running && share.lane_active_tracks.contains(&track);
-        let pair_track = stereo_track || lane_active;
+        // T-FIX-574：立体声片段的实时源也要走左右对，否则监听会折成单声道。
+        // 只读 `attach_pcm` 在控制线程算好的计数；仍**不**改 `stereo_track` 的判定。
+        let clip_stereo = running
+            && current
+                .audio_clip_schedule(&track)
+                .is_some_and(|schedule| schedule.has_stereo_pcm());
+        let pair_track = stereo_track || lane_active || clip_stereo;
 
         if lane_active {
             // ⭐ lane 化声源：分组渲染 → 组链 → 组声相 → 求和（余量最后），
@@ -2650,10 +2662,16 @@ fn render_branch(
             // 零 I/O、零超越函数** [MUST-GATE-001]（判据：`tests/rt_zero_alloc.rs` 的
             // 音频片段场景 ＋ `tests/audio_clip_render.rs`）。
             if let Some(clips) = current.audio_clip_schedule(&track) {
+                // `clip_stereo` ⇒ 声源已分左右：先把单声道 MIDI 基座复制到右路，
+                // 再让片段按自己的 L/R 累加。单声道片段仍同值写左右（逐位不变）。
+                if clip_stereo {
+                    share.track_scratch_r[..frames].copy_from_slice(&share.track_scratch[..frames]);
+                }
                 crate::audio_clip::mix_into(
                     clips,
                     block_start_frame,
                     &mut share.track_scratch[..frames],
+                    &mut share.track_scratch_r[..frames],
                 );
             }
         } else if synth.has_active_live_voices(track) {

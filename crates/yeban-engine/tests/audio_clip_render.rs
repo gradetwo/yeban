@@ -15,14 +15,14 @@
 //! | [`an_audio_clip_without_pcm_and_a_removed_clip_are_both_silent`] | **反向腿**：有摆放但没注入 PCM ⇒ 逐位静音；移除摆放 ⇒ 与它**指纹相同** |
 //! | [`the_play_cursor_is_derived_from_the_transport_position`] | 起点 tick ≠ 0：前 / 中 / 后三段读数 ⇒ 音频恰在**那一 tick**（＋母线限制器的 33 帧前瞻）起声、在摆放终点收声 |
 //! | [`a_short_asset_leaves_a_silent_tail`] | 素材比摆放短 ⇒ 硬切（留静音尾巴，⛔ 不越界读） |
-//! | [`stereo_assets_are_downmixed_and_mono_is_read_directly`] | 立体声 `(L+R)/2` 与单声道**逐位相同**；单声道直读 |
+//! | [`stereo_assets_keep_their_channels_and_mono_duplicates_them`] | 立体声左/右分路（L-only 右声道逐位 0、反相相关 −1）；单声道同值写左右 |
 //! | [`the_clip_gain_is_projected_into_the_sample_path`] | `gain_db = -6` ⇒ 峰值恰为 0 dB 臂的 `db_to_gain(-6)` 倍 |
 //! | [`pcm_injection_rejects_unsupported_shapes`] | 采样率不符 / 声道数 ≠ 1,2 / 半帧 ⇒ **拒绝**（⛔ 不静默） |
 //!
 //! # 口径（与离线路径的**唯一**差别，如实登记）
 //!
-//! 实时的逐轨暂存是**单声道、声相之前**，因此：① 立体声素材按 `(L+R)/2` 折单声道
-//! （离线是 `StereoToMono`，同式）；② 声相由**逐轨混音的后续一级**施加（与 MIDI 同径），
+//! 实时的逐轨暂存是**左右对、声相之前**（T-FIX-574），因此：① 立体声素材保留原始
+//! 左右声道，单声道素材同值写左右；② 声相由**逐轨混音的后续一级**施加（与 MIDI 同径），
 //! 因此同一个 −6 dB 片段在两条路上可能差 1 ULP（两条路各算一次 `db_to_gain`）——
 //! 本单⛔ 不声称与离线**逐位**相同，只声称**同一个增益公式**与**同一个 tick → 帧换算**。
 //! ③ ⚠ `pan == 0` 时离线是 `(gain, gain)`、实时是引擎既有的等功率居中
@@ -393,35 +393,81 @@ fn a_short_asset_leaves_a_silent_tail() {
     assert_eq!(tail_nonzero, 0, "素材用完之后必须是静音尾巴（⛔ 越界读）");
 }
 
-/// A5：立体声 `(L+R)/2` 与单声道**逐位相同**（同一份折单声道口径）。
+/// A5（T-FIX-574）：立体声保留原始左右；单声道同值写左右。
+///
+/// 旧实现把 `(L + R) / 2` 写进同一条单声道暂存，再复制给左右 ⇒ L-only 素材的
+/// 右声道也会有值。本判据直接用产品渲染路径，因此旧实现会红在右声道断言上。
 #[test]
-fn stereo_assets_are_downmixed_and_mono_is_read_directly() {
+fn stereo_assets_keep_their_channels_and_mono_duplicates_them() {
     let fixture = audio_clip_project();
     let rate = fixture_rate(&fixture.project);
+
+    // 单声道 0.5：左右必须逐位同值（既有双声道同值路径）。
     let mono = {
         let snapshot = snapshot_with_pcm(&fixture.project, mono_pcm(0.5, 6_000, rate));
         render_snapshot(snapshot, 48)
     };
-    // 立体声：L = 0.25、R = 0.75 ⇒ (L + R) / 2 = 0.5，与上面那份单声道**同一个值**。
-    let interleaved: Vec<f32> = (0..6_000).flat_map(|_| [0.25f32, 0.75f32]).collect();
-    let samples: Arc<[f32]> = Arc::from(interleaved.into_boxed_slice());
-    let stereo = AudioPcm::new(samples, 2, rate).expect("立体声 PCM 必须合法");
-    let stereo = {
-        let snapshot = snapshot_with_pcm(&fixture.project, stereo);
-        render_snapshot(snapshot, 48)
-    };
-    println!(
-        "[#135/A5] 单声道指纹=0x{:016x}；立体声折单声道指纹=0x{:016x}；峰值 {} / {}",
-        mono.fingerprint(),
-        stereo.fingerprint(),
-        mono.peak(),
-        stereo.peak()
-    );
     assert!(mono.peak() > 0.0, "单声道臂必须出声");
-    assert_eq!(
+    println!(
+        "[T-FIX-574/mono] 指纹=0x{:016x} 峰值={:.6}",
         mono.fingerprint(),
-        stereo.fingerprint(),
-        "立体声 (L+R)/2 必须与等值单声道**逐位**相同"
+        mono.peak()
+    );
+    assert_eq!(
+        mono.left_bits(),
+        mono.right
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect::<Vec<_>>(),
+        "单声道素材必须同值写左右两条暂存"
+    );
+
+    // L-only：左 0.5、右 0 ⇒ 右声道必须逐位 0（折叠实现会在这里红）。
+    let left_only = {
+        let interleaved: Vec<f32> = (0..6_000).flat_map(|_| [0.5f32, 0.0f32]).collect();
+        let samples: Arc<[f32]> = Arc::from(interleaved.into_boxed_slice());
+        let pcm = AudioPcm::new(samples, 2, rate).expect("立体声 PCM 必须合法");
+        render_snapshot(snapshot_with_pcm(&fixture.project, pcm), 48)
+    };
+    assert!(left_only.peak() > 0.0, "L-only 臂必须出声");
+    assert!(
+        left_only.right.iter().all(|sample| *sample == 0.0),
+        "L-only 素材的右声道必须逐位为 0，实际首个非零 {:?}",
+        left_only.right.iter().position(|sample| *sample != 0.0)
+    );
+
+    // R-only：右 0.5、左 0 ⇒ 左声道必须逐位 0。
+    let right_only = {
+        let interleaved: Vec<f32> = (0..6_000).flat_map(|_| [0.0f32, 0.5f32]).collect();
+        let samples: Arc<[f32]> = Arc::from(interleaved.into_boxed_slice());
+        let pcm = AudioPcm::new(samples, 2, rate).expect("立体声 PCM 必须合法");
+        render_snapshot(snapshot_with_pcm(&fixture.project, pcm), 48)
+    };
+    assert!(
+        right_only.left.iter().all(|sample| *sample == 0.0),
+        "R-only 素材的左声道必须逐位为 0，实际首个非零 {:?}",
+        right_only.left.iter().position(|sample| *sample != 0.0)
+    );
+
+    // 反相：L = +0.5、R = −0.5 ⇒ 逐声道相关系数必须是 −1。
+    let inverse = {
+        let interleaved: Vec<f32> = (0..6_000).flat_map(|_| [0.5f32, -0.5f32]).collect();
+        let samples: Arc<[f32]> = Arc::from(interleaved.into_boxed_slice());
+        let pcm = AudioPcm::new(samples, 2, rate).expect("立体声 PCM 必须合法");
+        render_snapshot(snapshot_with_pcm(&fixture.project, pcm), 48)
+    };
+    let dot: f32 = inverse
+        .left
+        .iter()
+        .zip(&inverse.right)
+        .map(|(left, right)| left * right)
+        .sum();
+    let norm_left: f32 = inverse.left.iter().map(|sample| sample * sample).sum();
+    let norm_right: f32 = inverse.right.iter().map(|sample| sample * sample).sum();
+    let correlation = dot / (norm_left.sqrt() * norm_right.sqrt());
+    assert!(
+        (correlation + 1.0).abs() < 1e-5,
+        "反相立体声的逐声道相关系数必须是 −1，实际 {correlation}"
     );
 }
 
@@ -506,7 +552,7 @@ fn pcm_injection_rejects_unsupported_shapes() {
 /// | :--- | ---: | :--- |
 /// | [`AudioPcm`] | 32 | `Arc<[f32]>` 16（胖指针）＋ `frames` 8 ＋ `sample_rate` 4 ＋ `channels` 2 ＋ 2 填充 |
 /// | [`AudioClipSpan`] | 72 | `start` 8 ＋ `end` 8 ＋ `gain` 4 ＋ `AssetHash`(`String`) 24 ＋ `Option<Arc<AudioPcm>>` 8 ＋ `source_offset` 8（`#249`）＋ `Option<Arc<ClipFadeWindow>>` 8（T-FIX-374）＋ 4 填充 |
-/// | [`AudioClipSchedule`] | 40 | 一个 `Vec<AudioClipSpan>` 的头部（24）＋ `placements` 计数 8（`#249`）＋ `dropped_spans` 计数 8（T-FIX-247） |
+/// | [`AudioClipSchedule`] | 48 | 一个 `Vec<AudioClipSpan>` 的头部（24）＋ `placements` 计数 8（`#249`）＋ `dropped_spans` 计数 8（T-FIX-247）＋ `stereo_spans` 计数 8（T-FIX-574） |
 /// | `EngineSnapshot` | 4528 | 现读（`Tests/sfz_instrument.rs` 的 S9 打印）；本单 ＋32 B（新增一个 `BTreeMap` 字段 24 B ＋ 8 B 布局填充） |
 /// | `EngineRuntime` | 180144 | **＋0 B**（⛔ 没有游标表；余量 196608 − 180144 = 16464 B 不动） |
 ///
@@ -535,8 +581,8 @@ fn the_shape_costs_are_read_not_hand_written() {
         "AudioClipSpan = start 8 + end 8 + gain 4 + AssetHash 24 + Option<Arc<AudioPcm>> 8 +          source_offset 8 + Option<Arc<ClipFadeWindow>> 8（T-FIX-374） + 4 填充"
     );
     assert_eq!(
-        schedule, 40,
-        "AudioClipSchedule = Vec 头部 24 + placements 计数 8 + dropped_spans 计数 8"
+        schedule, 48,
+        "AudioClipSchedule = Vec 头部 24 + placements 计数 8 + dropped_spans 计数 8 + stereo_spans 计数 8（T-FIX-574）"
     );
     assert_eq!(
         runtime, 52_608,

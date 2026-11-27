@@ -40,10 +40,10 @@
 //!    **导出** ⇒ [`crate::rt::EngineRuntime`] **一个字节都不增长**（判据见
 //!    `tests/rt_new_boxed.rs` 的 180144 B 与 `tests/sfz_instrument.rs` 的 S9）。
 //!    定位（`SeekTicks`）/暂停恢复/换快照因此**自动正确**：不存在会陈旧的游标。
-//! 3. **单声道口径**：实时的逐轨暂存是**单声道、声相之前**
-//!    （[`crate::rt`] 的 `track_scratch`）⇒ 单声道素材直读，立体声素材取
-//!    `(L + R) / 2`（与离线 `StereoToMono` 同式），其余声道数在注入期**拒绝**并
-//!    如实报错（⛔ 不悄悄丢声道）。
+//! 3. **声道口径与离线一致**：实时逐轨暂存是立体声对
+//!    （[`crate::rt`] 的 `track_scratch` / `track_scratch_r`）⇒ 单声道素材同值写
+//!    左右，立体声素材左/右分别累加，⛔ 不再先折成 `(L + R) / 2`。其余声道数
+//!    在注入期**拒绝**并如实报错（⛔ 不悄悄丢声道）。
 //!
 //! ## 本模块**没有**做的（如实登记）
 //!
@@ -295,6 +295,9 @@ pub struct AudioClipSchedule {
     /// 因 [`MAX_AUDIO_SPANS_PER_TRACK`] 容量上限而没有物化的 span 数
     /// （T-FIX-247；构造期计数）。
     dropped_spans: usize,
+    /// 已注入 **2 声道** PCM 的 span 数（T-FIX-574）。控制线程在
+    /// [`Self::attach_pcm`] 后重算；实时侧只读它决定是否开左右两条暂存。
+    stereo_spans: usize,
 }
 
 impl AudioClipSchedule {
@@ -337,6 +340,15 @@ impl AudioClipSchedule {
         self.spans.iter().filter(|span| span.has_pcm()).count()
     }
 
+    /// 是否有任一条已注入 PCM 的 span 是 2 声道（T-FIX-574）。
+    ///
+    /// 实时侧只读这个计数：`false` ⇒ 仍走原单声道通路（逐位不变）；
+    /// `true` ⇒ 本轨声源必须按左右两条暂存累加。
+    #[must_use]
+    pub const fn has_stereo_pcm(&self) -> bool {
+        self.stereo_spans > 0
+    }
+
     /// 把 `asset` 匹配的摆放接上 `pcm`（**控制线程**；`Arc` 克隆只在这里发生）。
     ///
     /// 返回**真的接上**的摆放条数（判据/报告读它，⛔ 不静默）。
@@ -348,6 +360,11 @@ impl AudioClipSchedule {
                 attached += 1;
             }
         }
+        self.stereo_spans = self
+            .spans
+            .iter()
+            .filter(|span| span.pcm.as_deref().is_some_and(|pcm| pcm.channels() == 2))
+            .count();
         attached
     }
 }
@@ -605,6 +622,7 @@ pub fn project_audio_clips_with_tempo(
                 spans,
                 placements,
                 dropped_spans,
+                stereo_spans: 0,
             },
         );
     }
@@ -612,25 +630,35 @@ pub fn project_audio_clips_with_tempo(
     schedules
 }
 
-/// 把一个量子内的音频摆放**累加**进单声道逐轨暂存（**实时路径**）。
+/// 把一个量子内的音频摆放**分别累加**进左右逐轨暂存（**实时路径**）。
 ///
 /// `block_start` 是本量子第一帧的**绝对帧**（走带 `position_frames`，推进之前读）。
-/// `out` 是**已经清过/已含 MIDI 基座**的单声道缓冲（本函数只做 `+=`）。
+/// `left` / `right` 是**已经清过/已含 MIDI 基座**的左右缓冲（本函数只做 `+=`）；
+/// 两段长度必须相等，短的那段决定本次可写帧数（防御性，不 panic）。
 ///
 /// # 实时约束
 ///
 /// 只有整数比较、切片下标与乘加：**⛔ 无分配、⛔ 无释放、⛔ 无锁、⛔ 无 I/O、
 /// ⛔ 无超越函数** [MUST-GATE-001]。没有注入 PCM 的 span 与块外的 span **整段跳过**。
 ///
-/// # 声道口径
+/// # 声道口径（T-FIX-574）
 ///
-/// * 单声道素材：逐帧直读；
-/// * 立体声素材：`(L + R) × 0.5`（与离线 `StereoToMono` 同式；实时的逐轨暂存是单声道）。
-pub fn mix_into(schedule: &AudioClipSchedule, block_start: u64, out: &mut [f32]) {
-    if schedule.spans.is_empty() || out.is_empty() {
+/// * 单声道素材：同一个值写左右；
+/// * 立体声素材：`L` 只进左、`R` 只进右（与离线 `Identity` 同口径，⛔ 不折单声道）。
+pub fn mix_into(
+    schedule: &AudioClipSchedule,
+    block_start: u64,
+    left: &mut [f32],
+    right: &mut [f32],
+) {
+    if schedule.spans.is_empty() {
         return;
     }
-    let Ok(block_len) = u64::try_from(out.len()) else {
+    let frames_len = left.len().min(right.len());
+    if frames_len == 0 {
+        return;
+    }
+    let Ok(block_len) = u64::try_from(frames_len) else {
         return;
     };
     let block_end = block_start.saturating_add(block_len);
@@ -663,21 +691,27 @@ pub fn mix_into(schedule: &AudioClipSchedule, block_start: u64, out: &mut [f32])
                 break;
             };
             let index = asset_frame.saturating_mul(channels);
-            let value = if channels == 1 {
-                samples[index]
-            } else {
-                (samples[index] + samples[index + 1]) * 0.5
-            };
             let offset = frame - block_start;
             let Ok(offset) = usize::try_from(offset) else {
                 break;
             };
             // T-FIX-374：None ⇒ 走旧的单乘法（逐位不变）；Some ⇒ 再乘一次
             // 等功率包络（绝对帧，循环展开的每一遍都落在窗口的正确位置）。
-            out[offset] += match span.fade_window.as_deref() {
-                None => value * span.gain,
-                Some(window) => value * span.gain * window.gain_at(frame),
+            // ⚠ 乘法顺序与旧实现 **完全一致**：先 `sample * gain`，再乘 fade；
+            // 单声道左右拿同一个值 ⇒ 既有双声道同值路径逐位不变。
+            let mut left_value = samples[index] * span.gain;
+            let mut right_value = if channels == 1 {
+                left_value
+            } else {
+                samples[index + 1] * span.gain
             };
+            if let Some(window) = span.fade_window.as_deref() {
+                let fade = window.gain_at(frame);
+                left_value *= fade;
+                right_value *= fade;
+            }
+            left[offset] += left_value;
+            right[offset] += right_value;
         }
     }
 }

@@ -720,7 +720,8 @@ fn splitting_audio_clip_resumes_from_cut_frame_not_zero() {
     }
     let schedule = schedules.get(&track_id).expect("音频轨必须有 span 表");
     let mut out = [0.0_f32; 1];
-    mix_into(schedule, split_frame, &mut out);
+    let mut out_r = [0.0_f32; 1];
+    mix_into(schedule, split_frame, &mut out, &mut out_r);
     assert!(
         out[0] > 0.01,
         "切分右半首帧应读切点后的 +0.5，而不是素材第 0 帧的 -0.5；实际 {}",
@@ -743,7 +744,8 @@ fn splitting_audio_clip_resumes_from_cut_frame_not_zero() {
     }
     let old_schedule = old_schedules.get(&track_id).expect("音频轨必须有 span 表");
     let mut old_out = [0.0_f32; 1];
-    mix_into(old_schedule, split_frame, &mut old_out);
+    let mut old_out_r = [0.0_f32; 1];
+    mix_into(old_schedule, split_frame, &mut old_out, &mut old_out_r);
     assert!(
         old_out[0] < -0.01,
         "旧公式（source_start=None）必须读素材第 0 帧 -0.5；实际 {}",
