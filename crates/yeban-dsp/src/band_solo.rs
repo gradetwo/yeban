@@ -146,6 +146,18 @@ impl BandSoloFilter {
             return;
         }
         let frames = left.len().min(right.len());
+        // ⭐ T-FIX-941：二阶递推的 `v1`/`v2` 是**跨样本历史**。一个 `NaN`/`±∞`
+        // 样本写进去后，`v = x − a1·v1 − a2·v2` 会把非有限值永远留在状态里，
+        // 后续干净输入也救不回来（与 `shaping` 的三级 biquad 同一条理由）。
+        // 入口走 meter 的公共钳位：`NaN → 0`、`±∞` 与超过 4× 满量程的有限值
+        // → `±MAX_LINEAR_MAGNITUDE`。这样 `f32::MAX` 也不会在递推里乘成 `inf`
+        // 再毒化历史。正常监听电平（|x| ≤ 16）逐位不变。
+        for sample in &mut left[..frames] {
+            *sample = crate::meter::sanitize_sample(*sample);
+        }
+        for sample in &mut right[..frames] {
+            *sample = crate::meter::sanitize_sample(*sample);
+        }
         self.filter.process_in_place(left, right, frames);
     }
 
@@ -311,6 +323,22 @@ mod tests {
         }
     }
 
+    /// T-FIX-941：频段下标的越界入口必须可观测地拒绝（`band() == None`、未激活），
+    /// 不能留下一个“看起来设置了”的激活态。旧实现也满足这条，属于覆盖补强，
+    /// 不是红对照的那一条。
+    #[test]
+    fn out_of_range_band_is_refused_observably() {
+        let mut filter = BandSoloFilter::new(48_000.0);
+        for bad in [BAND_SOLO_COUNT, BAND_SOLO_COUNT + 1, usize::MAX] {
+            filter.set_band(Some(bad));
+            assert_eq!(filter.band(), None, "越界频段 {bad} 必须被拒绝");
+            assert!(!filter.is_active(), "越界频段 {bad} 不得留下激活态");
+        }
+        filter.set_band(Some(3));
+        filter.set_band(Some(BAND_SOLO_COUNT));
+        assert_eq!(filter.band(), None, "从合法频段切到越界频段也须关闭");
+    }
+
     #[test]
     fn set_sample_rate_recomputes_active_band_coefficients() {
         let mut filter = BandSoloFilter::new(48_000.0);
@@ -324,5 +352,60 @@ mod tests {
             filter.response_db(center)
         );
         assert!(filter.response_db(center / 10.0) < -20.0);
+    }
+
+    /// T-FIX-941：非有限/溢出样本不得写进二阶递推历史，且随后干净输入必须还能用。
+    ///
+    /// 红对照：旧实现直接 `filter.process_in_place(left, right, frames)`；一个
+    /// `NaN` 样本让本条带通此后永远输出 `NaN`（第二块也救不回来）。本判据把
+    /// 坏样本按 [`crate::meter::sanitize_sample`] 钳位：`NaN → 0`、`±∞` 与
+    /// `f32::MAX` → `±16`，因此第一块逐位等于“坏样本先钳位再过滤”的参照实例，
+    /// 第二块也逐位一致。
+    #[test]
+    fn hostile_samples_never_poison_the_recursive_state() {
+        let mut poisoned = BandSoloFilter::new(48_000.0);
+        poisoned.set_band(Some(3));
+        let mut reference = BandSoloFilter::new(48_000.0);
+        reference.set_band(Some(3));
+
+        let mut bad_l = vec![0.125_f32; 128];
+        let mut bad_r = vec![-0.25_f32; 128];
+        bad_l[7] = f32::NAN;
+        bad_r[7] = f32::INFINITY;
+        bad_l[8] = f32::NEG_INFINITY;
+        bad_r[8] = f32::MAX;
+        bad_l[9] = -f32::MAX;
+        bad_r[9] = f32::NAN;
+
+        let mut want_l = bad_l.clone();
+        let mut want_r = bad_r.clone();
+        for (l, r) in want_l.iter_mut().zip(want_r.iter_mut()) {
+            *l = crate::meter::sanitize_sample(*l);
+            *r = crate::meter::sanitize_sample(*r);
+        }
+
+        poisoned.process_in_place(&mut bad_l, &mut bad_r);
+        reference.process_in_place(&mut want_l, &mut want_r);
+
+        assert!(
+            bad_l.iter().chain(bad_r.iter()).all(|x| x.is_finite()),
+            "坏输入后的输出必须全有限"
+        );
+        assert_eq!(bad_l, want_l, "坏样本须与“钳位后过滤”参照逐位一致");
+        assert_eq!(bad_r, want_r, "右声道同理");
+
+        // 第二块全是干净样本：旧实现的递推状态已被 NaN 毒化，这里会再次红。
+        let mut clean_l = vec![0.5_f32; 64];
+        let mut clean_r = vec![-0.5_f32; 64];
+        let mut expected_l = clean_l.clone();
+        let mut expected_r = clean_r.clone();
+        poisoned.process_in_place(&mut clean_l, &mut clean_r);
+        reference.process_in_place(&mut expected_l, &mut expected_r);
+        assert!(
+            clean_l.iter().chain(clean_r.iter()).all(|x| x.is_finite()),
+            "毒化后的下一块也必须恢复为有限输出"
+        );
+        assert_eq!(clean_l, expected_l, "下一块须与参照逐位一致");
+        assert_eq!(clean_r, expected_r, "下一块右声道逐位一致");
     }
 }
