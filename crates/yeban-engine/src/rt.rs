@@ -1305,6 +1305,10 @@ pub struct PendingSceneLaunch {
     pub switch_frame: u64,
     /// 距生效帧还剩多少帧（控制路径置入；回调内只减）。
     pub frames_until_switch: u64,
+    /// 武装时走带是**停住**的 ⇒ 到点时先起播，再应用 tempo 覆盖。
+    ///
+    /// ⚠ 已在播放时武装的启动保持 `false`，到点只 retune（行为与旧口径一致）。
+    pub start_transport: bool,
 }
 
 impl PendingSceneLaunch {
@@ -1317,12 +1321,14 @@ impl PendingSceneLaunch {
         tempo_bpm: f64,
         switch_frame: u64,
         position_frames: u64,
+        start_transport: bool,
     ) -> Self {
         Self {
             scene_id,
             tempo_bpm,
             switch_frame,
             frames_until_switch: switch_frame.saturating_sub(position_frames),
+            start_transport,
         }
     }
 
@@ -1394,6 +1400,7 @@ fn arm_scene_launch(
         tempo_bpm,
         switch_frame,
         position_frames,
+        !transport.is_playing(),
     ));
 }
 
@@ -7551,6 +7558,12 @@ impl EngineRuntime {
                 // ⚠ 采样率沿用走带**已武装**的值（上一次 `arm` 来自同一份快照）
                 // ⇒ `retune` 只换速度，⛔ 不在这里重新读快照（那要 `begin_block()` 借出）。
                 transport.retune(launch.tempo_bpm);
+                // ⭐ T-FIX-821：停住态武装的启动**在量化点起播**。顺序固定：
+                // 先 retune、再起播、再清 pending ⇒ 本量子末发布的走带读数是 Playing，
+                // 下一个量子开始推进位置。⛔ 已在播放时不重复发 `Play`（行为不变）。
+                if launch.start_transport && !transport.is_playing() {
+                    transport.apply(crate::ring::TransportCommand::Play);
+                }
                 *pending_launch = None;
                 *scene_launches_applied = scene_launches_applied.saturating_add(1);
             }

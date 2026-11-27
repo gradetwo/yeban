@@ -828,15 +828,17 @@ pub fn wire_scene_launch(
                 },
             }
         };
-        let (disposition, name) = {
+        let (disposition, name, was_stopped) = {
             let mut engine = engine.borrow_mut();
+            // ⭐ T-FIX-821：停住态点场景 = 起播 ＋ 到量化点应用场景；已在播放只排队。
+            let was_stopped = !engine.transport().state.is_running();
             let disposition = engine.queue_scene_launch(request);
             let name = view
                 .borrow()
                 .scenes
                 .get(index)
                 .map(|scene| scene.name.clone());
-            (disposition, name)
+            (disposition, name, was_stopped)
         };
         if !disposition.is_delivered() {
             let reason = match disposition {
@@ -865,7 +867,11 @@ pub fn wire_scene_launch(
             });
             apply_current_scene(&ui, view.current_scene.as_ref());
         }
-        set_scene_launch_status(&ui, &format!("已排队：{name}"));
+        if was_stopped {
+            set_scene_launch_status(&ui, &format!("已开始：{name}（到量化点起播）"));
+        } else {
+            set_scene_launch_status(&ui, &format!("已排队：{name}"));
+        }
     });
 }
 
