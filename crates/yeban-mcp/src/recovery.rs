@@ -660,7 +660,14 @@ fn corrected_argument(
 ) -> Map<String, Value> {
     let mut template = minimal_arguments(spec, arguments, domain);
     if let Some(param) = spec.param(name) {
-        template.insert(name.to_owned(), placeholder(param, domain));
+        // `placeholder` 对 array 返回 `[]`；ops 必须换成可执行最小模板，
+        // 否则 corrected_argument 会把 minimal_arguments 刚补好的模板又覆写回空数组。
+        let value = if spec.name == "yeban_edit_notes" && name == "ops" {
+            minimal_ops_argument()
+        } else {
+            placeholder(param, domain)
+        };
+        template.insert(name.to_owned(), value);
     }
     template
 }
@@ -691,6 +698,23 @@ fn minimal_arguments_without(
     template
 }
 
+/// `yeban_edit_notes` 的 `ops` 最小可执行模板：一条合法的 `add` 音符操作。
+/// ⛔ 不能用空数组——领域层 `parse_ops` 对 `ops:[]` 响亮拒绝，
+/// 而 nextStep 原样重放空数组会形成「错误→按提示重试→再错误」的自愈死循环。
+fn minimal_ops_argument() -> Value {
+    json!([{"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}])
+}
+
+/// 「没填」与「填了但为空数组」都要视为待补：只判断 key 是否存在会把 `ops:[]`
+/// 当成已填，从而让 nextStep 携带一个原样重放必败的空数组。
+fn ops_is_unfilled(value: Option<&Value>) -> bool {
+    match value {
+        None => true,
+        Some(Value::Array(items)) => items.is_empty(),
+        _ => false,
+    }
+}
+
 fn minimal_arguments(
     spec: &ToolSpec,
     arguments: Option<&Map<String, Value>>,
@@ -709,8 +733,8 @@ fn minimal_arguments(
             template.insert(param.name.to_owned(), placeholder(param, domain));
         }
     }
-    if spec.name == "yeban_edit_notes" && !template.contains_key("ops") {
-        template.insert("ops".to_owned(), json!([{"kind": "setTempo", "bpm": 120}]));
+    if spec.name == "yeban_edit_notes" && ops_is_unfilled(template.get("ops")) {
+        template.insert("ops".to_owned(), minimal_ops_argument());
     }
     template
 }

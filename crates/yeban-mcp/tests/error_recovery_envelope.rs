@@ -448,3 +448,39 @@ fn ops_second_and_third_errors_are_reported_together() {
     );
     assert_next_step_runs(&mut dispatcher, &auth, data);
 }
+
+/// ⭐ T-FIX-954：缺 `ops` 时 `nextStep.arguments.ops` 必须是**可执行的最小操作模板**。
+/// 旧行为把必填 array 的 placeholder `[]` 直接塞进 nextStep，原样重放会被
+/// `parse_ops` 以「ops 不得为空数组」拒绝，形成自愈死循环。
+#[test]
+fn missing_ops_gets_executable_minimal_template() {
+    let scratch = Scratch::new();
+    let (mut dispatcher, auth) = dispatcher();
+    let _ = open(&scratch, &mut dispatcher, &auth);
+    let (track_id, clip_id) = ids(&dispatcher);
+    let (status, outcome) = call_raw(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({"trackId": track_id, "clipId": clip_id}),
+    );
+    assert_eq!(status, 400, "缺必填 ops 必须拒绝");
+    let error = outcome.expect_err("缺必填必须拒绝");
+    let data = error.data.as_ref().expect("必须带 data");
+    assert_envelope(data, "missingParam");
+    assert_eq!(data["nextStep"]["tool"], "yeban_edit_notes");
+    let ops = data["nextStep"]["arguments"]["ops"]
+        .as_array()
+        .expect("nextStep.arguments.ops 必须是数组");
+    assert!(
+        !ops.is_empty(),
+        "⭐ nextStep 不得给空数组（原样重放必败）: {data}"
+    );
+    assert_eq!(
+        ops[0]["kind"].as_str(),
+        Some("add"),
+        "⭐ 必须是可执行的最小 op 模板: {data}"
+    );
+    // 红对照：把 recovery.rs 的 ops 特例改回 placeholder([])，本条红在 !ops.is_empty()。
+    assert_next_step_runs(&mut dispatcher, &auth, data);
+}
