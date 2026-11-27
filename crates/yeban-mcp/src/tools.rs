@@ -1108,7 +1108,7 @@ pub const TOOLS: [ToolSpec; TOOL_COUNT] = [
                 "create",
                 "boolean",
                 false,
-                "用 `clipId`（可省；省略时服务端确定性派生，见 `clipId` 参数）新建一条 MIDI 片段池条目 (缺省 false = 编辑已存在的片段)。`create:true` 时 `ops` 允许 `add` (它们成为新片段的初始内容) 与纯音轨元数据 `setTrackName` / `setTrackColor` (不依赖新片段, 编译成既有 Op 并与 `Op::AddClip` 同批原子施加); 池里已有该身份 ⇒ `CONFLICT`, 出现其他 `kind` ⇒ `INVALID_PARAMETER_RANGE` (含音符级/片段级/摆放级/设备级/自动化级与 `removeClip`); `setTrackName`/`setTrackColor` 指向不存在的轨 ⇒ 整批拒绝且不建片段。可与 `placement` 同给 —— 单次提案同时生成 `Op::AddClip` 与 `Op::AddClipPlacement`; 此时 `durationTicks` 缺省由新片段的全部音符推导",
+                "用 `clipId`（可省；省略时服务端确定性派生，见 `clipId` 参数）新建一条 MIDI 片段池条目 (缺省 false = 编辑已存在的片段)。`create:true` 时 `ops` 允许 `add` (它们成为新片段的初始内容) 与纯音轨元数据 `setTrackName` / `setTrackColor` (不依赖新片段, 编译成既有 Op 并与 `Op::AddClip` 同批原子施加); 池里已有该身份 ⇒ `CONFLICT`, 出现其他 `kind` ⇒ `INVALID_PARAMETER_RANGE` (含音符级/片段级/摆放级/设备级/自动化级与 `removeClip`); `setTrackName`/`setTrackColor` 指向不存在的轨 ⇒ 整批拒绝且不建片段。可与 `placement` 同给 —— 单次提案同时生成 `Op::AddClip` 与 `Op::AddClipPlacement`; 此时 `durationTicks` 缺省由新片段的全部音符推导。⭐ 示例（create:true 新建片段，两个音符）: `ops:[{\"kind\":\"add\",\"note\":{\"startTick\":0,\"pitch\":60,\"durationTicks\":480}},{\"kind\":\"add\",\"note\":{\"startTick\":480,\"pitch\":64,\"durationTicks\":480}}]` —— 音符必须包在 `{kind:\"add\", note:{...}}` 里; 裸音符对象（只有 startTick/pitch/durationTicks、没有 kind）会被拒绝（`bareNoteNeedsAddWrapper`，错误文案会指名包装形态）",
             ),
             param(
                 "clipName",

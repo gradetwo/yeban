@@ -7376,6 +7376,85 @@ fn edit_notes_create_and_place_in_one_proposal_is_atomic_and_undoable() {
     );
 }
 
+/// **T-FIX-863：裸音符调用必须得到指向包装形态的错误**。
+///
+/// `create:true` 的描述称 `ops` 只允许 `add`，诱使调用方直接传裸音符对象；
+/// 旧错误只说"缺少 kind"、不指向包装要求，调用方无从修正（ISS-MWYA0NYK-1F0D50：
+/// 上报人首跑浪费 5 次 create + 25 次级联 `CLIP_NOT_FOUND`）。
+/// 本判据：`create:true` + 裸音符 ⇒ `INVALID_PARAMETER_RANGE`，reason
+/// `bareNoteNeedsAddWrapper`，文案指名 `{"kind":"add","note":{...}}` 包装形态，
+/// 且被拒调用不改动工程；同形状的包装形态照常成功。
+#[test]
+fn edit_notes_bare_note_in_create_names_the_add_wrapper() {
+    let scratch = Scratch::new("bare-note-create");
+    let (mut dispatcher, auth) = dispatcher();
+    let path = scratch.join("bare-note-create.yeban");
+    let created = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_open_project",
+        json!({
+            "path": path.display().to_string(),
+            "create": true,
+            "title": "BareNote",
+            "bpm": 120.0,
+        }),
+    );
+    assert_eq!(created["status"], "success", "{created}");
+    let track = {
+        let project = dispatcher.domain().active_project().expect("活跃工程");
+        project
+            .tracks
+            .values()
+            .find(|track| !track.clips.is_empty())
+            .map(|track| track.id.to_canonical_string())
+            .expect("默认种子必须有一条带摆放的音轨")
+    };
+    let bytes_before = project_bytes(&dispatcher);
+    let clip_id =
+        yeban_mcp::domain::ids::deterministic_id("clip:fix-863:bare-note").to_canonical_string();
+
+    // 裸音符：只有音符字段、没有 kind。
+    let refused = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip_id, "create": true,
+            "ops": [{"startTick": 0, "pitch": 60, "durationTicks": 480}],
+        }),
+    );
+    assert_domain_error(&refused, "INVALID_PARAMETER_RANGE", "裸音符必须被拒");
+    assert_eq!(
+        refused["error"]["data"]["reason"], "bareNoteNeedsAddWrapper",
+        "{refused}"
+    );
+    let message = refused["error"]["message"]
+        .as_str()
+        .expect("错误必须带 message");
+    assert!(
+        message.contains("{\"kind\":\"add\"") && message.contains("\"note\""),
+        "错误必须指名包装形态: {message}"
+    );
+    assert_eq!(
+        project_bytes(&dispatcher),
+        bytes_before,
+        "被拒调用不得改动工程"
+    );
+
+    // 同形状的包装形态照常成功（对照：失败的是"裸"，不是"这个音符"）。
+    let proposed = call(
+        &mut dispatcher,
+        &auth,
+        "yeban_edit_notes",
+        json!({
+            "trackId": track, "clipId": clip_id, "create": true,
+            "ops": [{"kind": "add", "note": {"startTick": 0, "pitch": 60, "durationTicks": 480}}],
+        }),
+    );
+    assert_eq!(proposed["status"], "success", "{proposed}");
+}
+
 /// **摆放编辑的关闭判据**：`placement.kind` 让一条**已经在时间轴上**的摆放可以被
 /// **平移**与**取走**（`Op::MoveClipPlacement` / `Op::RemoveClipPlacement`）。
 ///

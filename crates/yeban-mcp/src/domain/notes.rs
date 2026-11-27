@@ -5221,6 +5221,32 @@ fn ops_validation_failed(failures: Vec<(usize, Fault)>) -> Fault {
     )
 }
 
+/// 缺 `kind` 的错误：裸音符对象（含有音符字段却没有 `kind`）要**指名包装形态**。
+///
+/// T-FIX-863：`create:true` 的描述称 `ops` 只允许 `add`，诱使调用方直接传裸音符
+/// 对象；旧错误只说"缺少 `kind`"、不指向包装要求，调用方无从修正（上报人首跑
+/// 浪费 5 次 create + 25 次级联 `CLIP_NOT_FOUND`）。裸音符的判定只看三个核心
+/// 音符键（`startTick` / `pitch` / `durationTicks`）中有其一 —— 其它无 `kind`
+/// 对象仍走统一的缺字段错误。**不自动包装**：解析口径一贯是响亮拒绝、绝不静默
+/// 改写（未知键、缺字段、类型错误一律拒）；自动包装会把"忘写 kind"的其它误操作
+/// （例如本想 `delete`/`move` 却漏了 kind）静默变成新建音符 —— 一次错写比一次
+/// 响亮失败更糟。失败模式本就是"发现不了包装形态"，指名形态的错误在失败点上
+/// 正好补上这一课；`create` 参数描述里的显式示例则从源头预防。
+fn missing_kind(object: &Map<String, Value>) -> Fault {
+    const BARE_NOTE_KEYS: [&str; 3] = ["startTick", "pitch", "durationTicks"];
+    if BARE_NOTE_KEYS.iter().any(|key| object.contains_key(*key)) {
+        return Fault::domain_with_data(
+            ErrorCode::InvalidParameterRange,
+            "ops 元素缺少 `kind`：该对象含有音符字段（startTick/pitch/durationTicks），看起来是裸音符对象；音符须包成 `{\"kind\":\"add\",\"note\":{\"startTick\":0,\"pitch\":60,\"durationTicks\":480}}` 再传，裸音符对象不是合法的操作形态",
+            serde_json::json!({
+                "reason": "bareNoteNeedsAddWrapper",
+                "hint": "把裸音符包成 {\"kind\":\"add\",\"note\":{...}} 再传",
+            }),
+        );
+    }
+    missing("kind", "字符串")
+}
+
 /// 解析单个操作。
 fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
     let object = item.as_object().ok_or_else(|| {
@@ -5229,10 +5255,12 @@ fn parse_one(item: &Value) -> Result<NoteOp, Fault> {
             format!("`ops` 的元素必须是对象, 实际收到 {item}"),
         )
     })?;
-    let kind = object
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(|| missing("kind", "字符串"))?;
+    let kind = match object.get("kind").and_then(Value::as_str) {
+        Some(kind) => kind,
+        // T-FIX-863：裸音符对象（只有音符字段、没有 `kind`）要**指名包装形态**，
+        // 不能只说"缺少 kind"——见 [`missing_kind`]。
+        None => return Err(missing_kind(object)),
+    };
     match kind {
         "add" => {
             let note = object
@@ -14067,6 +14095,44 @@ mod tests {
                 fault.domain_code()
             );
         }
+    }
+
+    #[test]
+    fn bare_note_without_kind_names_the_add_wrapper() {
+        // T-FIX-863：裸音符对象（只有音符字段、没有 `kind`）必须得到指名包装形态
+        // 的错误，而不是只说"缺少 kind"。
+        let fault = parse_ops(&serde_json::json!([{
+            "startTick": 0, "pitch": 60, "durationTicks": 480
+        }]))
+        .expect_err("裸音符必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        assert_eq!(
+            lane_fault_data(&fault)["reason"],
+            "bareNoteNeedsAddWrapper",
+            "裸音符错误必须带 reason"
+        );
+        let value = fault.into_result().expect("带内");
+        let message = value["error"]["message"]
+            .as_str()
+            .expect("错误必须带 message");
+        assert!(
+            message.contains("{\"kind\":\"add\"") && message.contains("\"note\""),
+            "错误必须指名包装形态: {message}"
+        );
+        // 只有部分音符字段的裸音符同样指名形态（判定只看三个核心键中有其一）。
+        let fault = parse_ops(&serde_json::json!([{"pitch": 60}]))
+            .expect_err("只有 pitch 的裸音符也必须被拒");
+        assert_eq!(lane_fault_data(&fault)["reason"], "bareNoteNeedsAddWrapper");
+        // 没有音符字段的无 kind 对象仍走统一的缺字段错误（不带 data、不改口径）。
+        let fault = parse_ops(&serde_json::json!([{
+            "noteId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+        }]))
+        .expect_err("无 kind 且无音符字段必须被拒");
+        assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("必须是领域失败");
+        };
+        assert!(data.is_none(), "通用缺 kind 错误不该带 data: {data:?}");
     }
 
     #[test]
