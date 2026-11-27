@@ -368,6 +368,10 @@ export component ArrangementViewport inherits Rectangle {
     callback clip-drag-move(string, length, length);
     callback clip-drag-release(string, length, length);
     callback clip-drag-cancel();
+    // ⭐ T-FIX-975：自动化泳道画在片段之上（T-FIX-714 裁决），其 TouchArea 会先抢到
+    // 落在片段上的按下。宿主按内容帧 x + 行空间 y 命中片段；命中则把这一手势转交给
+    // 片段拖动，未命中仍走泳道自己的单击 / 框选（T-FIX-714/888 语义不变）。
+    callback clip-ulid-at(length, length) -> string;
     /// 框选收尾：矩形四边（x = **时间轴像素帧**，与 `blk.start_px` 同帧；
     /// y = Flickable 内容帧，与 `track-ys` 同帧；未归一化）+ 加选标志。
     /// 界面只做坐标帧换算，命中判定在宿主。
@@ -2009,29 +2013,59 @@ export component ArrangementViewport inherits Rectangle {
                                     height: parent.height;
                                     property <bool> gesture-pressed: false;
                                     property <bool> gesture-active: false;
+                                    // T-FIX-975：1 = 泳道自身手势（单击 / 框选），2 = 已转交片段拖动。
+                                    property <int> gesture-mode: 0;
+                                    property <string> drag-clip-ulid: "";
                                     pointer-event(event) => {
                                         if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                                            root.marquee-x0 = self.mouse-x + root.timeline-origin-x;
-                                            root.marquee-y0 = self.mouse-y + root.automation-lane-band-ys[lane_index];
-                                            root.marquee-x1 = root.marquee-x0;
-                                            root.marquee-y1 = root.marquee-y0;
-                                            root.marquee-additive = event.modifiers.shift;
-                                            root.marquee-subtractive = event.modifiers.control || event.modifiers.meta;
-                                            root.marquee-pressed = true;
-                                            root.marquee-active = false;
-                                            self.gesture-pressed = true;
-                                            self.gesture-active = false;
+                                            // 泳道画在片段之上 ⇒ 落在片段上的按下先到这里。
+                                            // 命中片段就转交拖动（T-FIX-975）；未命中仍走原泳道手势。
+                                            let hit = root.clip-ulid-at(
+                                                self.mouse-x + root.scroll-x,
+                                                root.automation-lane-band-ys[lane_index] + self.mouse-y);
+                                            let row-y = root.automation-lane-band-ys[lane_index] + self.mouse-y;
+                                            if hit != "" && root.clip-drag-grab(hit, self.mouse-x + root.timeline-origin-x, row-y) {
+                                                self.drag-clip-ulid = hit;
+                                                self.gesture-mode = 2;
+                                                self.gesture-pressed = true;
+                                                self.gesture-active = false;
+                                            } else {
+                                                root.marquee-x0 = self.mouse-x + root.timeline-origin-x;
+                                                root.marquee-y0 = self.mouse-y + root.automation-lane-band-ys[lane_index];
+                                                root.marquee-x1 = root.marquee-x0;
+                                                root.marquee-y1 = root.marquee-y0;
+                                                root.marquee-additive = event.modifiers.shift;
+                                                root.marquee-subtractive = event.modifiers.control || event.modifiers.meta;
+                                                root.marquee-pressed = true;
+                                                root.marquee-active = false;
+                                                self.gesture-mode = 1;
+                                                self.gesture-pressed = true;
+                                                self.gesture-active = false;
+                                            }
                                         } else if event.kind == PointerEventKind.move && self.gesture-pressed {
-                                            root.marquee-x1 = self.mouse-x + root.timeline-origin-x;
-                                            root.marquee-y1 = self.mouse-y + root.automation-lane-band-ys[lane_index];
-                                            if !self.gesture-active
-                                                && (Math.abs(root.marquee-x1 - root.marquee-x0) > 4px
-                                                    || Math.abs(root.marquee-y1 - root.marquee-y0) > 4px) {
-                                                self.gesture-active = true;
-                                                root.marquee-active = true;
+                                            if self.gesture-mode == 2 {
+                                                root.clip-drag-move(
+                                                    self.drag-clip-ulid,
+                                                    self.mouse-x + root.timeline-origin-x,
+                                                    root.automation-lane-band-ys[lane_index] + self.mouse-y);
+                                            } else {
+                                                root.marquee-x1 = self.mouse-x + root.timeline-origin-x;
+                                                root.marquee-y1 = self.mouse-y + root.automation-lane-band-ys[lane_index];
+                                                if !self.gesture-active
+                                                    && (Math.abs(root.marquee-x1 - root.marquee-x0) > 4px
+                                                        || Math.abs(root.marquee-y1 - root.marquee-y0) > 4px) {
+                                                    self.gesture-active = true;
+                                                    root.marquee-active = true;
+                                                }
                                             }
                                         } else if event.kind == PointerEventKind.up {
-                                            if self.gesture-pressed && self.gesture-active {
+                                            if self.gesture-mode == 2 {
+                                                root.clip-drag-release(
+                                                    self.drag-clip-ulid,
+                                                    self.mouse-x + root.timeline-origin-x,
+                                                    root.automation-lane-band-ys[lane_index] + self.mouse-y);
+                                                self.drag-clip-ulid = "";
+                                            } else if self.gesture-pressed && self.gesture-active {
                                                 // 拖拽：按下起于本面，Slint 只把手势发给最上层那面，
                                                 // 空白车道那面收不到这组事件 —— 本面是唯一报选区的
                                                 // 那面；同一矩形再报一次是幂等的（同一命中集 ⇒
@@ -2050,11 +2084,17 @@ export component ArrangementViewport inherits Rectangle {
                                                     self.mouse-x,
                                                     root.automation-lane-band-ys[lane_index] - 42px + self.mouse-y);
                                             }
+                                            self.gesture-mode = 0;
                                             self.gesture-pressed = false;
                                             self.gesture-active = false;
                                             root.marquee-pressed = false;
                                             root.marquee-active = false;
                                         } else if event.kind == PointerEventKind.cancel {
+                                            if self.gesture-mode == 2 {
+                                                root.clip-drag-cancel();
+                                                self.drag-clip-ulid = "";
+                                            }
+                                            self.gesture-mode = 0;
                                             self.gesture-pressed = false;
                                             self.gesture-active = false;
                                             root.marquee-pressed = false;

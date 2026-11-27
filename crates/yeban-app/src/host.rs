@@ -27762,6 +27762,30 @@ pub fn wire_clip_drag(ui: &MainWindow, port: &Rc<UndoPort>) {
             cancel_clip_drag(&ui);
         }
     });
+    // ⭐ T-FIX-975：自动化泳道画在片段之上，落在片段上的按下先到泳道的 TouchArea。
+    // 宿主用与框选同一套命中函数（`clip_marquee_hits`）判断该点是否落在片段上，
+    // 是则返回片段 ULID 让泳道把这一手势转交拖动；否则返回空串，泳道保留
+    // T-FIX-714/888 的单击 / 框选语义。命中口径与框选逐字相同，⛔ 不另立一套。
+    ui.on_clip_ulid_at({
+        let weak = weak.clone();
+        let port = Rc::clone(port);
+        move |x: f32, y: f32| -> SharedString {
+            let Some(ui) = weak.upgrade() else {
+                return SharedString::default();
+            };
+            let Some(project) = port.try_project() else {
+                return SharedString::default();
+            };
+            let Ok(view) = project_with_view_state(&project, &ui) else {
+                return SharedString::default();
+            };
+            // 零面积矩形也命中：`clip_marquee_hits` 用严格不等式，这里给 ±0.5px 窗口。
+            let hits = clip_marquee_hits(&view, x - 0.5, y - 0.5, x + 0.5, y + 0.5);
+            hits.first()
+                .map(|id| SharedString::from(id.as_str()))
+                .unwrap_or_default()
+        }
+    });
 }
 
 /// 卷帘编辑（铅笔 / 橡皮擦）提交之后的**重投影**：视图态从窗口读回来，

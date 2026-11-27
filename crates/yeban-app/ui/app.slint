@@ -1070,6 +1070,8 @@ export component MainWindow inherits Window {
     callback clip-drag-grab(string, length, length) -> bool;
     callback clip-drag-move(string, length, length);
     callback clip-drag-release(string, length, length);
+    // ⭐ T-FIX-975：自动化泳道命中片段的查询（内容帧 x + 行空间 y → 片段 ULID）。
+    callback clip-ulid-at(length, length) -> string;
     callback clip-select(string);
     /// 框选收尾（line/blank-drag-selection）：矩形四边（**时间轴像素帧**的 x
     /// 与行区内容帧的 y，逻辑像素，未归一化）+ 是否加选（Shift）。
@@ -2025,6 +2027,7 @@ export component MainWindow inherits Window {
                     clip-drag-move(clip-ulid, local-x, local-y) => { root.clip-drag-move(clip-ulid, local-x, local-y); }
                     clip-drag-release(clip-ulid, local-x, local-y) => { root.clip-drag-release(clip-ulid, local-x, local-y); }
                     clip-drag-cancel() => { root.clip-drag-cancel(); }
+                    clip-ulid-at(x, y) => { return root.clip-ulid-at(x, y); }
                     // ⭐ T-FIX-232：轨道头手势（高度 / 重排）转发到根回调（宿主已接线）。
                     track-height-grab(idx, y) => { root.track-height-grab(idx, y); }
                     track-height-drag(idx, y) => { root.track-height-drag(idx, y); }
