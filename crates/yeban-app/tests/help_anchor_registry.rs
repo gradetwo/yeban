@@ -250,8 +250,8 @@ fn all_349_manual_section_anchors_are_registered_without_duplicates_or_dangling(
         .collect();
     assert_eq!(
         expected.len(),
-        358,
-        "对齐 onboarding 后 358 个主题（10 个已有 Present + 348 External）"
+        349,
+        "权威清单 349 个主题（348 External + onboarding Present）"
     );
     for anchor in &expected {
         assert!(
@@ -259,11 +259,22 @@ fn all_349_manual_section_anchors_are_registered_without_duplicates_or_dangling(
             "手册锚点 {anchor} 悬空"
         );
     }
-    let external = manual::HELP_ANCHORS
+    let external_rows: Vec<&str> = manual::HELP_ANCHORS
         .iter()
         .filter(|r| matches!(r.status, HelpTopicStatus::External))
-        .count();
-    assert_eq!(external, 348, "349 条中 onboarding 由 Present 行承载");
+        .map(|r| r.anchor)
+        .collect();
+    assert_eq!(
+        external_rows.len(),
+        348,
+        "349 条中 onboarding 由 Present 行承载"
+    );
+    let mut registered: BTreeSet<&str> = external_rows.into_iter().collect();
+    registered.insert("getting-started-onboarding");
+    assert_eq!(
+        registered, expected,
+        "External 集合必须与权威清单 349 完全一致"
+    );
     for row in manual::HELP_ANCHORS {
         if row.status == HelpTopicStatus::External {
             assert!(

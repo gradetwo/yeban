@@ -347,13 +347,3 @@ troubleshoot-performance
 troubleshoot-project-open
 troubleshoot-silence
 troubleshoot-verification
-01-overview
-02-projects
-03-tracks-clips
-04-piano-roll
-05-mixer-effects
-06-export
-help-manual
-help-shortcuts
-getting-started-onboarding
-help-lessons
