@@ -12790,7 +12790,8 @@ pub fn wire_startup_chooser(
 /// | 没有活会话 / 落盘失败 | 原因写进 `template-save-error`，弹窗不关 |
 ///
 /// 成功 ⇒ 关弹窗 + 既有 `module-status` 回执（`save-as-template`；带
-/// `bytes=` / `assets=` / `undo=`，读数来自 [`crate::templates::TemplateSaveReport`]）。
+/// `bytes=` / `assets=` / `presets=` / `undo=`，读数来自
+/// [`crate::templates::TemplateSaveReport`]）。
 fn save_template_from_dialog(
     ui: &MainWindow,
     live_port: &Option<Rc<UndoPort>>,
@@ -12824,14 +12825,14 @@ fn save_template_from_dialog(
             return;
         }
     };
-    // 保存的是**此刻**的活会话（工程 + 资产池一次从同一个端口读出，
-    // ⛔ 不分几次读）。模板不携带来源会话的撤销历史 / 未合并提案 / 内嵌预制：
-    // 这几项在这里就置空，`save_template_archive` 里的 `template_snapshot`
-    // 还会对任何调用方再做一次同样的收敛（双保险）。
-    let live = live_port
-        .as_ref()
-        .and_then(|port| port.try_project().map(|project| (project, port.assets())));
-    let Some((project, assets)) = live else {
+    // 保存的是**此刻**的活会话（工程 + 资产池 + 内嵌预制表一次从同一个端口读出，
+    // ⛔ 不分几次读）。模板不携带来源会话的撤销历史 / 未合并提案；轨上引用的
+    // `user:` 预制由 `template_snapshot` 收敛成自包含副本（T-FIX-809）。
+    let live = live_port.as_ref().and_then(|port| {
+        port.try_project()
+            .map(|project| (project, port.assets(), port.embedded_presets()))
+    });
+    let Some((project, assets, embedded_presets)) = live else {
         ui.set_template_save_error("没有活会话可存为模板（本装配没有注入工程端口）".into());
         return;
     };
@@ -12840,7 +12841,7 @@ fn save_template_from_dialog(
         history_dag: Vec::new(),
         proposals: None,
         assets,
-        embedded_presets: Vec::new(),
+        embedded_presets,
         load_notes: Vec::new(),
     };
     match crate::templates::save_template_archive(
@@ -12861,6 +12862,7 @@ fn save_template_from_dialog(
                     format!("path={}", report.path.display()),
                     format!("bytes={}", report.bytes),
                     format!("assets={}", report.assets),
+                    format!("presets={}", report.presets),
                     format!("undo={}", report.undo_entries),
                     format!("overwrite={overwrite}"),
                 ],

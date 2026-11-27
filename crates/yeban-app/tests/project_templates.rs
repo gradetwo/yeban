@@ -298,7 +298,11 @@ fn template_snapshot_drops_history_proposals_presets_and_unreferenced_assets() {
     .expect("快照模板必须能按生产口径打开");
     assert!(read.history_dag.is_empty(), "history.dag 必须是空字节");
     assert!(read.proposals.is_none(), "proposals 不得进模板");
-    assert!(read.embedded_presets.is_empty(), "内嵌用户预制不得进模板");
+    assert_eq!(report.presets, 0, "未被轨引用的内嵌预制不得进模板");
+    assert!(
+        read.embedded_presets.is_empty(),
+        "未被轨引用的内嵌预制不得进模板"
+    );
     assert!(read.load_notes.is_empty(), "模板不该携带来源会话的装载留痕");
 
     let pool: Vec<&AssetHash> = read.assets.iter().map(|(hash, _bytes)| hash).collect();
@@ -868,5 +872,76 @@ fn template_round_trip_in_a_live_window_never_writes_back() {
         std::fs::read(&template_path).expect("读模板字节"),
         template_bytes,
         "编辑并保存副本之后，模板文件必须一字节不变（绝不回写）"
+    );
+}
+
+/// T-FIX-809：模板快照剥掉内嵌用户预制却保留轨上 `user:` 引用 ⇒ 模板不是可打开
+/// 的起点。本判据钉自包含口径：轨引用的那份 user 预制必须随模板落盘，空用户库
+/// 环境按生产 strict 口径能打开且无悬空引用。
+#[test]
+fn template_snapshot_keeps_referenced_user_preset_self_contained() {
+    use yeban_model::Preset;
+    const USER_ID: &str = "user:01J809TEMPLATEPRESET00000000";
+
+    let scratch = Scratch::new();
+    let roots = scratch.roots();
+    let mut preset =
+        Preset::parse(include_str!("../../../assets/presets/piano-warm-room.json").as_bytes())
+            .expect("工厂预制必须能解析");
+    preset.id = USER_ID.to_owned();
+    preset.name = "T809 Template Preset".to_owned();
+    let entries = vec![(
+        yeban_model::preset::embedded_entry_name(USER_ID).expect("条目名"),
+        serde_json::to_vec(&preset).expect("预制必须能序列化"),
+    )];
+
+    let mut project = yeban_model::samples::demo_project();
+    let track_id = project
+        .tracks
+        .values()
+        .find(|track| track.id != project.master_bus_track_id)
+        .expect("默认工程至少有一条非主总线轨")
+        .id;
+    project.tracks.get_mut(&track_id).expect("轨存在").preset =
+        Some(Box::new(yeban_model::preset::TrackPresetState {
+            preset_id: Some(USER_ID.to_owned()),
+            ..Default::default()
+        }));
+    let archive = ProjectArchive {
+        project,
+        history_dag: vec![0xA5; 4096],
+        proposals: Some(vec![0xB6; 1024]),
+        assets: yeban_model::samples::demo_project_assets(),
+        embedded_presets: entries.clone(),
+        load_notes: vec!["来源会话".to_owned()],
+    };
+
+    let report = save_template_archive(&roots.user, "流行", "摇滚", "预制模板", &archive, false)
+        .expect("带被引用 user 预制的模板必须能保存");
+    assert_eq!(report.presets, 1, "被轨引用的 user 预制必须随模板走");
+    assert_eq!(report.undo_entries, 0, "模板不带撤销历史");
+
+    // 生产 strict 口径 + 用户库没有该 id：只能靠模板内嵌副本解析。
+    let read = yeban_app::open::open_project_archive_file(
+        &report.path,
+        &yeban_app::open::ProjectOpenOptions {
+            strict_preset_references: true,
+            ..yeban_app::open::ProjectOpenOptions::default()
+        },
+    )
+    .expect("空用户库下模板必须能按 strict 口径打开");
+    assert_eq!(
+        read.embedded_presets, entries,
+        "模板必须原样保留被引用 user 预制的内嵌副本"
+    );
+    assert_eq!(
+        read.project
+            .track(&track_id)
+            .expect("轨存在")
+            .preset
+            .as_ref()
+            .and_then(|state| state.preset_id.as_deref()),
+        Some(USER_ID),
+        "轨上引用必须仍在，且已被内嵌副本解析"
     );
 }

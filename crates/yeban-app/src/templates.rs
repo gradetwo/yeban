@@ -12,8 +12,9 @@
 //! ## 模板快照（T-FIX-295）
 //!
 //! 「另存为模板」写的是**模板快照**，不是会话备份：撤销历史（`history.dag`）、
-//! 未合并提案、内嵌用户预制与装载留痕都不进模板；资产池与 `project.assets`
-//! 索引只保留当前工程引用到的资产（片段池里的音频 + `embedded_samples`）。
+//! 未合并提案与装载留痕都不进模板；资产池与 `project.assets` 索引只保留当前
+//! 工程引用到的资产（片段池里的音频 + `embedded_samples`）；轨引用的 `user:`
+//! 预制以**自包含副本**进模板（T-FIX-809），不再剥掉内嵌表却留下悬空引用。
 //! 于是从模板新建后撤销栈从空开始，模板体积也不随来源会话的素材池 / 撤销
 //! 历史增长；片段内容本身不剥离（照 Logic 的产品边界）。收敛逻辑集中在
 //! [`template_snapshot`]，所有落盘调用方都绕不过它。
@@ -40,7 +41,7 @@
 //! [`crate::host::wire_project_templates`]；「从模板新建」的副本语义（打开后
 //! 保存落点为空）由装配方注入的 `after` 决定，⛔ 不在本模块。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use yeban_model::AssetHash;
@@ -541,6 +542,8 @@ pub enum SaveTemplateError {
     Invalid(String),
     /// 落盘失败（消息给用户看）。
     Io(String),
+    /// 模板快照要保留的 `user:` 预制缺副本 / 损坏 / 超限（T-FIX-809）。
+    Preset(String),
 }
 
 impl std::fmt::Display for SaveTemplateError {
@@ -549,7 +552,9 @@ impl std::fmt::Display for SaveTemplateError {
             SaveTemplateError::Exists(path) => {
                 write!(formatter, "同名模板已存在：`{}`", path.display())
             }
-            SaveTemplateError::Invalid(message) | SaveTemplateError::Io(message) => {
+            SaveTemplateError::Invalid(message)
+            | SaveTemplateError::Io(message)
+            | SaveTemplateError::Preset(message) => {
                 write!(formatter, "{message}")
             }
         }
@@ -561,8 +566,9 @@ impl std::error::Error for SaveTemplateError {}
 /// 一次成功「另存为模板」的读数。
 ///
 /// `bytes` 来自唯一归档写入口的 [`crate::save::SaveReport::bytes`]（不是事后量文件），
-/// `assets` / `undo_entries` 描述**真正写进模板的那份快照**：模板剥离撤销历史
-/// （`history.dag`）、未合并提案与内嵌用户预制，只保留当前工程引用到的资产。
+/// `assets` / `presets` / `undo_entries` 描述**真正写进模板的那份快照**：模板
+/// 剥离撤销历史（`history.dag`）与未合并提案，只保留当前工程引用到的资产和
+/// 被轨引用的 `user:` 内嵌预制。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateSaveReport {
     /// 模板落盘的三级路径。
@@ -573,6 +579,8 @@ pub struct TemplateSaveReport {
     pub assets: usize,
     /// 模板内撤销历史条目数（模板快照恒为 0）。
     pub undo_entries: usize,
+    /// 模板内保留的 `user:` 预制条目数（自包含副本）。
+    pub presets: usize,
 }
 
 /// 把一份**当前工程归档**收敛成模板快照。
@@ -581,8 +589,8 @@ pub struct TemplateSaveReport {
 /// 因此本函数做四件事，并把取舍钉在类型边界上（任何调用方都绕不过）：
 ///
 /// 1. `history_dag` ⇒ 空字节（模板不携带来源会话的撤销/重做历史）；
-/// 2. `proposals` ⇒ `None`；`embedded_presets` ⇒ 空表（未合并提案与用户预制
-///    不随模板走）；
+/// 2. `proposals` ⇒ `None`；`embedded_presets` ⇒ 只保留轨上**实际引用**的
+///    `user:` 预制（自包含，T-FIX-809）；缺副本则拒绝保存，不写悬空引用；
 /// 3. 资产池只保留**当前工程**引用到的哈希：`clip_pool` 的 `ClipContent::Audio`
 ///    与 `project.embedded_samples` 的值（SFZ / 样本内嵌索引）。被删片段留在
 ///    会话池里的未引用字节、以及只在历史里出现的旧资产，都不进模板；
@@ -590,10 +598,9 @@ pub struct TemplateSaveReport {
 ///    的半截索引。
 ///
 /// `load_notes` 也清空：它是装载留痕，不是工程内容；新模板应当从干净状态开始。
-#[must_use]
 pub fn template_snapshot(
     archive: &yeban_model::container::ProjectArchive,
-) -> yeban_model::container::ProjectArchive {
+) -> Result<yeban_model::container::ProjectArchive, SaveTemplateError> {
     let mut referenced: BTreeSet<AssetHash> = BTreeSet::new();
     for clip in archive.project.clip_pool.values() {
         if let ClipContent::Audio { asset, .. } = &clip.content {
@@ -613,7 +620,8 @@ pub fn template_snapshot(
         .assets
         .retain(|hash, _metadata| referenced.contains(hash));
 
-    yeban_model::container::ProjectArchive {
+    let embedded_presets = referenced_embedded_presets(archive)?;
+    Ok(yeban_model::container::ProjectArchive {
         project,
         history_dag: Vec::new(),
         proposals: None,
@@ -623,9 +631,136 @@ pub fn template_snapshot(
             .filter(|(hash, _bytes)| referenced.contains(hash))
             .cloned()
             .collect(),
-        embedded_presets: Vec::new(),
+        embedded_presets,
         load_notes: Vec::new(),
+    })
+}
+
+/// 模板快照要保留的 `user:` 预制条目（T-FIX-809）。
+///
+/// 默认构建复用 MCP 的 `parse_embedded_presets` + `collect_embedded_presets`，
+/// 与工程保存同一条收集口径；缺副本 / 用户库没有 / 超 64 KiB 时拒绝。
+fn referenced_user_preset_ids(project: &yeban_model::YebanProjectV1) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for track in project.tracks.values() {
+        if let Some(state) = track.preset.as_ref()
+            && let Some(id) = state.preset_id.as_ref()
+            && id.starts_with("user:")
+            && !ids.contains(id)
+        {
+            ids.push(id.clone());
+        }
     }
+    ids
+}
+
+#[cfg(feature = "in-process-mcp")]
+fn referenced_embedded_presets(
+    archive: &yeban_model::container::ProjectArchive,
+) -> Result<Vec<(String, Vec<u8>)>, SaveTemplateError> {
+    use yeban_mcp::domain::error::Fault;
+    fn message(fault: Fault) -> String {
+        match fault {
+            Fault::Domain { message, .. } => message,
+            Fault::Impl { error } => error.message,
+        }
+    }
+    let ids = referenced_user_preset_ids(&archive.project);
+    let entries: Vec<(String, Vec<u8>)> = archive
+        .embedded_presets
+        .iter()
+        .filter(|(entry_name, _)| {
+            yeban_model::preset::preset_id_from_embedded_entry(entry_name)
+                .is_some_and(|id| ids.contains(&id))
+        })
+        .cloned()
+        .collect();
+    let embedded = if entries.is_empty() {
+        BTreeMap::new()
+    } else {
+        yeban_mcp::domain::preset::parse_embedded_presets(&entries)
+            .map_err(|fault| SaveTemplateError::Preset(message(fault)))?
+    };
+    yeban_mcp::domain::preset::collect_embedded_presets(&embedded, &archive.project, true)
+        .map_err(|fault| SaveTemplateError::Preset(message(fault)))
+}
+
+/// `--no-default-features` 的同义本地实现（没有 `yeban-mcp` 依赖边）。
+#[cfg(not(feature = "in-process-mcp"))]
+fn referenced_embedded_presets(
+    archive: &yeban_model::container::ProjectArchive,
+) -> Result<Vec<(String, Vec<u8>)>, SaveTemplateError> {
+    use yeban_model::preset::{
+        PRESET_MAX_BYTES, Preset, embedded_entry_name, is_factory_preset,
+        preset_id_from_embedded_entry, user_preset_library_dir,
+    };
+    const USER_PRESET_READ_MAX_BYTES: u64 = 16 * 1024 * 1024;
+    let ids = referenced_user_preset_ids(&archive.project);
+    let mut embedded: BTreeMap<String, Preset> = BTreeMap::new();
+    for (entry_name, bytes) in &archive.embedded_presets {
+        let Some(id) = preset_id_from_embedded_entry(entry_name) else {
+            continue;
+        };
+        if !ids.contains(&id) {
+            continue;
+        }
+        let preset = Preset::parse(bytes).map_err(|error| {
+            SaveTemplateError::Preset(format!("内嵌预制 `{id}` 解析失败：{error}"))
+        })?;
+        if preset.id != id {
+            return Err(SaveTemplateError::Preset(format!(
+                "内嵌预制条目 `{entry_name}` 里的标识是 `{}`，与条目名不符",
+                preset.id
+            )));
+        }
+        embedded.insert(id, preset);
+    }
+    for id in &ids {
+        if embedded.contains_key(id) || is_factory_preset(id) {
+            continue;
+        }
+        let file = id.strip_prefix("user:").unwrap_or(id);
+        let path = user_preset_library_dir()
+            .map(|dir| dir.join(format!("{file}.json")))
+            .map_err(SaveTemplateError::Preset)?;
+        let too_large =
+            std::fs::metadata(&path).is_ok_and(|meta| meta.len() > USER_PRESET_READ_MAX_BYTES);
+        if too_large {
+            return Err(SaveTemplateError::Preset(format!(
+                "用户预制 `{id}` 超过读取上限 {USER_PRESET_READ_MAX_BYTES} 字节"
+            )));
+        }
+        let bytes = std::fs::read(&path).map_err(|_| {
+            SaveTemplateError::Preset(format!(
+                "缺用户预制 `{id}`（用户库里没有 {}），拒绝写出悬空引用",
+                path.display()
+            ))
+        })?;
+        let preset = Preset::parse(&bytes)
+            .map_err(|error| SaveTemplateError::Preset(format!("用户预制 `{id}` 损坏：{error}")))?;
+        embedded.insert(id.to_owned(), preset);
+    }
+    let mut out = Vec::new();
+    for id in &ids {
+        let preset = embedded
+            .get(id)
+            .ok_or_else(|| SaveTemplateError::Preset(format!("缺用户预制 `{id}`")))?;
+        let bytes = serde_json::to_vec(preset).map_err(|error| {
+            SaveTemplateError::Preset(format!("内嵌预制 `{id}` 序列化失败：{error}"))
+        })?;
+        if bytes.len() > PRESET_MAX_BYTES {
+            return Err(SaveTemplateError::Preset(format!(
+                "内嵌预制 `{id}` 超过 64 KiB 上限（{} 字节）",
+                bytes.len()
+            )));
+        }
+        let entry = embedded_entry_name(id).ok_or_else(|| {
+            SaveTemplateError::Preset(format!("用户预制标识 `{id}` 无法映射成包内条目名"))
+        })?;
+        out.push((entry, bytes));
+    }
+    out.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(out)
 }
 
 /// 把一份归档存成用户模板（三级路径自动建目录）。
@@ -674,7 +809,7 @@ pub fn save_template_archive(
             ))
         })?;
     }
-    let snapshot = template_snapshot(archive);
+    let snapshot = template_snapshot(archive)?;
     // ⭐ T-FIX-777：`overwrite = false` 时走 T-FIX-308 的新建专用入口
     // [`crate::save::save_new_archive_file`] —— 拿锁之后在锁内重查存在性，
     // 已存在 ⇒ [`crate::save::SaveError::TargetExists`]；锁被另一场同目标
@@ -699,6 +834,7 @@ pub fn save_template_archive(
         bytes: report.bytes,
         assets: snapshot.assets.len(),
         undo_entries: 0,
+        presets: snapshot.embedded_presets.len(),
     })
 }
 
