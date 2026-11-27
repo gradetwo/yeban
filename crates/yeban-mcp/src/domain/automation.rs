@@ -993,6 +993,45 @@ fn parse_read_ticks(arguments: &Map<String, Value>) -> Result<Vec<u64>, Fault> {
     Ok(extension_pure::read_ticks(&ticks))
 }
 
+/// 构造 `point.tick` 解析失败的故障：六种 `reason`（`missingTick` /
+/// `nonNumericTick` / `negativeTick` / `nonFiniteTick` / `nonIntegerTick` /
+/// `tickOverflow`）由调用点逐字面量传入，全部登记在
+/// `tests/fault_vocabulary.rs` 的调用点传播表里。
+///
+/// `reason` 必须是最后一个形参：词表扫描器只认「最后一个形参是
+/// `reason: &str`」的辅助函数，八个调用点的最后一个实参必须是字符串字面量
+/// —— 改了这个形状，词表判据会立刻点名本站点（不要退回动态站点豁免）。
+fn tick_fault(
+    arguments: &Map<String, Value>,
+    max: u64,
+    expected: &Value,
+    message: String,
+    received: Value,
+    reason: &str,
+) -> Fault {
+    let mut template = arguments.clone();
+    if let Some(point) = template.get_mut("point").and_then(Value::as_object_mut) {
+        point.insert("tick".to_owned(), Value::from(0));
+    }
+    Fault::domain_with_data(
+        ErrorCode::InvalidParameterRange,
+        message,
+        serde_json::json!({
+            "field": "point.tick",
+            "reason": reason,
+            "received": received,
+            "min": 0,
+            "max": max,
+            "expected": expected,
+            "nextStep": {
+                "tool": "yeban_edit_automation",
+                "arguments": Value::Object(template),
+                "action": "把 point.tick 改到 0..=18446744073709551615 范围内后重试"
+            }
+        }),
+    )
+}
+
 /// 解析 `point.tick`：区分非数字、负数、非整数与超出 u64 上限四类失败。
 ///
 /// 错误数据必须能直接指导修正：`received` 保留输入文本（超 u64 的整数用
@@ -1005,34 +1044,14 @@ fn parse_point_tick(arguments: &Map<String, Value>, raw: Option<&Value>) -> Resu
         "min": 0,
         "max": max,
     });
-    let fault = |message: String, reason: &str, received: Value| {
-        let mut template = arguments.clone();
-        if let Some(point) = template.get_mut("point").and_then(Value::as_object_mut) {
-            point.insert("tick".to_owned(), Value::from(0));
-        }
-        Fault::domain_with_data(
-            ErrorCode::InvalidParameterRange,
-            message,
-            serde_json::json!({
-                "field": "point.tick",
-                "reason": reason,
-                "received": received,
-                "min": 0,
-                "max": max,
-                "expected": expected,
-                "nextStep": {
-                    "tool": "yeban_edit_automation",
-                    "arguments": Value::Object(template),
-                    "action": "把 point.tick 改到 0..=18446744073709551615 范围内后重试"
-                }
-            }),
-        )
-    };
     let Some(raw) = raw else {
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             "`point.tick` 必须是非负整数, 实际未提供".to_owned(),
-            "missingTick",
             Value::Null,
+            "missingTick",
         ));
     };
     let Value::Number(number) = raw else {
@@ -1040,10 +1059,13 @@ fn parse_point_tick(arguments: &Map<String, Value>, raw: Option<&Value>) -> Resu
             Value::String(text) => Value::String(text.clone()),
             other => Value::String(other.to_string()),
         };
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             format!("`point.tick` 必须是整数, 实际收到 {received}"),
-            "nonNumericTick",
             received,
+            "nonNumericTick",
         ));
     };
     // 语义上的 u64 直接接受；2^64 在本仓库的 serde_json 解析里是 f64
@@ -1054,47 +1076,65 @@ fn parse_point_tick(arguments: &Map<String, Value>, raw: Option<&Value>) -> Resu
     }
     if number.is_i64() {
         let value = number.as_i64().unwrap_or(i64::MIN);
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             format!("`point.tick` 不能为负数, 实际收到 {value}"),
-            "negativeTick",
             Value::from(value),
+            "negativeTick",
         ));
     }
     let Some(value) = number.as_f64() else {
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             "`point.tick` 必须是整数, 实际收到超出 JSON 数值范围的值".to_owned(),
-            "nonNumericTick",
             Value::String(number.to_string()),
+            "nonNumericTick",
         ));
     };
     if !value.is_finite() {
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             "`point.tick` 必须是有限整数".to_owned(),
-            "nonFiniteTick",
             Value::String(number.to_string()),
+            "nonFiniteTick",
         ));
     }
     if value < 0.0 {
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             format!("`point.tick` 不能为负数, 实际收到 {number}"),
-            "negativeTick",
             Value::Number(number.clone()),
+            "negativeTick",
         ));
     }
     if value.fract() != 0.0 {
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             format!("`point.tick` 必须是整数, 实际收到 {number}"),
-            "nonIntegerTick",
             Value::Number(number.clone()),
+            "nonIntegerTick",
         ));
     }
     if value >= max as f64 {
         // 2^64 在 f64 中可精确表示；用定点格式保留整数文本，避免
         // serde_json 的最短浮点表示把它写成 ...552000。
-        return Err(fault(
+        return Err(tick_fault(
+            arguments,
+            max,
+            &expected,
             format!("`point.tick` 超出 u64 上限 {max}, 实际收到 {value:.0}"),
-            "tickOverflow",
             Value::String(format!("{value:.0}")),
+            "tickOverflow",
         ));
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

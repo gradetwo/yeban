@@ -45,7 +45,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 318 | 1352 | `033dc424bdc21868b0d556b3f847885c2159e912e15c2f36757f9b17a023e41b` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 325 | 1408 | `83aec205d936194fd7aed5035449795cdbbfb02206a5e462101332f7236de1f0` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -205,6 +205,26 @@
 //! `e6f78822136ce2694851e625ca901a0e51d44d8e53d8daa93e8db6991c3df0f3`
 //! 由本判据的 `left:` 报出值照抄（本表里那一位与
 //! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
+//!
+//! ⚠ T-ISS-MWYVY3CZ-r2（返工，hub seq 18361）：T-FIX-955 的 `point.tick` 解析在
+//! `domain/automation.rs:1018` 留下一个动态 `"reason": reason` 站点（`fault`
+//! 闭包的入参）。原交付（基线 `08a0c692`，324/1400）已 approved+collected 但贴不
+//! 上现行尖端：8a9f8cea（T-FIX-957）先把该站点塞进动态豁免表暂绿，b24f4a1e
+//! （T-FIX-964）又改了表状态。返工在活尖端 `b24f4a1e` 上重做：闭包改成具名辅助
+//! 函数 `tick_fault`（`reason` 是最后一个形参），8 个调用点各送一个字符串字面
+//! 量 ⇒ 六个新 reason（`missingTick` / `nonNumericTick` / `negativeTick` /
+//! `nonFiniteTick` / `nonIntegerTick` / `tickOverflow`，各带 `field` /
+//! `reason` / `received` / `min` / `max` / `expected` / `nextStep` 7 键）进词表
+//! 与载荷表，同时把 8a9f8cea 的临时豁免条目退役 ⇒ reason 数 319 → **325**、
+//! 规范行数 1360 → **1408**（6 reason 行 ＋ 42 键行）；`reason` 键站点 377 →
+//! **377** 不变（运行时 15 → 14、传播 3 → 4，此消彼长）、总出现 388 → **388**
+//! 不变（恒等式仍闭合：377 = 字面 357 ＋ 可解析 `let` 2 ＋ 运行时 14 ＋ 传播
+//! 4；388 = 377 ＋ 参数名 9 ＋ 未分类登记 2）。本行计数的旧值 318/1352 是
+//! 8a9f8cea 留下的陈旧数（与 `REASON_SURFACE_*` 常量 319/1360 脱节），本次一
+//! 并对齐到新常量 325/1408。新摘要
+//! `83aec205d936194fd7aed5035449795cdbbfb02206a5e462101332f7236de1f0`
+//! 由本判据的 `left:` 报出值照抄（本表里那一位与
+//! `FROZEN_REASON_SURFACE_SHA256` 在同一次提交里一起换成新值）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -230,7 +250,7 @@ const SCANNER_BLIND_LITERAL_REASONS: [&str; 1] = ["engineSource"];
 const SCANNER_BLIND_LITERAL_PAYLOADS: [(&str, &[&str]); 1] =
     [("engineSource", &["cause", "hint", "reason"])];
 
-pub const GOLDEN_REASONS: [&str; 317] = [
+pub const GOLDEN_REASONS: [&str; 323] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetDecodeFailed",
@@ -345,10 +365,15 @@ pub const GOLDEN_REASONS: [&str; 317] = [
     // ⭐ [G18]：`parse_scale` 的单边输入结构化拒绝（`domain/section_build.rs`）。
     "missingMode",
     "missingSpaceOrMode",
+    "missingTick",
     "missingTonic",
     "moveRequiresPlacementId",
     "moveRequiresStartTick",
+    "negativeTick",
+    "nonFiniteTick",
     "nonFiniteValue",
+    "nonIntegerTick",
+    "nonNumericTick",
     "paramIndexOutOfRange",
     // ⭐ DeviceParam 按名寻址 (P0-2 残留): 名字不存在 / 同名歧义 / 双给不一致 /
     // 名字不是字符串。解析入口只有一处 (`resolve_device_param_address`),
@@ -423,6 +448,7 @@ pub const GOLDEN_REASONS: [&str; 317] = [
     "sourceMissing",
     "staticLaneNotApplicable",
     "tempoUnusable",
+    "tickOverflow",
     "trackNotFound",
     "unknownAddTrackField",
     "unknownAddRoutingNodeField",
@@ -1221,7 +1247,7 @@ struct PropagatedReasonSite {
     literals: &'static [&'static str],
 }
 
-/// ⭐ 实测 **3 个站点 / 2 个辅助函数 / 39 个调用点**（2026-10-29 审计 `N10/N11/N16b` 的 5 个整片段 op 各加 1 个 `reject_unknown_keys` 调用点＝25→30；`duplicateClip` 的 `name` 加 1 个 `read_non_empty_string` 调用点＝8→9）。
+/// ⭐ 实测 **4 个站点 / 3 个辅助函数 / 47 个调用点**（2026-10-29 审计 `N10/N11/N16b` 的 5 个整片段 op 各加 1 个 `reject_unknown_keys` 调用点＝25→30；`duplicateClip` 的 `name` 加 1 个 `read_non_empty_string` 调用点＝8→9；T-ISS-MWYVY3CZ-r2：`parse_point_tick` 的 `fault` 闭包改成具名辅助函数 `tick_fault`，8 个调用点送 6 个字面量 `reason`＝新增 1 个站点 / 1 个辅助函数 / 8 个调用点）。
 ///
 /// 这三条以前登记在 `EXEMPT_DYNAMIC_REASON_SITES`（运行时盲区），现在值**可分类**：
 /// 词表因此从 162 涨到 **210**（＋30 个 `unknown*Field` ＋9 个 `*MustBeNonEmptyString`
@@ -1232,7 +1258,7 @@ struct PropagatedReasonSite {
 /// 已经带 `MustBeNonEmptyString` 后缀，非字符串分支又在后面拼 `MustBeString` ⇒
 /// `sceneNameMustBeNonEmptyStringMustBeString`。本片只**如实登记**，⛔ 不改这些词
 /// （改了就是改对客户端可见的故障契约，另案）。
-const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
+const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 4] = [
     PropagatedReasonSite {
         file: "domain/notes.rs",
         expr: "reason",
@@ -1316,6 +1342,28 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 3] = [
             "sectionNameMustBeNonEmptyStringMustBeString",
             "trackColorMustBeNonEmptyStringMustBeString",
             "trackSamplerMustBeNonEmptyStringMustBeString",
+        ],
+    },
+    // ⭐ T-ISS-MWYVY3CZ-r2：`point.tick` 解析的六种拒绝（T-FIX-955 的 `fault` 闭包
+    // 原先是动态站点 `domain/automation.rs:1018`，值静态看不见；8a9f8cea
+    // （T-FIX-957）把它塞进动态豁免表暂绿，本支改成传播并把那条豁免退役）。
+    // 闭包改成具名辅助函数 `tick_fault`（`reason` 是最后一个形参），8 个调用点
+    // 各送一个字符串字面量 ⇒ 值可分类，搬进传播表；⛔ 不要退回动态站点豁免——
+    // 那会让六个真实运行时 reason 掉出词表、摘要与断言覆盖，改名都不会红。
+    PropagatedReasonSite {
+        file: "domain/automation.rs",
+        expr: "reason",
+        occurrences: 1,
+        helper: "tick_fault",
+        suffix: "",
+        call_sites: 8,
+        literals: &[
+            "missingTick",
+            "negativeTick",
+            "nonFiniteTick",
+            "nonIntegerTick",
+            "nonNumericTick",
+            "tickOverflow",
         ],
     },
 ];
@@ -1652,15 +1700,7 @@ struct DynamicReasonSite {
 ///
 /// ⚠ 这张表是**显式盲区清单**，不是"这些值不重要"：每一条都写清值从哪来、怎么退役。
 /// ⛔ 不许为了让判据变绿而把新的动态站点塞进来 —— 能给出常量/枚举的，先给出名字。
-const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 9] = [
-    DynamicReasonSite {
-        file: "domain/automation.rs",
-        expr: "reason",
-        occurrences: 1,
-        forwards: "T-FIX-955 的 point.tick 校验闭包把 `reason` 入参原样写进 `data.reason`；                   取值来自同文件内多个字面 call site（overflow / notInteger 等），\
-                   扫描器不跨闭包传播。",
-        retires_when: "闭包改接收闭合枚举（每个 reason 一个常量），或每个 call site 直接构造                       完整 Fault、不再经 `reason` 参数转发。",
-    },
+const EXEMPT_DYNAMIC_REASON_SITES: [DynamicReasonSite; 8] = [
     DynamicReasonSite {
         file: "domain/mod.rs",
         expr: "Value::from(reason.clone())",
@@ -1964,6 +2004,10 @@ const REASON_OCCURRENCES_TOTAL: usize = 388;
 // 运行时 14 ＋ 传播 3 ＝ 键站点 375；总出现 386 ＝ 375 ＋ 参数名 9 ＋
 // 未分类登记 2（`recovery.rs` 的 `.entry("reason".to_owned())`，见
 // [`EXEMPT_UNCLASSIFIED_REASON_SITES`]）。
+// ⭐ T-ISS-MWYVY3CZ-r2（2026-11-27，活尖端 `b24f4a1e`，hub seq 18361 返工）：
+// 8a9f8cea（T-FIX-957）给 `domain/automation.rs:1018` 的动态站点加的豁免条目退役，
+// `tick_fault` 传播 3 → 4 ⇒ 运行时 15 → 14、键站点 377 → 377、总出现 388 → 388；
+// 字面 / 可解析 `let` / 参数名 / 未分类登记数都不变。
 // ⭐ MCP-TOOL-003：键站点 208 → 216、字面站点 200 → 208 —— 新形态在
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
@@ -1971,8 +2015,8 @@ const REASON_OCCURRENCES_TOTAL: usize = 388;
 const REASON_KEY_SITES_TOTAL: usize = 377;
 const REASON_LITERAL_SITES_TOTAL: usize = 357;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
-const REASON_DYNAMIC_SITES_TOTAL: usize = 15;
-const REASON_PROPAGATED_SITES_TOTAL: usize = 3;
+const REASON_DYNAMIC_SITES_TOTAL: usize = 14;
+const REASON_PROPAGATED_SITES_TOTAL: usize = 4;
 const REASON_ARGUMENT_NAME_TOTAL: usize = 9;
 
 /// 把"看不见的站点"折成失败字符串：未登记的 `Dynamic` / `ArgumentName` /
@@ -2336,7 +2380,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 317] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 323] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -2562,6 +2606,12 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 317] = [
     // ⭐ [G18]：三条单边拒绝的字面 `json!` 同级键（排序表）。
     ("missingMode", &["example", "modes", "note", "reason"]),
     ("missingSpaceOrMode", &["modes", "noteNames", "reason"]),
+    (
+        "missingTick",
+        &[
+            "expected", "field", "max", "min", "nextStep", "reason", "received",
+        ],
+    ),
     ("missingTonic", &["example", "mode", "noteNames", "reason"]),
     (
         "moveRequiresPlacementId",
@@ -2572,8 +2622,32 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 317] = [
         &["field", "placementKind", "reason"],
     ),
     (
+        "negativeTick",
+        &[
+            "expected", "field", "max", "min", "nextStep", "reason", "received",
+        ],
+    ),
+    (
+        "nonFiniteTick",
+        &[
+            "expected", "field", "max", "min", "nextStep", "reason", "received",
+        ],
+    ),
+    (
         "nonFiniteValue",
         &["field", "narrowedToF32", "reason", "value"],
+    ),
+    (
+        "nonIntegerTick",
+        &[
+            "expected", "field", "max", "min", "nextStep", "reason", "received",
+        ],
+    ),
+    (
+        "nonNumericTick",
+        &[
+            "expected", "field", "max", "min", "nextStep", "reason", "received",
+        ],
     ),
     (
         "paramIndexOutOfRange",
@@ -2830,6 +2904,12 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 317] = [
     (
         "tempoUnusable",
         &["bpm", "field", "frames", "reason", "sampleRate"],
+    ),
+    (
+        "tickOverflow",
+        &[
+            "expected", "field", "max", "min", "nextStep", "reason", "received",
+        ],
     ),
     ("trackNotFound", &["hint", "reason", "trackId"]),
     (
@@ -3939,12 +4019,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新摘要 `27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb`
 /// 由临时取数判据报出后照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "033dc424bdc21868b0d556b3f847885c2159e912e15c2f36757f9b17a023e41b";
+    "83aec205d936194fd7aed5035449795cdbbfb02206a5e462101332f7236de1f0";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 319;
+pub const REASON_SURFACE_REASONS: usize = 325;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1360;
+pub const REASON_SURFACE_LINES: usize = 1408;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
