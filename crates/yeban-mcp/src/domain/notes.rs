@@ -10268,6 +10268,11 @@ fn compile_inner(
     // 因此循环⛔ 不能是 `for op in ops`：展开出来的条目必须**在原位置**接着被编译，
     // 同批里"先 `add` 再 `transposeClip`"才转得到刚建的那个音（在投影上展开 ⇒ 天然成立）。
     let mut queue: Vec<NoteOp> = ops.to_vec();
+    // ⭐ 同批 `addTrack` 自动接线的节点身份：后续 `addRoutingNode` 撞
+    // `routingNodeAlreadyExists` 时用它把 hint 指向“去掉重复 op”，而不是只让
+    // 调用方猜。只记录本次 `addTrack` 真的自动补了节点的情形；节点原本就在图里
+    // 或没有主总线而不接线时不算。
+    let mut auto_wired_add_track_nodes: Vec<EntityId> = Vec::new();
     let mut index = 0usize;
     while index < queue.len() {
         // ⚠ 先把增量**抄出来**再去改 `queue`：`if let ... = queue[index]` 会在整个
@@ -11529,7 +11534,11 @@ fn compile_inner(
                     TrackKind::AuxReturn => Some(RoutingKind::BusToMaster),
                     TrackKind::Master => None,
                 };
-                match routing_kind.filter(|_| project.tracks.contains_key(&master_id)) {
+                let wiring_kind = routing_kind.filter(|_| project.tracks.contains_key(&master_id));
+                if wiring_kind.is_some() && !project.routing_graph.nodes.contains(&track.id) {
+                    auto_wired_add_track_nodes.push(track.id);
+                }
+                match wiring_kind {
                     None => Op::AddTrack {
                         track: track.clone(),
                     },
@@ -11600,17 +11609,25 @@ fn compile_inner(
                 // 形态的编译层展开，模型层两份集合各有自己的 `Op`）。
                 // 本层照抄模型口径（见 `NoteOp::AddRoutingNode` 的文档）。
                 if project.routing_graph.nodes.contains(node_id) {
+                    let auto_wired = auto_wired_add_track_nodes.contains(node_id);
+                    let hint = if auto_wired {
+                        "同批更早的 `addTrack` 已自动把这条轨加入 `routing_graph.nodes`\
+                         并连到主总线；请**去掉重复的 `addRoutingNode`**（不要重复补接线）。\
+                         若确实要单独建节点, 不要在同批同时对该轨用 `addTrack`"
+                    } else {
+                        "新建节点是**幂等拒绝**的 (模型 `AddRoutingNode` 的前置\
+                         条件是身份不在 `nodes` 里); 节点身份由 \
+                         `yeban_query_project` 的 `routing_graph.nodes` 报出。\
+                         若你以为它是一条还没进图的音轨, 请先确认 `tracks` 里\
+                         确实有它 —— 模型**不**要求节点对应真实音轨"
+                    };
                     return Err(Fault::domain_with_data(
                         ErrorCode::Conflict,
                         format!("工程的 routing_graph.nodes 里已经有身份 {node_id} 的节点"),
                         serde_json::json!({
                             "nodeId": node_id.to_canonical_string(),
                             "reason": "routingNodeAlreadyExists",
-                            "hint": "新建节点是**幂等拒绝**的 (模型 `AddRoutingNode` 的前置\
-                                     条件是身份不在 `nodes` 里); 节点身份由 \
-                                     `yeban_query_project` 的 `routing_graph.nodes` 报出。\
-                                     若你以为它是一条还没进图的音轨, 请先确认 `tracks` 里\
-                                     确实有它 —— 模型**不**要求节点对应真实音轨",
+                            "hint": hint,
                         }),
                     ));
                 }
@@ -25086,6 +25103,42 @@ mod tests {
             matches!(&compiled[0], Op::AddTrack { .. }),
             "Master 轨不接线，必须保持单条 AddTrack: {:?}",
             compiled[0]
+        );
+    }
+
+    /// 同批 `addTrack + addRoutingNode` 撞车时，hint 必须指出 `addTrack` 已自动接线、
+    /// 请去掉重复 op（T-FIX-658）。行为仍是清晰的 `CONFLICT/routingNodeAlreadyExists`。
+    #[test]
+    fn add_track_then_add_routing_node_hint_names_the_duplicate() {
+        let project = filled_project();
+        let (track_id, clip_id) = lead_clip(&project);
+        let new_id = EntityId::from_str("01J8ZQ000000000000000000WR").expect("ULID");
+        let ops = parse_ops(&serde_json::json!([
+            {"kind": ADD_TRACK_KIND, "trackId": new_id.to_canonical_string(),
+             "name": "Wired", "trackKind": "Audio"},
+            {"kind": ADD_ROUTING_NODE_KIND, "nodeId": new_id.to_canonical_string()}
+        ]))
+        .expect("两个规范形状都必须先被解析接受");
+
+        let fault = compile(&project, &track_id, &clip_id, &ops)
+            .expect_err("节点已由同批 addTrack 自动加入，显式补节点必须响亮拒绝");
+        assert_eq!(
+            reason_of(&fault).as_deref(),
+            Some("routingNodeAlreadyExists"),
+            "拒绝理由必须仍是幂等冲突"
+        );
+        let Fault::Domain { data, .. } = &fault else {
+            panic!("必须是领域失败: {fault:?}");
+        };
+        let data = data.as_ref().expect("必须带结构化 hint");
+        let hint = data["hint"].as_str().expect("hint 必须是字符串");
+        assert!(
+            hint.contains("addTrack") && hint.contains("去掉重复"),
+            "hint 必须点名同批 addTrack 并指导去掉重复 op: {hint}"
+        );
+        assert!(
+            hint.contains("addRoutingNode"),
+            "hint 必须点名被去掉的 op 是 addRoutingNode: {hint}"
         );
     }
 

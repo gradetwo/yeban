@@ -114,6 +114,48 @@ fn tools_list_publishes_one_branch_per_parser_kind() {
     );
 }
 
+/// `addTrack` 的公告文案必须与实际接线行为一致（T-FIX-658）。
+///
+/// 旧文案说“不自动进 routing_graph.nodes、也不建边”，但编译层早已展开为
+/// `[AddTrack, AddRoutingNode, ConnectRouting→主总线]`。本判据同时钉住运行期
+/// `tools/list` 与离线登记 schema，避免只改一边。
+#[test]
+fn add_track_description_matches_auto_wiring() {
+    let items = published_ops_items();
+    let branch = items["oneOf"]
+        .as_array()
+        .expect("ops.items.oneOf")
+        .iter()
+        .find(|branch| branch["title"] == "addTrack")
+        .expect("addTrack 分支必须存在");
+    let description = branch["description"].as_str().expect("description");
+    for stale in ["不自动进", "也不建边", "不建边"] {
+        assert!(
+            !description.contains(stale),
+            "运行期 addTrack 文案不得再含旧说法 `{stale}`: {description}"
+        );
+    }
+    assert!(
+        description.contains("自动加入 routing_graph.nodes")
+            && description.contains("不要同批再补 addRoutingNode"),
+        "运行期文案必须说明自动加节点并连主总线、且勿重复补 addRoutingNode: {description}"
+    );
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../schemas/mcp-tools.schema.json");
+    let registered = std::fs::read_to_string(&path).expect("登记 schema 必须可读");
+    for stale in ["不自动进 routing_graph.nodes", "也不建边"] {
+        assert!(
+            !registered.contains(stale),
+            "登记 schema 不得再含旧说法 `{stale}`"
+        );
+    }
+    assert!(
+        registered.contains("自动加入 routing_graph.nodes"),
+        "登记 schema 的 addTrack 文案必须与运行期同步"
+    );
+}
+
 /// 判据 ②：每个公告名都**真的**以带引号字面量出现在引擎白名单里。
 ///
 /// 这是对"字面量抄写"的机械对账（本 crate ⛔ 不依赖 `yeban-engine`，因此读源码

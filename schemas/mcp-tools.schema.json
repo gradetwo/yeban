@@ -7994,7 +7994,7 @@
                   },
                   {
                     "additionalProperties": false,
-                    "description": "新增一条空形状音轨（不自动进 routing_graph.nodes、也不建边） ⭐ 顶层 `clipId`: **不读**（省略 = 占位；给了 = 接受但忽略，不解析、不查片段池）",
+                    "description": "新增一条空形状音轨；Midi/Audio/AuxReturn 轨会自动加入 routing_graph.nodes 并连到主总线（不要同批再补 addRoutingNode）；Master 轨或无主总线时不接线 ⭐ 顶层 `clipId`: **不读**（省略 = 占位；给了 = 接受但忽略，不解析、不查片段池）",
                     "properties": {
                       "kind": {
                         "const": "addTrack"

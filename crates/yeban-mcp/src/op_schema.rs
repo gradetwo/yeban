@@ -1301,7 +1301,7 @@ pub fn ops_items() -> Value {
             ),
             op(
                 "addTrack",
-                "新增一条空形状音轨（不自动进 routing_graph.nodes、也不建边）",
+                "新增一条空形状音轨；Midi/Audio/AuxReturn 轨会自动加入 routing_graph.nodes 并连到主总线（不要同批再补 addRoutingNode）；Master 轨或无主总线时不接线",
                 &["kind", "trackId", "name", "trackKind"],
                 json!({
                     "kind": kind("addTrack"),
