@@ -1,5 +1,11 @@
 # 《编曲与配器手册》术语合并记录
 
+## 2026-11-27 T-FIX-883 影视配乐独立章
+
+- 新增 4 条：`主题动机 / leitmotif`、`同步点 / sync point`、`米老鼠式配乐 / mickey mousing`、`临时配乐 / temp track`。
+- 本册术语表：159 → 163 条；共用术语表中文 446 → 450 条、英文 446 → 450 条。
+- 中英行序保持对应；本章不新增重复词条。
+
 ## 2026-11-27 T-FIX-879 电子舞曲独立章
 
 - 新增 4 条：`电子舞曲 / electronic dance music`、`泵感 / pumping`、`截止频率 / cutoff frequency`、`重复中的微变 / variation within repetition`。
