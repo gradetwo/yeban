@@ -243,7 +243,8 @@ export component StatusBar inherits Rectangle {
         accessible-value: root.tip;
     }
 
-    // 最近一次保存的结果 —— 成功 / 被拒的**原话**（宿主 `host::apply_save_outcome` 是唯一写者）。
+    // 最近一次保存的结果 / 当前打开工程 —— 宿主 `host::apply_save_outcome`（保存回执）
+    // 与 `host::apply_opened_project_save_status`（打开/新建后刷新为当前工程路径）是两处写者。
     UiText {
         x: 344px;
         y: 0;

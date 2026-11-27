@@ -10812,6 +10812,30 @@ fn apply_save_outcome(ui: &MainWindow, outcome: &crate::save_action::SaveOutcome
     ui.set_save_succeeded(ok);
 }
 
+/// ⭐ T-FIX-798：打开/新建工程成功后刷新状态栏的保存格，让它指向**当前**工程。
+///
+/// `save-status` 此前只有 [`apply_save_outcome`] 一个写者 ⇒ 保存工程 A 之后打开
+/// 工程 B（或内置 demo），状态栏仍显示 A 的旧路径（实机复现）。本函数由
+/// [`PortOpenProject::open_archive_runtime`] 在换会话成功后调用 —— 控制台「打开工程」、
+/// 启动器「打开文件」、新建、模板副本都经过那一处，⛔ 不在各入口各写一遍。
+///
+/// - 有落点：`已打开：{path}`（从磁盘读进来的工程，与 `dirty_guard::mark_saved`
+///   同口径；`save-succeeded = true` 只表示"这一格不是失败"）；
+/// - 无落点：`未保存（当前工程尚未保存到磁盘）`，`save-succeeded = false` 红字醒目。
+#[inline]
+pub fn apply_opened_project_save_status(ui: &MainWindow, path: Option<&std::path::Path>) {
+    match path {
+        Some(path) => {
+            ui.set_save_status(format!("已打开：{}", path.display()).into());
+            ui.set_save_succeeded(true);
+        }
+        None => {
+            ui.set_save_status("未保存（当前工程尚未保存到磁盘）".into());
+            ui.set_save_succeeded(false);
+        }
+    }
+}
+
 // ===========================================================================
 // ⭐ 运行期「打开工程」的**唯一**接线（任务单 `#93`）
 // ===========================================================================
@@ -11106,6 +11130,10 @@ impl PortOpenProject {
         //（从文件打开的工程此刻就是「已保存」态）。
         crate::dirty_guard::mark_saved(self.port.display().head);
         crate::dirty_guard::mark_saved_fingerprint(self.port.fingerprint());
+        // ⭐ T-FIX-798：换工程后状态栏的保存格必须指向**当前**工程 —— 旧路径必须消失，
+        // 无磁盘来源时明确写"未保存"。放在换会话之后、任何后续失败之前，保证界面已经
+        // 换成新工程时这一格就已是新工程的读数（⛔ 不留上一份工程的路径）。
+        apply_opened_project_save_status(ui, source_path);
         // ⭐ T-FIX-349：工程边界清 ARA 会话（与 MCP `reset_history` 同义）。
         // 打开 / 新建 / 模板副本都走本函数 ⇒ 只有这一处清会话，⛔ 不另起生命周期。
         reset_plugin_panel_for_project_switch(ui);
