@@ -6,13 +6,11 @@
 \chapter{Projects}
 \label{ch:projects}
 
-\begin{quote}
-九层之台，起于累土。
-\end{quote}
+\classquote{九层之台，起于累土。}{Laozi, Dao De Jing, ch. 64 (《道德经·第六十四章》)}{Translation: “A nine-story terrace begins with a basket of earth.” A project begins as an empty container with its first track: set the frame first, then add content.}
 
-Source: Laozi, Dao De Jing, ch. 64 (《道德经·第六十四章》). Translation: “A nine-story terrace begins with a basket of earth.”
 
-A project begins as an empty container with its first track: set the frame first, then add content.
+
+
 
 This chapter covers the whole project lifecycle: how to create, open, save and reuse
 a project, plus Yeban's distinctive "undo is versioning" model. By the end you should
@@ -54,13 +52,13 @@ project — you get either the new version or the previous one.
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=1.2cm, >=stealth,
-    box/.style={draw, rounded corners, align=center, minimum width=2.4cm, minimum height=0.9cm}]
+\begin{tikzpicture}[node distance=1.6cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, font=\small, minimum width=2.4cm, minimum height=0.9cm}]
   \node[box] (a) {New / from template};
-  \node[box, right of=a] (b) {Edit project};
-  \node[box, right of=b] (c) {Save (atomic)};
-  \node[box, below of=c] (d) {Recent / reopen};
-  \node[box, below of=b] (e) {Return via Time Machine};
+  \node[box, right=of a] (b) {Edit project};
+  \node[box, right=of b] (c) {Save (atomic)};
+  \node[box, below=of c] (d) {Recent / reopen};
+  \node[box, below=of b] (e) {Return via Time Machine};
   \draw[->] (a) -- (b); \draw[->] (b) -- (c); \draw[->] (c) -- (d);
   \draw[->] (b) -- (e); \draw[->] (e) -- (b);
 \end{tikzpicture}

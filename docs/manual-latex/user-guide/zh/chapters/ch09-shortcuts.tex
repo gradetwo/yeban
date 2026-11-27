@@ -6,13 +6,11 @@
 \chapter{快捷键与命令速查}
 \label{ch:shortcuts}
 
-\begin{quote}
-以无厚入有间，恢恢乎其于游刃必有余地矣。
-\end{quote}
+\classquote{以无厚入有间，恢恢乎其于游刃必有余地矣。}{《庄子·养生主》}{快捷键让高频动作变得从容；手熟之后，心思留给音乐本身。}
 
-出处：《庄子·养生主》
 
-快捷键让高频动作变得从容；手熟之后，心思留给音乐本身。
+
+
 
 夜半有一张**唯一的快捷键策略表**：程序里「帮助 $\to$ 快捷键速查」显示的那张，
 与命令行 \texttt{yeban-app --print-shortcuts} 打印的是同一份。本章按工作流挑出
@@ -90,8 +88,8 @@ macOS 上的 \texttt{Cmd+S}，是同一条规范键位。带「（未实现）�
 \begin{tikzpicture}[node distance=1.2cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
   \node[box] (a) {帮助 → 快捷键速查};
-  \node[box, right of=a] (b) {--print-shortcuts};
-  \node[box, below of=a] (c) {本章：按工作流导览};
+  \node[box, right=of a] (b) {--print-shortcuts};
+  \node[box, below=of a] (c) {本章：按工作流导览};
   \draw[<->] (a)--(b); \draw[->] (a)--(c);
 \end{tikzpicture}
 \caption{权威来源是应用内速查与 \texttt{--print-shortcuts} 的同一张策略表；本章只是导览}

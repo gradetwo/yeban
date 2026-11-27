@@ -44,7 +44,7 @@
   \draw[very thick] (0,0.2) -- (1,1.1) -- (2,2.6) -- (3,1.4) -- (4,0.1);
   \foreach \x/\y/\n in {0/0.2/C4,2/2.6/G4,4/0.1/C4} {
     \fill (\x,\y) circle (1.7pt);
-    \node[above=1pt,font=\tiny] at (\x,\y) {\n};
+    \node[above=1pt,font=\tiny,fill=white,inner sep=1pt] at (\x,\y) {\n};
   }
   \draw[<->] (0,3.05) -- (2,3.05) node[midway,above,font=\tiny]{问句};
   \draw[<->] (2,3.05) -- (4,3.05) node[midway,above,font=\tiny]{答句};

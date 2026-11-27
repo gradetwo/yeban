@@ -5,13 +5,11 @@
 \chapter{Tracks and Clips}
 \label{ch:tracks-clips}
 
-\begin{quote}
-方以类聚，物以群分。
-\end{quote}
+\classquote{方以类聚，物以群分。}{Book of Changes, “Appended Judgments I” (《周易·系辞上》)}{Translation: “Things gather according to their kind; creatures divide according to their group.” Tracks and clips find their place by kind; clear grouping is what makes editing orderly.}
 
-Source: Book of Changes, “Appended Judgments I” (《周易·系辞上》). Translation: “Things gather according to their kind; creatures divide according to their group.”
 
-Tracks and clips find their place by kind; clear grouping is what makes editing orderly.
+
+
 
 The arrangement area is Yeban's main workspace: tracks as rows, clips laid out on the
 timeline to their right. This chapter covers creating tracks, placing clips and turning
@@ -67,10 +65,10 @@ leaving a half-finished state.
 \begin{tikzpicture}[node distance=1.1cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.0cm, minimum height=0.8cm}]
   \node[box] (a) {Create};
-  \node[box, right of=a] (b) {Place / resize};
-  \node[box, right of=b] (c) {Copy to loop};
-  \node[box, right of=c] (d) {Split at playhead};
-  \node[box, right of=d] (e) {Write notes in roll};
+  \node[box, right=of a] (b) {Place / resize};
+  \node[box, right=of b] (c) {Copy to loop};
+  \node[box, right=of c] (d) {Split at playhead};
+  \node[box, right=of d] (e) {Write notes in roll};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{Common clip flow: create $\to$ place $\to$ copy $\to$ split $\to$ write notes}

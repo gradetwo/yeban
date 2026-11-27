@@ -49,7 +49,7 @@
   \fill[blue!16] (2,0) rectangle (3,0.65);
   \fill[blue!28] (3,0) rectangle (4,0.65);
   \node at (0.5,0.33) {强};
-  \draw[thick] (3,-0.1) -- (3,0.75) node[below] {\tiny 小节线};
+  \draw[thick] (3,-0.1) -- (3,0.75); \node[font=\tiny] at (3,-0.30) {小节线};
   \node[anchor=west] at (6.1,0.33) {两小节};
 \end{tikzpicture}
 
@@ -129,7 +129,7 @@
 
   \foreach \i in {0,...,7} {\draw[black!25] (\i,0) rectangle ++(1,0.6);}
   \foreach \i in {0,2,3,5,7} {\fill[red!45] (\i+0.1,0.08) rectangle ++(0.8,0.44);}
-  \node[anchor=west] at (0,0.95) {\textbf{切分}};
+  \node[anchor=west] at (0,0.80) {\textbf{切分}};
 \end{tikzpicture}
 
 \small 图 2-3：同一小节 4/4 的直拍与切分。上排直拍：重音在 1、3、5、7 个八分位置；下排切分：重音移到 3、6、8 等弱位。格子是八个八分音符；色块是起音位置，不代表每个音都一样长。

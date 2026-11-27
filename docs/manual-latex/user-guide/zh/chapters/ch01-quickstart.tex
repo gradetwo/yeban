@@ -6,13 +6,11 @@
 \chapter{快速上手}
 \label{ch:quickstart}
 
-\begin{quote}
-不积跬步，无以至千里。
-\end{quote}
+\classquote{不积跬步，无以至千里。}{《荀子·劝学》}{本章从安装走到第一次导出，正是一步一步跑通最短路径，先做出声，再谈细节。}
 
-出处：《荀子·劝学》
 
-本章从安装走到第一次导出，正是一步一步跑通最短路径，先做出声，再谈细节。
+
+
 
 夜半（Yeban）是一款开源数字音频工作站：纯 Rust 实时音频引擎之上是一套 Slint
 原生图形界面，并对外提供完整的 MCP 工具面。人和 AI 可以在同一个工程里并肩工作。
@@ -44,14 +42,14 @@ cargo build --release -p yeban-app
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=1.1cm, >=stealth,
-    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.8cm}]
+\begin{tikzpicture}[node distance=0.45cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, font=\small, minimum width=2.0cm, minimum height=0.8cm}]
   \node[box] (a) {安装包 / 源码构建};
-  \node[box, right of=a] (b) {首次启动};
-  \node[box, right of=b] (c) {新手引导};
-  \node[box, right of=c] (d) {建轨与放片段};
-  \node[box, right of=d] (e) {播放试听};
-  \node[box, right of=e] (f) {导出 WAV};
+  \node[box, right=of a] (b) {首次启动};
+  \node[box, right=of b] (c) {新手引导};
+  \node[box, right=of c] (d) {建轨与放片段};
+  \node[box, right=of d] (e) {播放试听};
+  \node[box, right=of e] (f) {导出 WAV};
   \draw[->] (a) -- (b); \draw[->] (b) -- (c); \draw[->] (c) -- (d);
   \draw[->] (d) -- (e); \draw[->] (e) -- (f);
 \end{tikzpicture}

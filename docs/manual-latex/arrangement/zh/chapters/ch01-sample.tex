@@ -13,8 +13,8 @@
   \centering
   \begin{tikzpicture}[node distance=1.6cm,>=stealth]
     \node[draw,rounded corners] (a) {片段};
-    \node[draw,rounded corners,right of=a] (b) {轨道};
-    \node[draw,rounded corners,right of=b] (c) {混音台};
+    \node[draw,rounded corners,right=of a] (b) {轨道};
+    \node[draw,rounded corners,right=of b] (c) {混音台};
     \draw[->] (a) -- (b);
     \draw[->] (b) -- (c);
   \end{tikzpicture}

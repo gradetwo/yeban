@@ -6,13 +6,11 @@
 \chapter{The Piano Roll}
 \label{ch:piano-roll}
 
-\begin{quote}
-凡音之起，由人心生也。
-\end{quote}
+\classquote{凡音之起，由人心生也。}{Book of Rites, “Record of Music” (《礼记·乐记》)}{Translation: “All music begins in the human heart.” Before a note lands on the roll there is an emotion to express; technique and rules serve what is heard.}
 
-Source: Book of Rites, “Record of Music” (《礼记·乐记》). Translation: “All music begins in the human heart.”
 
-Before a note lands on the roll there is an emotion to express; technique and rules serve what is heard.
+
+
 
 The piano roll is where MIDI notes are written: time runs horizontally, pitch
 vertically. This chapter covers opening it, drawing notes, editing velocity and
@@ -62,13 +60,13 @@ disguise an unimplemented operation as a success.
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=1.2cm, >=stealth,
-    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
+\begin{tikzpicture}[node distance=0.5cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, font=\small, minimum width=2.0cm, minimum height=0.9cm}]
   \node[box] (a) {Select clip};
-  \node[box, right of=a] (b) {Draw with key 2};
-  \node[box, right of=b] (c) {Drag pitch / length};
-  \node[box, right of=c] (d) {Quantize / humanize};
-  \node[box, right of=d] (e) {Audition};
+  \node[box, right=of a] (b) {Draw with key 2};
+  \node[box, right=of b] (c) {Drag pitch / length};
+  \node[box, right=of c] (d) {Quantize / humanize};
+  \node[box, right=of d] (e) {Audition};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{Common roll flow: select clip $\to$ draw $\to$ edit pitch/length $\to$ quantize $\to$ audition}

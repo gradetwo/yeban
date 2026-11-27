@@ -6,13 +6,11 @@
 \chapter{自动化与调制}
 \label{ch:automation-modulation}
 
-\begin{quote}
-易穷则变，变则通，通则久。
-\end{quote}
+\classquote{易穷则变，变则通，通则久。}{《周易·系辞下》}{自动化让参数随时间变化；懂得变通，声音才不会僵住。}
 
-出处：《周易·系辞下》
 
-自动化让参数随时间变化；懂得变通，声音才不会僵住。
+
+
 
 自动化让参数随时间变化：你可以画一条曲线，也可以边播放边把操作录进去。
 这一章讲怎么显示泳道、四种写入模式各是什么意思，以及当前版本在调制上的
@@ -83,10 +81,10 @@ Latch & 继续写（需显式停止） \\
 \begin{tikzpicture}[node distance=1.1cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.3cm, minimum height=0.8cm}]
   \node[box] (a) {选自动化目标};
-  \node[box, right of=a] (b) {选写入模式};
-  \node[box, right of=b] (c) {画曲线/边播边写};
-  \node[box, right of=c] (d) {播放按曲线驱动};
-  \node[box, below of=c] (e) {LFO：DSP 已有，未接合成器};
+  \node[box, right=of a] (b) {选写入模式};
+  \node[box, right=of b] (c) {画曲线/边播边写};
+  \node[box, right=of c] (d) {播放按曲线驱动};
+  \node[box, below=of c] (e) {LFO：DSP 已有，未接合成器};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d);
   \draw[dashed,->] (c)--(e);
 \end{tikzpicture}

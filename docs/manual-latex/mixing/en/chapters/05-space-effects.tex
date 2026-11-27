@@ -25,7 +25,9 @@ These readings interact. Too much pre-delay and the tail detaches from the sourc
   \draw[->] (src2) -- (send);
   \draw[->] (send) -- (aux);
   \draw[->] (aux) -- (bus2);
-  \draw[->, dashed] (src2) -- node[below, pos=0.5] {dry} (bus2);
+  \path (src2.south) ++(0,-5mm) coordinate (d1);
+  \path (bus2.south) ++(0,-5mm) coordinate (d2);
+  \draw[->, dashed] (src2.south) -- (d1) -- node[below] {dry} (d2) -- (bus2.south);
 \end{tikzpicture}
 \end{center}
 

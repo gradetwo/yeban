@@ -6,13 +6,11 @@
 \chapter{录音与音频编辑}
 \label{ch:recording-audio}
 
-\begin{quote}
-感于物而动，故形于声。
-\end{quote}
+\classquote{感于物而动，故形于声。}{《礼记·乐记》}{录音是把当下的触动变成可编辑的声，后续剪辑与处理都为还原那份真切。}
 
-出处：《礼记·乐记》
 
-录音是把当下的触动变成可编辑的声，后续剪辑与处理都为还原那份真切。
+
+
 
 这一章讲怎么把外部声音弄进工程：录音、导入、把音频片段摆到轨道上，以及
 最基础的裁剪与淡化。录音与导入的素材都会进入工程资产池，随工程一起走。
@@ -39,10 +37,10 @@
 \begin{tikzpicture}[node distance=1.2cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
   \node[box] (a) {选输入设备};
-  \node[box, right of=a] (b) {Arm + 试听电平};
-  \node[box, right of=b] (c) {录音 / 停录};
-  \node[box, right of=c] (d) {字节进资产池};
-  \node[box, right of=d] (e) {片段上时间轴};
+  \node[box, right=of a] (b) {Arm + 试听电平};
+  \node[box, right=of b] (c) {录音 / 停录};
+  \node[box, right=of c] (d) {字节进资产池};
+  \node[box, right=of d] (e) {片段上时间轴};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{录音落地链路：选设备 $\to$ 就绪监测 $\to$ 录音/停录 $\to$ 资产池 $\to$ 时间轴片段}

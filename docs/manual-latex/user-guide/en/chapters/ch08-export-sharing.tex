@@ -6,13 +6,11 @@
 \chapter{Export and Sharing}
 \label{ch:export-sharing}
 
-\begin{quote}
-既以为人己愈有，既以与人己愈多。
-\end{quote}
+\classquote{既以为人己愈有，既以与人己愈多。}{Laozi, Dao De Jing, ch. 81 (《道德经·第八十一章》)}{Translation: “The more one gives to others, the more one has; the more one shares, the more one gains.” Export and sharing hand the work to others; the more you share, the more you gain.}
 
-Source: Laozi, Dao De Jing, ch. 81 (《道德经·第八十一章》). Translation: “The more one gives to others, the more one has; the more one shares, the more one gains.”
 
-Export and sharing hand the work to others; the more you share, the more you gain.
+
+
 
 Once a piece is finished it needs to leave Yeban: for mixing elsewhere, for mastering,
 or simply as a playable file. This chapter covers what each export route produces and
@@ -69,13 +67,13 @@ in the receipt is a good habit.
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=1.1cm, >=stealth,
-    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.8cm}]
+\begin{tikzpicture}[node distance=0.5cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, font=\small, minimum width=2.0cm, minimum height=0.8cm}]
   \node[box] (a) {Pick route};
-  \node[box, right of=a] (b) {Set options};
-  \node[box, right of=b] (c) {Render in background};
-  \node[box, right of=c] (d) {Write + manifest};
-  \node[box, right of=d] (e) {Verify via receipt};
+  \node[box, right=of a] (b) {Set options};
+  \node[box, right=of b] (c) {Render in background};
+  \node[box, right=of c] (d) {Write + manifest};
+  \node[box, right=of d] (e) {Verify via receipt};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{Export flow: pick route $\to$ set options $\to$ render $\to$ write $\to$ verify with the receipt}

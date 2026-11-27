@@ -5,13 +5,11 @@
 \chapter{轨道与片段}
 \label{ch:tracks-clips}
 
-\begin{quote}
-方以类聚，物以群分。
-\end{quote}
+\classquote{方以类聚，物以群分。}{《周易·系辞上》}{轨道与片段按类归位，分组清楚了，编辑才有章法。}
 
-出处：《周易·系辞上》
 
-轨道与片段按类归位，分组清楚了，编辑才有章法。
+
+
 
 编曲区是夜半的主工作区：一条轨道一行，片段摆在右边的时间轴上。这一章讲怎么
 建轨、怎么摆片段、怎么把一段素材变成你想要的编排。
@@ -63,10 +61,10 @@
 \begin{tikzpicture}[node distance=1.1cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.0cm, minimum height=0.8cm}]
   \node[box] (a) {建片段};
-  \node[box, right of=a] (b) {放/拉伸};
-  \node[box, right of=b] (c) {复制成循环};
-  \node[box, right of=c] (d) {播放头切分};
-  \node[box, right of=d] (e) {进入卷帘写音符};
+  \node[box, right=of a] (b) {放/拉伸};
+  \node[box, right=of b] (c) {复制成循环};
+  \node[box, right=of c] (d) {播放头切分};
+  \node[box, right=of d] (e) {进入卷帘写音符};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{片段的常用操作链：建片段 $\to$ 摆放 $\to$ 复制 $\to$ 切分 $\to$ 写音符}

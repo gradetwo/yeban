@@ -6,13 +6,11 @@
 \chapter{Automation and Modulation}
 \label{ch:automation-modulation}
 
-\begin{quote}
-易穷则变，变则通，通则久。
-\end{quote}
+\classquote{易穷则变，变则通，通则久。}{Book of Changes, “Appended Judgments II” (《周易·系辞下》)}{Translation: “When a path is exhausted, it changes; through change, it flows; through flow, it endures.” Automation lets parameters change over time; with change, the sound stays alive.}
 
-Source: Book of Changes, “Appended Judgments II” (《周易·系辞下》). Translation: “When a path is exhausted, it changes; through change, it flows; through flow, it endures.”
 
-Automation lets parameters change over time; with change, the sound stays alive.
+
+
 
 Automation lets parameters change over time: draw a curve, or record your movements
 while playing back. This chapter covers showing lanes, what the four write modes mean,
@@ -88,10 +86,10 @@ modulation paths are still evolving.
 \begin{tikzpicture}[node distance=1.1cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.3cm, minimum height=0.8cm}]
   \node[box] (a) {Pick target};
-  \node[box, right of=a] (b) {Pick write mode};
-  \node[box, right of=b] (c) {Draw / record};
-  \node[box, right of=c] (d) {Playback drives param};
-  \node[box, below of=c] (e) {LFO: in DSP, not wired to synth};
+  \node[box, right=of a] (b) {Pick write mode};
+  \node[box, right=of b] (c) {Draw / record};
+  \node[box, right=of c] (d) {Playback drives param};
+  \node[box, below=of c] (e) {LFO: in DSP, not wired to synth};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d);
   \draw[dashed,->] (c)--(e);
 \end{tikzpicture}

@@ -6,13 +6,11 @@
 \chapter{Shortcuts and Command Reference}
 \label{ch:shortcuts}
 
-\begin{quote}
-以无厚入有间，恢恢乎其于游刃必有余地矣。
-\end{quote}
+\classquote{以无厚入有间，恢恢乎其于游刃必有余地矣。}{Zhuangzi, “The Secret of Caring for Life” (《庄子·养生主》)}{Translation: “Where there is no thickness to enter what has gaps, there is ample room for the blade to move.” Shortcuts make frequent actions effortless; once the hands know the way, the mind can stay with the music.}
 
-Source: Zhuangzi, “The Secret of Caring for Life” (《庄子·养生主》). Translation: “Where there is no thickness to enter what has gaps, there is ample room for the blade to move.”
 
-Shortcuts make frequent actions effortless; once the hands know the way, the mind can stay with the music.
+
+
 
 Yeban has a single authoritative shortcut policy table: the one shown under Help $\to$
 Shortcuts, which is the same table printed by \texttt{yeban-app --print-shortcuts}.
@@ -94,8 +92,8 @@ versus "text input + IME composition".
 \begin{tikzpicture}[node distance=1.2cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
   \node[box] (a) {Help $\to$ Shortcuts};
-  \node[box, right of=a] (b) {--print-shortcuts};
-  \node[box, below of=a] (c) {This chapter: by workflow};
+  \node[box, right=of a] (b) {--print-shortcuts};
+  \node[box, below=of a] (c) {This chapter: by workflow};
   \draw[<->] (a)--(b); \draw[->] (a)--(c);
 \end{tikzpicture}
 \caption{The authoritative source is the one policy table behind the in-app reference and \texttt{--print-shortcuts}; this chapter is only a guide}

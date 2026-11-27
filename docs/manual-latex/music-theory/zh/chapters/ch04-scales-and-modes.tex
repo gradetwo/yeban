@@ -106,14 +106,14 @@
 \begin{tikzpicture}[x=1.78cm,y=1cm,font=\footnotesize]
   \draw[->,thick] (-0.45,0) -- (8.55,0);
   \foreach \i in {0,...,7} {\draw[gray] (\i,-0.5) -- (\i,-0.65);}
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c0) at (0,0) {C};
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c1) at (1,0) {G};
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c2) at (2,0) {D};
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c3) at (3,0) {A};
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c4) at (4,0) {E};
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c5) at (5,0) {B};
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c6) at (6,0) {F\sharpsym};
-  \node[circle,draw,minimum size=0.85cm,inner sep=0pt] (c7) at (7,0) {C\sharpsym};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c0) at (0,0) {C};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c1) at (1,0) {G};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c2) at (2,0) {D};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c3) at (3,0) {A};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c4) at (4,0) {E};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c5) at (5,0) {B};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c6) at (6,0) {F\sharpsym};
+  \node[circle,draw,fill=white,minimum size=0.85cm,inner sep=0pt] (c7) at (7,0) {C\sharpsym};
   \foreach \i/\sig in {0/0,1/1\sharpsym,2/2\sharpsym,3/3\sharpsym,4/4\sharpsym,5/5\sharpsym,6/6\sharpsym,7/7\sharpsym} {
     \node[below=16pt,font=\scriptsize,text=black!60] at (\i,0) {\sig};
   }

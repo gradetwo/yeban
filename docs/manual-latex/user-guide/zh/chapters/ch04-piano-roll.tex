@@ -6,13 +6,11 @@
 \chapter{钢琴卷帘}
 \label{ch:piano-roll}
 
-\begin{quote}
-凡音之起，由人心生也。
-\end{quote}
+\classquote{凡音之起，由人心生也。}{《礼记·乐记》}{音符落在卷帘上之前，先有想表达的情绪；技巧与规则都服务于听感。}
 
-出处：《礼记·乐记》
 
-音符落在卷帘上之前，先有想表达的情绪；技巧与规则都服务于听感。
+
+
 
 钢琴卷帘是写 MIDI 音符的地方：横轴是时间，纵轴是音高。这一章讲怎么打开它、
 怎么画音符、怎么改力度与量化，以及当前版本在拖动上的边界。
@@ -55,13 +53,13 @@ Cmd/Ctrl+↑ / ↓ 做音轨垂直缩放，Cmd/Ctrl+= / - 做时间轴水平缩�
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=1.2cm, >=stealth,
-    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
+\begin{tikzpicture}[node distance=0.5cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, font=\small, minimum width=2.0cm, minimum height=0.9cm}]
   \node[box] (a) {选片段};
-  \node[box, right of=a] (b) {数字键 2 画音符};
-  \node[box, right of=b] (c) {拖动改音高/时值};
-  \node[box, right of=c] (d) {量化 / 人性化};
-  \node[box, right of=d] (e) {试听};
+  \node[box, right=of a] (b) {数字键 2 画音符};
+  \node[box, right=of b] (c) {拖动改音高/时值};
+  \node[box, right=of c] (d) {量化 / 人性化};
+  \node[box, right=of d] (e) {试听};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{卷帘里的常用流程：选片段 $\to$ 画音符 $\to$ 改音高/时值 $\to$ 量化 $\to$ 试听}

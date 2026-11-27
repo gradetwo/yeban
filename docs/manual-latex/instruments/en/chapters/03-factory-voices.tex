@@ -15,17 +15,17 @@ left library and the arrangement; use the preset ID and engine name as the sourc
 of truth. \begin{center}
 \begin{tikzpicture}[
   node distance=8mm and 30mm,
-  core/.style={draw, rounded corners=2pt, minimum width=62mm, minimum height=10mm, align=center, font=\small, fill=black!4},
+  core/.style={draw, rounded corners=2pt, text width=54mm, minimum height=10mm, align=center, font=\small, fill=black!4},
   preset/.style={draw, rounded corners=2pt, minimum width=24mm, minimum height=7mm, align=center, font=\scriptsize},
   arrow/.style={-{Latex[length=1.6mm]}, semithick}
 ]
   \node[core] (engine) {One engine: two oscillators + four-pole low-pass + fixed ADSR};
-  \node[preset, above left=8mm and 50mm of engine] (h) {Hollow Lead};
+  \node[preset, above left=8mm and 20mm of engine] (h) {Hollow Lead};
   \node[preset, above=8mm of engine] (o) {Warm Organ};
-  \node[preset, above right=8mm and 50mm of engine] (c) {Choir Pad};
-  \node[preset, below left=8mm and 50mm of engine] (f) {FM Bell};
+  \node[preset, above right=8mm and 20mm of engine] (c) {Choir Pad};
+  \node[preset, below left=8mm and 20mm of engine] (f) {FM Bell};
   \node[preset, below=8mm of engine] (g) {Glass Pluck};
-  \node[preset, below right=8mm and 50mm of engine] (s) {Sub Bass};
+  \node[preset, below right=8mm and 20mm of engine] (s) {Sub Bass};
   \foreach \p in {h,o,c,f,g,s} { \draw[arrow] (engine) -- (\p); }
 \end{tikzpicture}
 \end{center}

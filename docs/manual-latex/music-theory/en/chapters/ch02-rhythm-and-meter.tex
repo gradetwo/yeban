@@ -43,7 +43,7 @@ At 120 BPM one beat is 0.5 s; a 4/4 bar is 2 s and a 3/4 bar is 1.5 s. Tempo cha
   \fill[blue!16] (2,0) rectangle (3,0.65);
   \fill[blue!28] (3,0) rectangle (4,0.65);
   \node at (0.5,0.33) {strong};
-  \draw[thick] (3,-0.1) -- (3,0.75) node[below] {\tiny bar line};
+  \draw[thick] (3,-0.1) -- (3,0.75); \node[font=\tiny] at (3,-0.30) {bar line};
   \node[anchor=west] at (6.1,0.33) {two bars};
 \end{tikzpicture}
 
@@ -123,7 +123,7 @@ Syncopation puts the accent on a weak beat or weak position, so the listener fee
 
   \foreach \i in {0,...,7} {\draw[black!25] (\i,0) rectangle ++(1,0.6);}
   \foreach \i in {0,2,3,5,7} {\fill[red!45] (\i+0.1,0.08) rectangle ++(0.8,0.44);}
-  \node[anchor=west] at (0,0.95) {\textbf{Syncopated}};
+  \node[anchor=west] at (0,0.80) {\textbf{Syncopated}};
 \end{tikzpicture}
 
 \small Figure 2-3. Straight and syncopated versions of one 4/4 bar. Top: accents on eighth positions 1, 3, 5, 7; bottom: accents move to weak positions 3, 6, 8. Cells are eighth notes; blocks mark onsets, not equal durations.

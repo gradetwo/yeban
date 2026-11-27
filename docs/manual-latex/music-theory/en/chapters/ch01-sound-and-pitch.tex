@@ -45,7 +45,7 @@ The seven white keys of a piano form one group, named C, D, E, F, G, A, B in ord
   \foreach \i/\n/\m in {0/C4/60,1/D4/62,2/E4/64,3/F4/65,4/G4/67,5/A4/69,6/B4/71} {
     \draw[fill=white] (\i,0) rectangle ++(1.0,3.2);
     \node at (\i+0.5,-0.32) {\n};
-    \node[font=\scriptsize,text=black!55] at (\i+0.5,-0.72) {MIDI \m};
+    \node[font=\tiny,text=black!55] at (\i+0.5,-0.72) {MIDI \m};
   }
   \foreach \x/\n in {0.72/C\sharpsym4,1.72/D\sharpsym4,3.72/F\sharpsym4,4.72/G\sharpsym4,5.72/A\sharpsym4} {
     \fill[black!82] (\x,1.35) rectangle ++(0.56,1.85);

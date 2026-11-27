@@ -1,9 +1,7 @@
 \chapter{弦乐配器：把五条声部写成一支队伍}
 \label{ch:strings}
 
-\begin{quote}
-\itshape 弦乐好听，不是因为“弦乐音色高级”，而是因为五个声部各有各的活：谁唱歌、谁垫和声、谁守低音、谁在中间填空。
-\end{quote}
+\classquote{弦乐好听，不是因为“弦乐音色高级”，而是因为五个声部各有各的活：谁唱歌、谁垫和声、谁守低音、谁在中间填空。}{}{}
 
 \section{弦乐组先是一支队伍，不是一件乐器}
 \label{sec:string-section}
@@ -48,7 +46,7 @@
     \draw[->] (0,0) -- (9.6,0) node[right] {pitch};
     \foreach \x/\lab in {0/E1,1.2/C2,2.4/G3,3.6/C3,4.8/C4,6.0/C5,7.2/C6,8.4/C7,9.4/E7} {
       \draw[gray!40] (\x,0.1) -- (\x,3.6);
-      \node[font=\scriptsize, rotate=60, anchor=west] at (\x,0.05) {\lab};
+      \node[font=\scriptsize, rotate=60, anchor=east] at (\x,-0.12) {\lab};
     }
     \fill[yebanblue!70] (0.0,2.9) rectangle (8.8,3.25);
     \fill[yebanblue!45] (2.4,2.25) rectangle (8.2,2.55);

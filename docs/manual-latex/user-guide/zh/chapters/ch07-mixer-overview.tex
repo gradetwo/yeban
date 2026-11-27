@@ -6,13 +6,11 @@
 \chapter{混音台概览}
 \label{ch:mixer-overview}
 
-\begin{quote}
-八音克谐，无相夺伦。
-\end{quote}
+\classquote{八音克谐，无相夺伦。}{《尚书·舜典》}{混音让各轨和谐相处、不互相掩盖；整体听感比单个声音更重要。}
 
-出处：《尚书·舜典》
 
-混音让各轨和谐相处、不互相掩盖；整体听感比单个声音更重要。
+
+
 
 这一章把信号从一条轨走到主总线的过程串起来：通道条上有什么、插入链按什么
 顺序生效、发送与总线怎么接，以及在哪看主控监听与响度。更细的效果器参数
@@ -48,10 +46,10 @@
 \begin{tikzpicture}[node distance=1.1cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.1cm, minimum height=0.8cm}]
   \node[box] (a) {音源 / 乐器};
-  \node[box, right of=a] (b) {插入效果 1};
-  \node[box, right of=b] (c) {插入效果 2};
-  \node[box, right of=c] (d) {音量 / 声像};
-  \node[box, right of=d] (e) {主总线};
+  \node[box, right=of a] (b) {插入效果 1};
+  \node[box, right=of b] (c) {插入效果 2};
+  \node[box, right=of c] (d) {音量 / 声像};
+  \node[box, right=of d] (e) {主总线};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{一路信号的顺序：乐器 $\to$ 插入效果（按链顺序）$\to$ 推子/声像 $\to$ 主总线}

@@ -6,13 +6,11 @@
 \chapter{Mixer Overview}
 \label{ch:mixer-overview}
 
-\begin{quote}
-八音克谐，无相夺伦。
-\end{quote}
+\classquote{八音克谐，无相夺伦。}{Book of Documents, “Canon of Shun” (《尚书·舜典》)}{Translation: “Let the eight sounds harmonize, without one usurping another’s place.” Mixing lets tracks coexist without masking each other; the whole matters more than any single sound.}
 
-Source: Book of Documents, “Canon of Shun” (《尚书·舜典》). Translation: “Let the eight sounds harmonize, without one usurping another’s place.”
 
-Mixing lets tracks coexist without masking each other; the whole matters more than any single sound.
+
+
 
 This chapter follows a signal from a track to the master bus: what a channel strip
 holds, in what order inserts take effect, how sends and buses are wired, and where to
@@ -50,10 +48,10 @@ time changes are recorded with the project and applied on export (Chapter 6).
 \begin{tikzpicture}[node distance=1.1cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.1cm, minimum height=0.8cm}]
   \node[box] (a) {Source / instrument};
-  \node[box, right of=a] (b) {Insert 1};
-  \node[box, right of=b] (c) {Insert 2};
-  \node[box, right of=c] (d) {Volume / pan};
-  \node[box, right of=d] (e) {Master bus};
+  \node[box, right=of a] (b) {Insert 1};
+  \node[box, right=of b] (c) {Insert 2};
+  \node[box, right=of c] (d) {Volume / pan};
+  \node[box, right=of d] (e) {Master bus};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{Signal order: instrument $\to$ inserts (chain order) $\to$ fader/pan $\to$ master bus}

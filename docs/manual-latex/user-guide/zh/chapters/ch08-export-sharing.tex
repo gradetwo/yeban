@@ -6,13 +6,11 @@
 \chapter{导出与分享}
 \label{ch:export-sharing}
 
-\begin{quote}
-既以为人己愈有，既以与人己愈多。
-\end{quote}
+\classquote{既以为人己愈有，既以与人己愈多。}{《道德经·第八十一章》}{导出与分享把作品交到别人手里；越分享，收获越多。}
 
-出处：《道德经·第八十一章》
 
-导出与分享把作品交到别人手里；越分享，收获越多。
+
+
 
 作品写好后要离开夜半：交给别的软件混音、送去母带、或只是留一份可播放的
 文件。这一章讲三种出口各导出什么，以及怎么核对导出的结果——「完成」两个字
@@ -66,10 +64,10 @@
 \begin{tikzpicture}[node distance=1.1cm, >=stealth,
     box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.8cm}]
   \node[box] (a) {选出口};
-  \node[box, right of=a] (b) {设参数};
-  \node[box, right of=b] (c) {后台渲染};
-  \node[box, right of=c] (d) {落盘 + manifest};
-  \node[box, right of=d] (e) {读回执核对};
+  \node[box, right=of a] (b) {设参数};
+  \node[box, right=of b] (c) {后台渲染};
+  \node[box, right=of c] (d) {落盘 + manifest};
+  \node[box, right=of d] (e) {读回执核对};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{导出流程：选出口 $\to$ 设参数 $\to$ 渲染 $\to$ 落盘 $\to$ 读回执核对}

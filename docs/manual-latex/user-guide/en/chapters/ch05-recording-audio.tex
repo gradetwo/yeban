@@ -6,13 +6,11 @@
 \chapter{Recording and Audio Editing}
 \label{ch:recording-audio}
 
-\begin{quote}
-感于物而动，故形于声。
-\end{quote}
+\classquote{感于物而动，故形于声。}{Book of Rites, “Record of Music” (《礼记·乐记》)}{Translation: “Moved by things, the heart takes form in sound.” Recording turns a moment of touching into editable sound; editing and processing serve to keep it true.}
 
-Source: Book of Rites, “Record of Music” (《礼记·乐记》). Translation: “Moved by things, the heart takes form in sound.”
 
-Recording turns a moment of touching into editable sound; editing and processing serve to keep it true.
+
+
 
 This chapter covers getting outside sound into a project: recording, importing,
 placing audio clips on tracks, and basic trimming and fading. Recorded and imported
@@ -40,13 +38,13 @@ not pretend a commit happened; that is existing headless/diagnostic behaviour.
 
 \begin{figure}[htbp]
 \centering
-\begin{tikzpicture}[node distance=1.2cm, >=stealth,
-    box/.style={draw, rounded corners, align=center, minimum width=2.2cm, minimum height=0.9cm}]
+\begin{tikzpicture}[node distance=0.5cm, >=stealth,
+    box/.style={draw, rounded corners, align=center, font=\small, minimum width=2.0cm, minimum height=0.9cm}]
   \node[box] (a) {Pick input};
-  \node[box, right of=a] (b) {Arm + monitor};
-  \node[box, right of=b] (c) {Record / stop};
-  \node[box, right of=c] (d) {Bytes to asset pool};
-  \node[box, right of=d] (e) {Clip on timeline};
+  \node[box, right=of a] (b) {Arm + monitor};
+  \node[box, right=of b] (c) {Record / stop};
+  \node[box, right=of c] (d) {Bytes to asset pool};
+  \node[box, right=of d] (e) {Clip on timeline};
   \draw[->] (a)--(b); \draw[->] (b)--(c); \draw[->] (c)--(d); \draw[->] (d)--(e);
 \end{tikzpicture}
 \caption{Recording path: pick input $\to$ arm/monitor $\to$ record/stop $\to$ asset pool $\to$ timeline clip}
