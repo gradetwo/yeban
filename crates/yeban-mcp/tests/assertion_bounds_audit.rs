@@ -215,6 +215,15 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          列表是合法状态；泄漏失败模式仍被抓住：若 plugin 行混入 section 列表，`.all` 即为假 ⇒ 判据红。\
          （T-FIX-773：domain/mod.rs 新登记后暴露的唯一无界站点，逐条评审。）",
     ),
+    (
+        "src/domain/notes.rs",
+        "project.tracks[&track].devices.iter().all(|d| d.id != id_a),",
+        "`omitted_device_id_is_deterministic_and_latency_defaults_to_zero`（T-FIX-732）：否定制断言——\
+         断言的是“派生设备身份不得与目标轨既有设备身份冲突”，空集合时该性质仍然成立（没有既有设备即无冲突）；\
+         ⛔ 不能钉非空：本测试往目标轨插第一个设备，空 devices 列表正是合法常态；泄漏失败模式仍被抓住：\
+         若任一既有设备的 id 等于派生的 id_a，`.all` 即为假 ⇒ 判据红。\
+         （ISS-MWZW89CM-3AA6C8：bff037c0 新增的唯一无界站点，逐条评审。）",
+    ),
 ];
 
 /// ⭐ **R207／R209②**：可检索标记（`eprintln!`：断言消息在**通过时**不打印）。
