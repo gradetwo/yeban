@@ -7052,7 +7052,8 @@ mod tests {
 
     /// T-FIX-235：toast 收起键是真实可点的控件，必须像 LOOP 一样在无障碍树
     /// 上有一个 button 节点，并且 `accessible-action-default` 与 `clicked`
-    /// 落在**同一个**落点（清 toast-message + 关 show-floating-toast）。
+    /// 落在**同一个**落点（清 toast-message + 关 show-floating-toast +
+    /// 清 toast-action-visible 与 toast-action-label，收起不留陈旧动作键）。
     ///
     /// 这条是上一条通用判据的定点补强：通用判据只检查**已有 role 块**里
     /// 的点击，收起键在修复前连 role 都没有，所以不会红；定点判据把
@@ -7091,8 +7092,11 @@ mod tests {
             .collect();
         assert_eq!(
             clicks,
-            vec!["root.toast-message = \"\"; root.show-floating-toast = false;".to_owned()],
-            "toast 收起键的点击落点必须是清文案 + 关横幅"
+            vec![
+                "root.toast-message = \"\"; root.show-floating-toast = false; root.toast-action-visible = false; root.toast-action-label = \"\";"
+                    .to_owned()
+            ],
+            "toast 收起键的点击落点必须是清文案 + 关横幅 + 清动作键"
         );
         let actions: Vec<String> =
             arrow_bodies(&block_text, "accessible-action-default", block.start)
