@@ -1835,6 +1835,10 @@ mod tests {
             "真跑出来的回执也必须写中性文案"
         );
         assert!(
+            !outcome.data.lufs_short.is_empty(),
+            "空工程面板必须有响度序列"
+        );
+        assert!(
             outcome
                 .data
                 .lufs_short

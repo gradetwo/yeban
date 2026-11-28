@@ -169,6 +169,7 @@ fn pencil_click_at_known_tick_keeps_the_arrangement_viewport() {
         .find(|(tick, _)| *tick == CLICK_TICK_BAR4)
         .copied()
         .expect("新音符必须落在点击的 tick 14640");
+    assert!(!before_notes.is_empty(), "夹具工程必须先有音符");
     assert!(
         before_notes.iter().all(|note| *note != inserted),
         "新音符是新身份"

@@ -1032,10 +1032,20 @@ mod tests {
             METER_STALE_AFTER_TICKS + 1
         );
         assert_eq!(stale.quantum, Some(5), "过期不改变最后一帧的量子读数");
+        assert_eq!(
+            stale.peak_labels().len(),
+            view.tracks.len(),
+            "峰值文本必须逐轨一份"
+        );
         assert!(
             stale.peak_labels().iter().all(|label| label == "--"),
             "stale 时每轨峰值文本必须是 --：{:?}",
             stale.peak_labels()
+        );
+        assert_eq!(
+            stale.rms_labels().len(),
+            view.tracks.len(),
+            "RMS 文本必须逐轨一份"
         );
         assert!(
             stale.rms_labels().iter().all(|label| label == "--"),

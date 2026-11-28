@@ -59,6 +59,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/settings.rs", include_str!("../src/settings.rs")),
     ("src/sfz_load.rs", include_str!("../src/sfz_load.rs")),
     (
+        "src/song_overview.rs",
+        include_str!("../src/song_overview.rs"),
+    ),
+    (
         "src/sound_library.rs",
         include_str!("../src/sound_library.rs"),
     ),
@@ -86,6 +90,7 @@ const SOURCES: &[(&str, &str)] = &[
         "tests/clip_multiselect_edit.rs",
         include_str!("clip_multiselect_edit.rs"),
     ),
+    ("tests/cli_contract.rs", include_str!("cli_contract.rs")),
     ("tests/debug_output.rs", include_str!("debug_output.rs")),
     ("tests/demo_download.rs", include_str!("demo_download.rs")),
     (
@@ -109,6 +114,7 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("instrument_install.rs"),
     ),
     ("tests/live_ui_mcp.rs", include_str!("live_ui_mcp.rs")),
+    ("tests/note_clipboard.rs", include_str!("note_clipboard.rs")),
     (
         "tests/master_meter_stereo_render.rs",
         include_str!("master_meter_stereo_render.rs"),
@@ -133,6 +139,10 @@ const SOURCES: &[(&str, &str)] = &[
         "tests/record_device_wiring.rs",
         include_str!("record_device_wiring.rs"),
     ),
+    (
+        "tests/roll_note_viewport.rs",
+        include_str!("roll_note_viewport.rs"),
+    ),
     ("tests/roll_scope.rs", include_str!("roll_scope.rs")),
     (
         "tests/send_strip_projection.rs",
@@ -146,6 +156,10 @@ const SOURCES: &[(&str, &str)] = &[
     (
         "tests/startup_chooser.rs",
         include_str!("startup_chooser.rs"),
+    ),
+    (
+        "tests/startup_chooser_inrepo_demos.rs",
+        include_str!("startup_chooser_inrepo_demos.rs"),
     ),
     (
         "tests/status_bar_honesty.rs",
@@ -173,7 +187,7 @@ const SOURCES: &[(&str, &str)] = &[
 ///
 /// 主判据是"无界站点数 == 基线"；整组删掉一个被扫文件**不会**让无界站点数增加 ⇒
 /// 本判据仍绿，而 R115 的覆盖面已静默缩水。只有本下界能拦住这种**单向**偷工。
-const MIN_SOURCES: usize = 47;
+const MIN_SOURCES: usize = 52;
 
 /// 注册基线：允许存在的"无界断言站点"数。⭐ **棘轮** —— 只能减，不能增。
 const UNBOUNDED_BASELINE: usize = 0;

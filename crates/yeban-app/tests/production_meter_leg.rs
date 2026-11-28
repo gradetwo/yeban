@@ -245,16 +245,16 @@ fn meter_stale_after_n_ticks_is_visible_in_the_slint_properties() {
         ));
     }
     assert!(window.ui().get_meter_stale(), "停发 N+1 跳后必须 stale");
+    let stale_peaks = strings_of(&window.ui().get_track_meter_peaks());
+    assert!(!stale_peaks.is_empty(), "峰值文本必须逐轨存在");
     assert!(
-        strings_of(&window.ui().get_track_meter_peaks())
-            .iter()
-            .all(|label| label == "--"),
+        stale_peaks.iter().all(|label| label == "--"),
         "stale 时每轨峰值文本必须是 --"
     );
+    let stale_rmss = strings_of(&window.ui().get_track_meter_rmss());
+    assert!(!stale_rmss.is_empty(), "RMS 文本必须逐轨存在");
     assert!(
-        strings_of(&window.ui().get_track_meter_rmss())
-            .iter()
-            .all(|label| label == "--"),
+        stale_rmss.iter().all(|label| label == "--"),
         "stale 时每轨 RMS 文本必须是 --"
     );
     assert_eq!(window.ui().get_master_meter_peak().as_str(), "--");
