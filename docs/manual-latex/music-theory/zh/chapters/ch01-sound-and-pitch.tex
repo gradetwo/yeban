@@ -4,14 +4,14 @@
 
 \label{sec:sound-and-pitch}
 
-\subsection*{学完这一章能做什么}
+\section*{学完这一章能做什么}
 \begin{itemize}
   \item 看见一个音名（如 C4、A4、F\sharpsym3）能说出它在钢琴键盘上的位置，并能和夜半钢琴卷帘的音高行对应。
   \item 会用频率公式在音名、频率、MIDI 编号三者之间换算；知道 A4=440 Hz、中央 C=C4、MIDI 60=C4 这几条基准。
   \item 能解释“八度”“半音”“十二平均律”分别解决什么问题，不再把音名、唱名、简谱数字混为一谈。
 \end{itemize}
 
-\subsection{声音的四个维度}
+\section{声音的四个维度}
 
 人耳听到的“一个音”，至少可以拆成四个独立的维度。乐理主要管前两个，录音与混音主要管后两个。
 
@@ -39,7 +39,7 @@
 
 把 440 Hz 的弦和 220 Hz 的弦同时拨响，你会听到“同一个音，只是高低不同”，而不是两个毫不相干的音——这就是八度关系。人耳把频率成 2:1 的两个音归为同一“音级”，所以音名会循环。
 
-\subsection{音名与钢琴键盘}
+\section{音名与钢琴键盘}
 
 钢琴上七个白键为一组，音名依次是 C、D、E、F、G、A、B；黑键夹在白键之间，用升号（\sharpsym）或降号（\flatsym）表示，例如 C\sharpsym（读“升 C”）与 D\flatsym（读“降 D”）是同一个键的两个名字，称为等音（enharmonic）。
 
@@ -66,7 +66,7 @@
 
 相邻两个键（含黑键）之间的距离叫半音（semitone）；两个半音等于一个全音（whole tone）。从 C 到下一组 C 有八个白键、十二个半音，构成一个八度（octave）。在钢琴上，E–F 与 B–C 之间没有黑键，所以它们天然只隔一个半音；其余相邻白键之间隔一个全音。
 
-\subsection{科学音高记法与 MIDI 编号}
+\section{科学音高记法与 MIDI 编号}
 
 同一个音名会在不同八度反复出现，必须带数字才唯一。国际通行的科学音高记法（scientific pitch notation）把中央 C 记为 C4，往上是 C5、C6，往下是 C3、C2；数字写在音名右侧，不随升降号改变。夜半界面与 MIDI 文件都用 C4 表示中央 C，这一点与应用内手册的卷帘音域标签一致。
 
@@ -81,7 +81,7 @@ MIDI 把音高编成 0–127 的整数，中央 C 是 60，A4 是 69。公式是
 
 其中 \(n\) 是 MIDI 编号，\(f\) 是频率（Hz）。式 \eqref{eq:midi-frequency} 对十二平均律成立；它把“频率”与“音高编号”变成可逆的一一对应。C4 代入 \(n=60\)，得到约 261.63 Hz；C5 是 523.25 Hz，正好翻倍。
 
-\subsection{十二平均律}
+\section{十二平均律}
 
 如果八度严格是 2:1，那么把一个八度分成十二个“等距”的半音，每个半音的频率比必须是：
 
@@ -112,7 +112,7 @@ MIDI & 60 & 62 & 64 & 65 & 67 & 69 & 71 \\
 \end{tabular}
 \end{table}
 
-\subsection{音名、唱名与简谱}
+\section{音名、唱名与简谱}
 
 同一个音高有四套常见“叫法”，用途不同：
 
@@ -125,7 +125,7 @@ MIDI & 60 & 62 & 64 & 65 & 67 & 69 & 71 \\
 
 初学阶段最容易混的是“音名”和“唱名”：音名是绝对的，唱名是相对的。看到 C4，应该先想到“中央 C、MIDI 60、261.63 Hz”，而不是条件反射地唱 do——只有在 C 调、且使用固定唱名时，C 才唱 do。
 
-\subsection{在夜半里怎么做}
+\section{在夜半里怎么做}
 
 \begin{enumerate}
   \item 按 \texttt{P} 或 \texttt{F7} 打开钢琴卷帘；它在底部控制台的第一个页签。
@@ -160,7 +160,15 @@ MIDI & 60 & 62 & 64 & 65 & 67 & 69 & 71 \\
 
 \textbf{尚未提供的部分：}本册不写“频谱分析仪”“自动音高检测”之类夜半当前没有的功能；若后续版本加入，会在此节补链接，而不是先画一个不存在的按钮。
 
-\subsection{练习}
+\section{名曲里的音高与音域感受}
+
+\begin{itemize}
+  \item \textbf{Queen《Bohemian Rhapsody》}：主歌钢琴与人声落在温暖的中音区，歌剧段迅速拉高到假声高音再跌入低沉合唱，用音域跨度直接制造戏剧反差，而不是靠加更多乐器。
+  \item \textbf{Adele《Someone Like You》}（A 大调）：钢琴分解和弦守在中低音区，人声在主歌克制低吟、副歌跨入中高音区爆发，同一把嗓音只靠音高重心上移就完成了情绪抬升。
+  \item \textbf{周杰伦《晴天》}（G 大调）：前奏原声吉他用干净的泛音与高把位分解建立清亮记忆点，人声随后进入贴耳的中音区，让听众立刻听出校园叙事的亲近感。
+\end{itemize}
+
+\section{练习}
 
 
 \begin{exercise}
@@ -179,7 +187,7 @@ MIDI & 60 & 62 & 64 & 65 & 67 & 69 & 71 \\
 \end{enumerate}
 \end{exercise}
 
-\subsection{帮助主题映射}
+\section{帮助主题映射}
 
 \begin{center}
 \small
@@ -201,7 +209,7 @@ MIDI & 60 & 62 & 64 & 65 & 67 & 69 & 71 \\
 \end{longtable}
 \end{center}
 
-\subsection*{延伸阅读}
+\section*{延伸阅读}
 \begin{itemize}
   \item \textbf{Open Music Theory, “Pitches.”} \url{https://openmusictheory.github.io/pitches.html} —— 把音名、频率、八度与音高类别拆开讲，补本章的物理直觉。
   \item \textbf{YouTube, “The Harmonic Series \textbar{} The Language of Sound.”} \url{https://www.youtube.com/watch?v=NBB47aLlj88} —— 用泛音列解释“同样高却不同音色”，把音高与音色接起来。

@@ -6,7 +6,7 @@ Without accumulating single steps, one cannot reach a thousand li; without accum
 
 \label{sec:reading-notation}
 
-\subsection*{What you can do after this chapter}
+\section*{What you can do after this chapter}
 \begin{itemize}
   \item Read a staff's clef, time signature, and key signature, and name the pitch on a given line or space.
   \item Convert common notes, rests, dots, and ties into beats and durations instead of guessing from the shape.
@@ -14,7 +14,7 @@ Without accumulating single steps, one cannot reach a thousand li; without accum
   \item Translate a simple score into note names, MIDI numbers, and piano-roll rows, then enter it in Yeban by hand.
 \end{itemize}
 
-\subsection{The staff: lines and spaces are not decoration}
+\section{The staff: lines and spaces are not decoration}
 
 A staff has five parallel horizontal lines. The gaps between them are called spaces. From the bottom up, the five lines and four spaces each represent one diatonic step; neighbouring lines or spaces differ by a natural step, not by a fixed two semitones. The clef fixes which pitch that set of positions starts from, so the same line means a completely different note in treble and bass clefs.
 
@@ -44,7 +44,7 @@ Figure 9-1: treble-clef lines and spaces, with middle C on its ledger line. Adja
 
 Do not read by counting every line from the first note. Find anchors first: middle C, first-line E4, and third-line B4 in treble clef; middle C, first-line G2, and third-line D3 in bass clef. Once the anchors are fixed, other notes are nearby lines and spaces, which is much faster.
 
-\subsection{Notes, rests, and durations}
+\section{Notes, rests, and durations}
 
 A note's shape shows duration, not pitch. A whole note is a hollow oval; a half note adds a stem; a quarter note is filled and has a stem; an eighth note adds one flag; a sixteenth adds two flags. More flags mean a shorter value; each extra flag halves the duration.
 
@@ -89,7 +89,7 @@ Table 9-1: common notes, rests, and their values in 4/4. Dots and ties change th
 
 A time signature sits at the start of the staff: the top number is beats per bar, the bottom number is the beat unit. 4/4 means four beats per bar with the quarter note as one beat; 6/8 means six beats per bar with the eighth note as one beat. The time signature is not tempo; tempo comes from BPM or a tempo mark. 120 BPM in 4/4 means 120 quarter notes per minute; 120 BPM in 6/8 means 120 eighth notes per minute.
 
-\subsection{Key signatures, dynamics, and expression}
+\section{Key signatures, dynamics, and expression}
 
 A key signature sits beside the time signature and uses sharps or flats to tell you which notes are raised or lowered. One sharp is usually F\sharpsym, corresponding to G major or E minor; one flat is usually B\flatsym, corresponding to F major or D minor. The key signature only alters the marked scale degrees; it does not raise every note in the scale. The relation between signatures, scales, and modes is covered in Chapter 4.
 
@@ -116,7 +116,7 @@ Semicircle over note & fermata & Hold the note or rest; length is decided by the
 表 9-2：常见力度与表情记号。先认符号，再决定时值、力度与音色，不要只记名字。
 \end{center}
 
-\subsection{Why jianpu and TAB exist}
+\section{Why jianpu and TAB exist}
 
 Jianpu uses 1--7 for the seven natural scale degrees and 0 for a rest; a dot above or below the number raises or lowers the octave, and a line under the number halves the duration. It is good for singing instruction, folk music, and quick charts: the numbers map directly to solfège, and transposition is easy to see. Its weakness is that it lacks the staff's fixed pitch positions and voicing information; inversions, dense harmony, and multiple voices are harder to read than on a staff.
 
@@ -124,7 +124,7 @@ TAB (guitar tablature) uses strings and frets: six lines for six strings, with a
 
 None of the three replaces the others: the staff is best for fixed pitch and multiple voices, jianpu for solfège and teaching, TAB for specific instrumental fingering. When writing, you might sketch a melody in jianpu, check harmony on a staff, and give the guitarist a TAB; in Yeban, all of them eventually become pitch rows and durations.
 
-\subsection{Translating a score into the piano roll}
+\section{Translating a score into the piano roll}
 
 Yeban currently has no built-in staff view and no usable MusicXML import entry; reading still happens on paper or in an external score, then you copy pitch, duration, and velocity into the piano roll by hand. The translation order is:
 
@@ -140,7 +140,15 @@ Yeban currently has no built-in staff view and no usable MusicXML import entry; 
 
 \textbf{Scope note:} Yeban has no staff, jianpu, or TAB display, no automatic score recognition, and no MusicXML import entry; the piano roll shows pitch rows, durations, and velocity only, not clefs, key signatures, dynamics, or slurs. You must do the translation yourself; the app will not decide whether a note should be raised by the key signature, and it will not turn staccato into short notes automatically.
 
-\subsection{Exercises}
+\section{Notation and piano roll in real songs}
+
+\begin{itemize}
+  \item \textbf{Beethoven, ``Ode to Joy''}: Uses five adjacent scale degrees, making it ideal for comparing numbered notation, five-line staff steps and Yeban piano-roll height side by side.
+  \item \textbf{``Twinkle, Twinkle, Little Star''}: The opening repeated tonic and ascending fifth show up visually as a clear staff leap and a 7-semitone jump on the piano roll.
+  \item \textbf{Teresa Teng, ``The Moon Represents My Heart'' (月亮代表我的心)}: Dotted rhythms and tied notes on the staff map directly to extended note-bar lengths in Yeban's piano roll.
+\end{itemize}
+
+\section{Exercises}
 
 
 \begin{exercise}
@@ -158,7 +166,7 @@ Yeban currently has no built-in staff view and no usable MusicXML import entry; 
 \end{enumerate}
 \end{exercise}
 
-\subsection{Help topic map}
+\section{Help topic map}
 
 \begin{center}
 \small
@@ -176,7 +184,7 @@ Exercises & \texttt{music-theory-ch9-practice} & answers at chapter end \\
 \end{tabular}
 \end{center}
 
-\subsection*{Further reading}
+\section*{Further reading}
 \begin{itemize}
   \item \textbf{Open Music Theory, “Basic notation.”} \url{https://openmusictheory.github.io/basicNotation.html} — a systematic pass over staff, clefs, notes, and rests.
   \item \textbf{YouTube, “How to Read Sheet Music from Scratch.”} \url{https://www.youtube.com/watch?v=6aj-mI_J3ww} — starts from the staff and clef and demonstrates reading a simple melody.

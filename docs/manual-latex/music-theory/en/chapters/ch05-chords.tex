@@ -6,7 +6,7 @@ Poetry states the intent; song prolongs the words; the voice follows the song; t
 
 \label{sec:chords}
 
-\subsection*{What you can do after this chapter}
+\section*{What you can do after this chapter}
 \begin{itemize}
   \item Hear or see three notes and tell whether they form a triad, naming the root, third, and fifth.
   \item Distinguish major, minor, diminished, and augmented triads, plus the common seventh chords, and write their semitone formulas and symbols.
@@ -14,7 +14,7 @@ Poetry states the intent; song prolongs the words; the voice follows the song; t
   \item Stack chords in Yeban's piano roll, hear where the root lies, and understand what the chord lane can and cannot do.
 \end{itemize}
 
-\subsection{Chords: three or more notes as one functional unit}
+\section{Chords: three or more notes as one functional unit}
 
 A chord is not ``any notes sounding together.'' It is a set of notes built from a root at fixed intervals. The most common is the triad: root, third, and fifth. The third decides major or minor, the fifth decides perfect, diminished, or augmented, and the root decides the chord's function in the key.
 
@@ -26,7 +26,7 @@ To spell a chord, fix the root first and count semitones upward. From C:
 
 C--E is a major third (four semitones), and E--G is a minor third (three semitones), so C--E--G is a major triad. Lower the third by a semitone and C--E\flatsym--G becomes a minor triad; change the third and fifth together and the quality changes with them.
 
-\subsection{The four triads}
+\section{The four triads}
 
 \begin{center}
 \small
@@ -66,7 +66,7 @@ The diminished triad lowers both the third and the fifth; the augmented triad ra
 \end{minipage}
 \end{center}
 
-\subsection{Seventh chords: adding another third}
+\section{Seventh chords: adding another third}
 
 A seventh chord adds a seventh above the triad. It is not ``a triad plus any note'': the relationship between the seventh and the root determines the chord quality. The five common types:
 
@@ -90,7 +90,7 @@ Table 5-2. Five common seventh chords. The dominant seventh's seventh is one sem
 
 The dominant seventh (0, 4, 7, 10) is functional harmony's most common tension-and-release unit: its third tends toward the tonic and its seventh tends toward the third of the tonic chord, so V7 to I sounds natural. The major seventh raises the seventh to 11 and sounds brighter and more suspended; the minor seventh lowers the third and is common in minor keys and jazz; half-diminished and diminished seventh chords are less stable.
 
-\subsection{Inversions and the bass}
+\section{Inversions and the bass}
 
 Changing which chord tone is the lowest note is an inversion. For C major:
 
@@ -131,7 +131,7 @@ Inversion does not change the pitch set, only the bass and voicing. Its practica
 \end{minipage}
 \end{center}
 
-\subsection{Chord symbols: from letters to Roman numerals}
+\section{Chord symbols: from letters to Roman numerals}
 
 Lead-sheet and jazz notation uses a root letter plus a quality suffix. Common forms:
 
@@ -144,7 +144,7 @@ Lead-sheet and jazz notation uses a root letter plus a quality suffix. Common fo
 
 Functional analysis uses Roman numerals: in major, I, ii, iii, IV, V, vi, vii°; in minor, i, ii°, III, iv, v/V, VI, vii°. In C major: I = C, ii = Dm, iii = Em, IV = F, V = G, vi = Am, vii° = Bdim. Roman numerals show at a glance whether a chord is tonic, dominant, or subdominant, which is more useful than memorizing chord names alone.
 
-\subsection{Common progressions and voice leading}
+\section{Common progressions and voice leading}
 
 Three progressions worth practising first:
 
@@ -158,7 +158,7 @@ Two rules govern the connection: keep common tones when possible, and move the r
 
 The low register needs care: root and fifth low can anchor the harmony, but do not put the third very low as well, or the bass turns muddy. Thirds, sevenths, and extensions sit better in the middle and upper register. There is no single frequency limit; judge by whether the monitoring sounds clear and the low end does not fight itself.
 
-\subsection{How to do it in Yeban}
+\section{How to do it in Yeban}
 
 \begin{enumerate}
   \item In the arrangement area, use the Show / Hide Chord Track menu item (or the chord expand/collapse toggle above the track headers). A global chord lane appears.
@@ -173,7 +173,15 @@ The low register needs care: root and fifth low can anchor the harmony, but do n
 
 \textbf{Scope note:} Yeban currently has no chord recognition, no chord-lane editing, and no ``spell a chord by name'' action. The five chord-lane blocks are fixed demo data, and auditioning sends NoteOn/Off to the engine. The audition parser covers only triads and common seventh chords (major / minor / diminished / augmented, dominant / major / minor / half-diminished / diminished seventh, and sus); labels such as \texttt{Cm9}, \texttt{Fm11}, and \texttt{Cm11} audition as the basic triad, and \texttt{G7\sharpsym9} auditions as a dominant seventh, so the extension notes are not added automatically. To hear an extension, stack the notes yourself in the roll; do not treat the label as complete chord data.
 
-\subsection{Exercises}
+\section{Chord colour in real songs}
+
+\begin{itemize}
+  \item \textbf{Radiohead, ``Creep''} (G major): Follows G--B--C with a borrowed minor iv (\textbf{Cm}); lowering one note by a semitone flips yearning into vulnerability in half a second.
+  \item \textbf{The Beatles, ``Let It Be''} (C major): Alternates four basic triads (C, G, Am, F), showing how major-versus-minor contrast alone carries an iconic chorus.
+  \item \textbf{Jay Chou, ``Sunny Day'' (晴天)} (G major): Opens on minor Em before brightening through C--G--D, letting nostalgia lead gently into warmth.
+\end{itemize}
+
+\section{Exercises}
 
 
 \begin{exercise}
@@ -196,7 +204,7 @@ The low register needs care: root and fifth low can anchor the harmony, but do n
 \end{enumerate}
 \end{exercise}
 
-\subsection{Help topic map}
+\section{Help topic map}
 
 \begin{center}
 \footnotesize
@@ -219,7 +227,7 @@ Exercises & \texttt{music-theory-ch5-practice} & answers above \\
 \end{longtable}
 \end{center}
 
-\subsection*{Further reading}
+\section*{Further reading}
 \begin{itemize}
   \item \textbf{Open Music Theory, “Triads and seventh chords.”} \url{https://openmusictheory.github.io/triads.html} — treats triads, seventh chords, inversions, and naming in one place.
   \item \textbf{YouTube, “What are the triads (chords) that appear in the major scale?”} \url{https://www.youtube.com/watch?v=E1ke56nbAeg} — stacks the seven triads inside a major scale and shows why they fit together.

@@ -5,14 +5,14 @@ All sound arises from the human heart. When the heart is moved, something outsid
 
 \label{sec:sound-and-pitch}
 
-\subsection*{What you can do after this chapter}
+\section*{What you can do after this chapter}
 \begin{itemize}
   \item Given a note name (C4, A4, F\sharpsym3), locate it on a piano keyboard and on Yeban's piano-roll pitch rows.
   \item Convert among note names, frequencies, and MIDI numbers with the frequency formula; know the reference points A4 = 440 Hz, middle C = C4, and MIDI 60 = C4.
   \item Explain what an octave, a semitone, and 12-tone equal temperament each solve, without confusing note names, solfège, and numbered notation.
 \end{itemize}
 
-\subsection{Four dimensions of a sound}
+\section{Four dimensions of a sound}
 
 What we hear as ``one note'' has at least four independent dimensions. Theory mostly governs the first two; recording and mixing mostly govern the last two.
 
@@ -40,7 +40,7 @@ What we hear as ``one note'' has at least four independent dimensions. Theory mo
 
 Pluck a 440 Hz string and a 220 Hz string together and you hear ``the same note, only higher and lower,'' not two unrelated sounds. The ear groups frequencies in a 2:1 ratio as the same pitch class, which is why note names repeat.
 
-\subsection{Note names and the piano keyboard}
+\section{Note names and the piano keyboard}
 
 The seven white keys of a piano form one group, named C, D, E, F, G, A, B in order. Black keys sit between white keys and take a sharp (\sharpsym) or flat (\flatsym) name: C\sharpsym{} and D\flatsym{} are two names for the same key, an enharmonic pair.
 
@@ -67,7 +67,7 @@ The seven white keys of a piano form one group, named C, D, E, F, G, A, B in ord
 
 The distance between two adjacent keys, including black keys, is a semitone. Two semitones make a whole tone. From C to the next C there are eight white keys and twelve semitones: one octave. On a piano there is no black key between E and F or between B and C, so those pairs are already a semitone apart; the other adjacent white keys are a whole tone apart.
 
-\subsection{Scientific pitch notation and MIDI numbers}
+\section{Scientific pitch notation and MIDI numbers}
 
 The same note name recurs in every octave, so a number is required to make it unique. Scientific pitch notation names middle C as C4, then C5, C6 upward and C3, C2 downward. The number follows the letter and does not change with accidentals. Yeban and MIDI files both use C4 for middle C; this matches the pitch-range labels in the in-app manual.
 
@@ -82,7 +82,7 @@ MIDI encodes pitch as an integer from 0 to 127, with middle C = 60 and A4 = 69. 
 
 Here \(n\) is the MIDI number and \(f\) is frequency in Hz. Equation \eqref{eq:midi-frequency} assumes 12-tone equal temperament and makes frequency and pitch number invertible. Substituting \(n=60\) gives about 261.63 Hz for C4; C5 is 523.25 Hz, exactly double.
 
-\subsection{Twelve-tone equal temperament}
+\section{Twelve-tone equal temperament}
 
 If an octave is exactly 2:1, dividing it into twelve equal semitones requires each semitone to multiply frequency by:
 
@@ -113,7 +113,7 @@ Frequency/Hz & 261.63 & 293.66 & 329.63 & 349.23 & 392.00 & 440.00 & 493.88 \\
 \end{tabular}
 \end{table}
 
-\subsection{Note names, solfège, and numbered notation}
+\section{Note names, solfège, and numbered notation}
 
 A pitch can be called by four common systems, each for a different job:
 
@@ -126,7 +126,7 @@ A pitch can be called by four common systems, each for a different job:
 
 Beginners most often confuse note names with solfège: note names are absolute, solfège is relative. Seeing C4 should first bring up ``middle C, MIDI 60, 261.63 Hz,'' not an automatic ``do''—C is sung as do only in C major with fixed-do.
 
-\subsection{How to do it in Yeban}
+\section{How to do it in Yeban}
 
 \begin{enumerate}
   \item Press \texttt{P} or \texttt{F7} to open the piano roll; it is the first tab of the bottom console.
@@ -161,7 +161,15 @@ Beginners most often confuse note names with solfège: note names are absolute, 
 
 \textbf{Not yet available:} this volume does not describe spectrum analyzers or automatic pitch detection that Yeban does not currently provide. If a later version adds them, this section will link to them rather than show a button that does not exist.
 
-\subsection{Exercises}
+\section{Pitch and register in real songs}
+
+\begin{itemize}
+  \item \textbf{Queen, ``Bohemian Rhapsody''}: The opening ballad sits in a warm mid-register piano-and-vocal zone before the operatic section leaps into falsetto highs and deep choral lows, using register span alone to create theatrical contrast.
+  \item \textbf{Adele, ``Someone Like You''} (A major): The piano arpeggio holds the low-mid floor while the vocal stays intimate in the verse and climbs into the upper-mid range for the chorus, lifting emotion purely through pitch centre.
+  \item \textbf{Jay Chou, ``Sunny Day'' (晴天)} (G major): Clean upper-fret acoustic guitar harmonics establish an immediate bright hook before the vocal enters in a close conversational mid-register.
+\end{itemize}
+
+\section{Exercises}
 
 
 \begin{exercise}
@@ -180,7 +188,7 @@ Beginners most often confuse note names with solfège: note names are absolute, 
 \end{enumerate}
 \end{exercise}
 
-\subsection{Help topic map}
+\section{Help topic map}
 
 \begin{center}
 \small
@@ -202,7 +210,7 @@ Exercises & \texttt{music-theory-ch1-practice} & answers above \\
 \end{longtable}
 \end{center}
 
-\subsection*{Further reading}
+\section*{Further reading}
 \begin{itemize}
   \item \textbf{Open Music Theory, “Pitches.”} \url{https://openmusictheory.github.io/pitches.html} — separates pitch, pitch class, frequency, and octave, adding the physical intuition behind this chapter.
   \item \textbf{YouTube, “The Harmonic Series \textbar{} The Language of Sound.”} \url{https://www.youtube.com/watch?v=NBB47aLlj88} — shows how overtones stack inside one note, connecting pitch with timbre.
