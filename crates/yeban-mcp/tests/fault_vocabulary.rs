@@ -45,7 +45,7 @@
 //!
 //! | 面 | reason 数 | 规范行数 | SHA-256 |
 //! | :--- | ---: | ---: | :--- |
-//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 326 | 1413 | `ccaa1e0897d4c649f026c1e132dc28357685dd748977dafb915a43a08a63ff66` |
+//! | `reason`（**可分类**面：字面量 ＋ 可解析的字面量 `let` ＋ **调用点传播**，含顺序） | 332 | 1443 | `a6e825c2dcf0d72634f9f1ebe7bfbd6c2e9080c6ddeb9b3312d7d5f7acc6b92b` |
 //!
 //! ⚠ `ADR-0030`（`yeban_export_stems`）：两条新字面站点 `masterBusTrack` /
 //! `notASourceNode`（各带 `trackId` / `name` / `reason` 三个同级键）进入规范文本
@@ -250,7 +250,7 @@ const SCANNER_BLIND_LITERAL_REASONS: [&str; 1] = ["engineSource"];
 const SCANNER_BLIND_LITERAL_PAYLOADS: [(&str, &[&str]); 1] =
     [("engineSource", &["cause", "hint", "reason"])];
 
-pub const GOLDEN_REASONS: [&str; 325] = [
+pub const GOLDEN_REASONS: [&str; 330] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetDecodeFailed",
@@ -265,6 +265,7 @@ pub const GOLDEN_REASONS: [&str; 325] = [
     "bpmOutOfRange",
     // ⭐ `ADR-0019`：`setPitchBendPoint` 的 `cents` 只收整数音分。
     "centsMustBeInteger",
+    "chordStartTickMismatch",
     // ⭐ MCP-TOOL-003：`setTempoPoint` / `setTimeSignaturePoint` 的三条字面站点
     // （tick 0 必拒、删除不存在的映射点必点名）。`unknownSetTempoPointField` /
     // `unknownSetTimeSignaturePointField` **不在**本表：它们作为参数传给
@@ -296,11 +297,13 @@ pub const GOLDEN_REASONS: [&str; 325] = [
     "duplicateClipPlacementPairRequired",
     "duplicateLaneTarget",
     "duplicateNoteId",
+    "duplicateNoteInBatch",
     "duplicateSceneTarget",
     "durationNotDerivable",
     "edgeIdRequired",
     // ⭐ 空轨分轨豁免（本支）：`yeban_export_stems` 对"没有 clip、也没有采样器"的轨
     // 不出静音文件，改用这条 reason 在 `skippedTracks[]` 里点名（⛔ 不静默丢轨）。
+    "emptyNoteBatch",
     "emptyTrack",
     // ⭐ T-FIX-960：两处生产字面站点被早期 `#[cfg(test)]` 截断挡在扫描外，
     // 由 SCANNER_BLIND_LITERAL_REASONS 显式登记补进集合（见文件内常量注释）。
@@ -451,6 +454,8 @@ pub const GOLDEN_REASONS: [&str; 325] = [
     "tempoUnusable",
     "tickOverflow",
     "trackNotFound",
+    "unknownAddChordField",
+    "unknownAddNotesField",
     "unknownAddTrackField",
     "unknownAddRoutingNodeField",
     "unknownConnectRoutingField",
@@ -1267,8 +1272,10 @@ const PROPAGATED_REASON_SITES: [PropagatedReasonSite; 4] = [
         occurrences: 1,
         helper: "reject_unknown_keys",
         suffix: "",
-        call_sites: 38,
+        call_sites: 40,
         literals: &[
+            "unknownAddChordField",
+            "unknownAddNotesField",
             "unknownChordStaggerClipField",
             "unknownDuplicateClipField",
             "unknownHumanizeClipField",
@@ -1563,9 +1570,13 @@ fn propagated_reasons(
         return None;
     }
     let sites = helper_call_sites(region, helper);
-    if sites.len() != entry.call_sites || sites.iter().any(|site| site.literal.is_none()) {
+    if sites.iter().any(|site| site.literal.is_none()) {
         return None;
     }
+    // ⭐ T-FIX-1042：调用点计数/词表登记只做**独立判据**，⛔ 不再让一处过期的
+    // `call_sites` 把整组转发值都折成 `Dynamic`。扫描器先把真实字面量收全，
+    // 由 `the_propagated_reason_sites_publish_their_call_site_literals` 对账
+    // 登记；这样登记漂移会响亮点名，而不是静默少 30+ 个 reason。
     let mut values: Vec<String> = sites
         .iter()
         .filter_map(|site| site.literal.clone())
@@ -1573,9 +1584,6 @@ fn propagated_reasons(
         .collect();
     values.sort();
     values.dedup();
-    if values.len() != entry.literals.len() {
-        return None;
-    }
     Some((entry.helper, values))
 }
 
@@ -2001,7 +2009,17 @@ const REASON_ARGUMENT_NAME_USES: [ReasonArgumentNameUse; 9] = [
 // 由本文件 [`EXEMPT_DYNAMIC_REASON_SITES`] 的 7 个 distinct 表达式逐条登记
 // （output_schema 类型声明 2 次、`item.reason` 4 次、其余各 1 次）。
 // ⛔ 这些数是**实测**的规模契约，不是从历史增量手推的。
-const REASON_OCCURRENCES_TOTAL: usize = 389;
+//
+// ⭐ T-FIX-1042（2026-11-28，活尖端 `0b6aa570`）：先复现 6 红。根因不是区间掩码本身，
+// 而是 `PROPAGATED_REASON_SITES` 的 `reject_unknown_keys` 登记仍写 `call_sites: 38`
+// （`addChord` / `addNotes` 两个新调用点未登记，实测 40）⇒ `propagated_reasons` 的
+// `sites.len() != entry.call_sites` 守卫直接返回 `None`，37 个 `unknown*Field`
+// 全部从可分类面消失（读数 326 → 293）。把登记重钉为 40、补 `unknownAddChordField` /
+// `unknownAddNotesField` 后，词表再补 3 条新 reason（`chordStartTickMismatch` /
+// `duplicateNoteInBatch` / `emptyNoteBatch`）⇒ 黄金表 325 → **330**。
+// 实测：字面 362 ＋ 可解析 `let` 2 ＋ 运行时 14 ＋ 传播 4 ＝ 键站点 **382**；
+// 总出现 **393** ＝ 382 ＋ 参数名 9 ＋ 未分类登记 2。
+const REASON_OCCURRENCES_TOTAL: usize = 393;
 // ⭐ T-FIX-885（2026-11-27，活尖端 `6a3375f2`）：字面 356 ＋ 可解析 `let` 2 ＋
 // 运行时 14 ＋ 传播 3 ＝ 键站点 375；总出现 386 ＝ 375 ＋ 参数名 9 ＋
 // 未分类登记 2（`recovery.rs` 的 `.entry("reason".to_owned())`，见
@@ -2014,8 +2032,8 @@ const REASON_OCCURRENCES_TOTAL: usize = 389;
 // `domain/notes.rs` / `tools.rs` 里新增的 8 处字面 `"reason"` 站点
 // （tick 0、`bpmOutOfRange` 复用、`tempoPointNotFound`、`timeSignaturePointNotFound`
 // 与描述文本里的键形状；逐文件拆分以扫描器读数为准，此处不手数）。
-const REASON_KEY_SITES_TOTAL: usize = 378;
-const REASON_LITERAL_SITES_TOTAL: usize = 358;
+const REASON_KEY_SITES_TOTAL: usize = 382;
+const REASON_LITERAL_SITES_TOTAL: usize = 362;
 const REASON_RESOLVED_SITES_TOTAL: usize = 2;
 const REASON_DYNAMIC_SITES_TOTAL: usize = 14;
 const REASON_PROPAGATED_SITES_TOTAL: usize = 4;
@@ -2382,7 +2400,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 325] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 330] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -2426,6 +2444,17 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 325] = [
     ("bpmOutOfRange", &["max", "min", "reason", "received"]),
     // ⭐ `ADR-0019`：`cents` 只收整数音分（键按源码顺序）。
     ("centsMustBeInteger", &["field", "reason", "received"]),
+    (
+        "chordStartTickMismatch",
+        &[
+            "chordStartTick",
+            "kind",
+            "noteIndex",
+            "opIndex",
+            "reason",
+            "startTick",
+        ],
+    ),
     // ⭐ MCP-TOOL-003：三条新字面站点的载荷形状（键按**源码顺序**）。
     ("tempoMapZeroTick", &["reason", "tick"]),
     ("tempoPointNotFound", &["reason", "tick", "hint"]),
@@ -2490,6 +2519,18 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 325] = [
     ),
     ("duplicateLaneTarget", &["lane", "reason"]),
     ("duplicateNoteId", &["noteId", "reason"]),
+    (
+        "duplicateNoteInBatch",
+        &[
+            "durationTicks",
+            "kind",
+            "noteIndex",
+            "opIndex",
+            "pitch",
+            "reason",
+            "startTick",
+        ],
+    ),
     ("duplicateSceneTarget", &["hint", "reason", "sceneId"]),
     (
         "durationNotDerivable",
@@ -2561,6 +2602,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 325] = [
         "masterBusTrackCannotBeMoved",
         &["hint", "masterBusTrackId", "reason", "trackId"],
     ),
+    ("emptyNoteBatch", &["kind", "opIndex", "reason"]),
     // ⭐ 空轨分轨豁免（本支）：同形三键。
     ("emptyTrack", &["name", "reason", "trackId"]),
     // ⭐ `ADR-0030`：`yeban_export_stems` 的 `skippedTracks[]` 两条豁免登记（同形三键）。
@@ -2941,6 +2983,14 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 325] = [
             "supportedAddRoutingNodeFields",
             "unsupportedFields",
         ],
+    ),
+    (
+        "unknownAddChordField",
+        &["reason", "supportedFields", "unsupportedFields"],
+    ),
+    (
+        "unknownAddNotesField",
+        &["reason", "supportedFields", "unsupportedFields"],
     ),
     (
         "unknownAddTrackField",
@@ -4031,12 +4081,12 @@ fn the_reason_payload_shape_is_the_published_table() {
 /// 新摘要 `27e8fb1de65c930a411e68c202ebada5a84b9b04b67584ee3aca96b11e17e8cb`
 /// 由临时取数判据报出后照抄（⛔ 不手算）。
 pub const FROZEN_REASON_SURFACE_SHA256: &str =
-    "ccaa1e0897d4c649f026c1e132dc28357685dd748977dafb915a43a08a63ff66";
+    "a6e825c2dcf0d72634f9f1ebe7bfbd6c2e9080c6ddeb9b3312d7d5f7acc6b92b";
 
 /// 规范形式里的 reason 数 / 规范行数（与摘要一起构成"两端"读数）。
-pub const REASON_SURFACE_REASONS: usize = 326;
+pub const REASON_SURFACE_REASONS: usize = 332;
 /// 规范行数（每个 reason 一行 ＋ 每个键一行）。
-pub const REASON_SURFACE_LINES: usize = 1413;
+pub const REASON_SURFACE_LINES: usize = 1443;
 
 /// 单文件里的 `reason` 面：**保留出现顺序**的 `(reason, keys)`。
 ///
