@@ -1,0 +1,1151 @@
+{
+  "baseline_sha": "e56d6b3",
+  "policy": "只减不增棘轮：恢复为真实行为判据后守卫会报陈旧条目要求删除；新增空心测试不得直接加入本表。",
+  "count": 122,
+  "entries": [
+    {
+      "path": "crates/yeban-app/tests/a11y_screen_reader.rs",
+      "reasons": [
+        "migration_hollow_marker(3/3)",
+        "name_body_mismatch(1/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/ai_drawer_key_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(1/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/arrangement_ruler_seek.rs",
+      "reasons": [
+        "migration_hollow_marker(15/15)",
+        "isomorphic_grep_clone(15/15)",
+        "name_body_mismatch(4/15)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/arrangement_section_seek.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/arrangement_track_context_menu.rs",
+      "reasons": [
+        "name_body_mismatch(1/11)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/arrangement_vertical_scroll.rs",
+      "reasons": [
+        "migration_hollow_marker(4/5)",
+        "isomorphic_grep_clone(4/5)",
+        "name_body_mismatch(3/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/asset_pool_panel.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/automation_recording_and_controls.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(1/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/clip_duration.rs",
+      "reasons": [
+        "migration_hollow_marker(10/10)",
+        "isomorphic_grep_clone(10/10)",
+        "name_body_mismatch(2/10)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/clip_ms_nudge.rs",
+      "reasons": [
+        "migration_hollow_marker(6/6)",
+        "isomorphic_grep_clone(6/6)",
+        "name_body_mismatch(1/6)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/clip_mute_toggle.rs",
+      "reasons": [
+        "migration_hollow_marker(9/9)",
+        "isomorphic_grep_clone(9/9)",
+        "name_body_mismatch(3/9)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/clip_selection.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/compact_follows_window_width.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/console_tab_keys.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_11_serve_header_gestures.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(1/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_13_roll_hit_scope.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(3/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_1_serve_write_surface.rs",
+      "reasons": [
+        "migration_hollow_marker(3/3)",
+        "isomorphic_grep_clone(3/3)",
+        "name_body_mismatch(2/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_21_modal_mask_swallows_clicks.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_27_status_bar_tip_promises_are_bound.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)",
+        "name_body_mismatch(1/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_28_export_length_seeds_from_audible_end.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_29_metronome_writes_the_document.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(2/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_30_serve_transport_is_wired.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)",
+        "name_body_mismatch(3/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_31_serve_seek_is_wired.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)",
+        "name_body_mismatch(6/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_32_serve_parks_every_new_engine.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)",
+        "name_body_mismatch(2/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_3_chord_injection.rs",
+      "reasons": [
+        "migration_hollow_marker(3/3)",
+        "isomorphic_grep_clone(3/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/d_ui_8_serve_save_gesture.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "name_body_mismatch(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/dead_ui_controls_repro.rs",
+      "reasons": [
+        "migration_hollow_marker(11/11)",
+        "isomorphic_grep_clone(11/11)",
+        "name_body_mismatch(9/11)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/delete_selected_clip.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)",
+        "name_body_mismatch(2/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/device_bypass_identity.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/device_clip_creation.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)",
+        "name_body_mismatch(1/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/device_rack_narrow_window.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(1/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/device_rack_projection.rs",
+      "reasons": [
+        "migration_hollow_marker(7/7)",
+        "isomorphic_grep_clone(7/7)",
+        "name_body_mismatch(1/7)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/device_rack_two_segments.rs",
+      "reasons": [
+        "migration_hollow_marker(3/3)",
+        "isomorphic_grep_clone(2/3)",
+        "name_body_mismatch(1/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/engine_error_banner.rs",
+      "reasons": [
+        "migration_hollow_marker(3/3)",
+        "isomorphic_grep_clone(3/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/export_midi_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "name_body_mismatch(1/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/export_wav_browse.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/fabricated_state_honesty.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "unregistered_source_grep(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/file_picker_dialogs.rs",
+      "reasons": [
+        "migration_hollow_marker(7/7)",
+        "isomorphic_grep_clone(7/7)",
+        "name_body_mismatch(3/7)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/fps_gpu_path.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "unregistered_source_grep(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/gui_clipping_warning.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/gui_export_limiter.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(1/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/gui_save_writes_live_session.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/import_audio_entry.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/import_midi_losses_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(1/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/in_process_mcp_lock.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(2/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/instrument_probe_async.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(1/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/live_ui_mcp.rs",
+      "reasons": [
+        "migration_hollow_marker(62/65)",
+        "isomorphic_grep_clone(62/65)",
+        "name_body_mismatch(30/65)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/lyrics_export.rs",
+      "reasons": [
+        "name_body_mismatch(2/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/master_device_param_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(1/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/master_device_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(1/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/master_mute_solo.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/mcp_scene_launch.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/mixer_fader_double_click.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(2/4)",
+        "unregistered_source_grep(4/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/mixer_horizontal_scroll.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(4/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/mixer_keyboard_nudge.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)",
+        "name_body_mismatch(1/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/mixer_keyboard_switch.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(4/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/mixer_toggle_labels.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(2/2)",
+        "unregistered_source_grep(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/module_drawer_receipt.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/new_project_registration.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(1/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/new_project_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/nightfall_ui_wiring.rs",
+      "reasons": [
+        "migration_hollow_marker(7/7)",
+        "isomorphic_grep_clone(7/7)",
+        "name_body_mismatch(5/7)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/open_project_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/pane_no_overlap.rs",
+      "reasons": [
+        "migration_hollow_marker(17/20)",
+        "isomorphic_grep_clone(17/20)",
+        "name_body_mismatch(2/20)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/perf_draw_budget.rs",
+      "reasons": [
+        "migration_hollow_marker(3/4)",
+        "isomorphic_grep_clone(3/4)",
+        "name_body_mismatch(1/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/piano_roll_drag_scroll.rs",
+      "reasons": [
+        "migration_hollow_marker(3/3)",
+        "isomorphic_grep_clone(3/3)",
+        "name_body_mismatch(2/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/playhead_follows_transport.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/production_meter_leg.rs",
+      "reasons": [
+        "migration_hollow_marker(5/7)",
+        "isomorphic_grep_clone(5/7)",
+        "name_body_mismatch(3/7)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/production_reprojection.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/production_save_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/project_templates.rs",
+      "reasons": [
+        "name_body_mismatch(1/13)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/readout_accessible_values.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/record_device_wiring.rs",
+      "reasons": [
+        "migration_hollow_marker(14/15)",
+        "isomorphic_grep_clone(14/15)",
+        "name_body_mismatch(5/15)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/record_key_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/record_lands_in_pools.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(1/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/revert_button.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/rewind_sound.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(5/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/roll_edit_tools.rs",
+      "reasons": [
+        "migration_hollow_marker(23/33)",
+        "isomorphic_grep_clone(22/33)",
+        "name_body_mismatch(22/33)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/roll_marquee_selection.rs",
+      "reasons": [
+        "name_body_mismatch(1/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/roll_scope.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/round10_action_feedback.rs",
+      "reasons": [
+        "migration_hollow_marker(7/7)",
+        "isomorphic_grep_clone(7/7)",
+        "name_body_mismatch(3/7)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/round11_action_feedback.rs",
+      "reasons": [
+        "migration_hollow_marker(7/7)",
+        "isomorphic_grep_clone(7/7)",
+        "name_body_mismatch(1/7)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/round5_ui_wiring.rs",
+      "reasons": [
+        "migration_hollow_marker(2/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(3/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/round6_addressable_roles.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(2/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/round7_interaction_feedback.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(1/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/round8_action_feedback.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(2/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/round9_action_feedback.rs",
+      "reasons": [
+        "migration_hollow_marker(6/6)",
+        "isomorphic_grep_clone(6/6)",
+        "name_body_mismatch(3/6)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/sample_library.rs",
+      "reasons": [
+        "migration_hollow_marker(9/9)",
+        "isomorphic_grep_clone(9/9)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/scene_color_swatch.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/section_color_swatch.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/send_strip_no_overlap.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/send_strip_projection.rs",
+      "reasons": [
+        "migration_hollow_marker(6/6)",
+        "isomorphic_grep_clone(6/6)",
+        "name_body_mismatch(2/6)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/sfz_ui_selector.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(1/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/sidechain_dynamics_expansion.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/single_writer_session.rs",
+      "reasons": [
+        "migration_hollow_marker(5/5)",
+        "isomorphic_grep_clone(5/5)",
+        "name_body_mismatch(5/5)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/song_overview_panel.rs",
+      "reasons": [
+        "migration_hollow_marker(27/30)",
+        "isomorphic_grep_clone(27/30)",
+        "name_body_mismatch(5/30)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/splitter_drag.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/status_bar_accessible_values.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "name_body_mismatch(1/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/status_bar_honesty.rs",
+      "reasons": [
+        "migration_hollow_marker(2/6)",
+        "isomorphic_grep_clone(2/6)",
+        "name_body_mismatch(1/6)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/theme_selection.rs",
+      "reasons": [
+        "migration_hollow_marker(13/14)",
+        "isomorphic_grep_clone(13/14)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/tool_matrix_wiring.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(2/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/track_instrument_switch.rs",
+      "reasons": [
+        "migration_hollow_marker(3/3)",
+        "isomorphic_grep_clone(3/3)",
+        "name_body_mismatch(2/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/track_kinds_wiring.rs",
+      "reasons": [
+        "migration_hollow_marker(2/3)",
+        "isomorphic_grep_clone(2/3)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/track_reorder_and_navigation.rs",
+      "reasons": [
+        "migration_hollow_marker(7/7)",
+        "isomorphic_grep_clone(7/7)",
+        "name_body_mismatch(7/7)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/track_routing_crud.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/track_select_keyboard.rs",
+      "reasons": [
+        "migration_hollow_marker(4/4)",
+        "isomorphic_grep_clone(4/4)",
+        "name_body_mismatch(2/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/track_selection.rs",
+      "reasons": [
+        "migration_hollow_marker(8/8)",
+        "isomorphic_grep_clone(8/8)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/transport_play_glyph.rs",
+      "reasons": [
+        "name_body_mismatch(1/1)",
+        "unregistered_source_grep(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/transport_timecode_tick.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(1/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/ui_adr0057a_test_session.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/ui_bpm_field.rs",
+      "reasons": [
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/ui_module_actions.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/ui_module_actions_async.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)",
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/ui_module_actions_no_port.rs",
+      "reasons": [
+        "migration_hollow_marker(2/2)",
+        "isomorphic_grep_clone(2/2)",
+        "name_body_mismatch(1/2)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/undo_tree_close_button.rs",
+      "reasons": [
+        "name_body_mismatch(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/undo_tree_honesty.rs",
+      "reasons": [
+        "migration_hollow_marker(3/4)",
+        "isomorphic_grep_clone(3/4)",
+        "name_body_mismatch(3/4)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/undo_wiring_ui.rs",
+      "reasons": [
+        "migration_hollow_marker(10/10)",
+        "isomorphic_grep_clone(10/10)",
+        "name_body_mismatch(6/10)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-app/tests/velocity_bar_a11y_value.rs",
+      "reasons": [
+        "migration_hollow_marker(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-dsp/tests/r77_hard_assertion_audit.rs",
+      "reasons": [
+        "name_body_mismatch(2/21)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-engine/tests/sfz_instrument.rs",
+      "reasons": [
+        "name_body_mismatch(1/125)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-mcp/tests/props_176.rs",
+      "reasons": [
+        "name_body_mismatch(1/6)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-mcp/tests/sampler_source_single_path.rs",
+      "reasons": [
+        "unregistered_source_grep(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    },
+    {
+      "path": "crates/yeban-sfz/tests/assertion_discipline.rs",
+      "reasons": [
+        "unregistered_source_grep(1/1)"
+      ],
+      "tracking": "T-FIX-905..T-FIX-928",
+      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
+    }
+  ]
+}
