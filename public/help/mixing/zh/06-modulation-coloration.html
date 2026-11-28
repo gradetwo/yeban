@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>调制与染色效果 — 混音手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">混音手册</a></nav>
+<h1>调制与染色效果</h1>
+<p></p>
+<blockquote class="classquote"><p>木直中绳，輮以为轮，其曲中规。</p><cite>《荀子·劝学》</cite><p class="gloss">简注：直木用墨线校正，輮制成轮后弯度合于圆规；调制与染色就是在时间、相位、音高和谐波上“改形”。</p></blockquote>
+<p>“调制”是让时间、相位或音高随时间慢慢变化；“染色”是用非线性、量化或滤波给声音加谐波与质感。两者经常一起出现，但不是一回事：合唱是调制延迟，失真/饱和是静态非线性，比特碾碎是量化误差。夜半目前没有内置的合唱、镶边、相位器，也没有单独的失真踏板；它真正有的是磁带饱和、软削波、比特碾碎，以及瞬态塑形、采样延迟、噪声源这些相邻器件。本章按“原理 + 夜半现状”写，不把效果分类名当成已有设备。</p>
+<h2>三条原理</h2>
+<p>   类型 & 做法 & 听感 \\  调制延迟 & 用 LFO 改变短延迟线的长度；延迟越短、速率越低，越像合唱；反馈越高、速率越快，越像镶边 & 声音变宽、变软，或出现梳状起伏 \\ 静态非线性 & 把信号送进 tanh、软膝或硬削波曲线，产生新的谐波 & 饱和、压缩、边缘变硬；奇次谐波偏“硬”，偶次偏“暖” \\ 量化/降采样 & 降低位深或降低有效采样率 & 颗粒、阶梯、老采样器的“脏” \\  调制与染色的三条原理 </p>
+<p>合唱、镶边、相位器都属于第一类，差别只在延迟长度、LFO 速率、反馈与干湿混合；夜半没有这三件内置器件。失真、过载、音箱模拟属于第二类，夜半没有单独的失真踏板或箱体模拟；软削波与磁带饱和是第二类里真实存在的两件。比特碾碎属于第三类，夜半有。把“合唱”写成“调制延迟的一种”，比把“合唱”写成“一种混响”准确。</p>
+<h2>夜半的内置染色链</h2>
+<p>离线/整曲渲染的插入链顺序是：</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>这张图是离线渲染的全链，不是实时播放的全链：实时引擎 `insert.rs` 目前只接通道条、磁带、采样延迟与混响/卷积/延迟等部分级，瞬态、碾碎、削波、噪声族只在离线/整曲渲染里执行。也就是说，同一条轨“实时听到的”和“导出听到的”可能不是同一套染色；不要用实时监听去判断导出音色。</p>
+<h2>磁带饱和</h2>
+<p>磁带饱和是夜半唯一的内置饱和器件。它是链级器件：`tape_drive > 0` 且 `tape_mix > 0` 才建；任一为 0 就不建，没有单独的 enabled 开关。</p>
+<p>   参数 & 含义 & 范围 & 默认 \\  <code>tape\_drive</code> & 饱和驱动 $g=1+9d$ & 0–1 & 0 \\ <code>tape\_mix</code> & 干湿比；0 = 干路直通 & 0–1 & 0 \\ <code>tape\_trim\_db</code> & 输出补偿增益 & −24–24 dB & 0 \\ <code>tape\_hf\_hz</code> & 湿路一阶低通；$$20000 旁通 & 2000–20000 Hz & 20000 \\ <code>tape\_asym</code> & 曲线不对称；0 = 纯奇次，>0 出偶次 & 0–0.5 & 0 \\ <code>tape\_wow\_rate\_hz</code> & 走带慢摆速率 & 0.05–2 Hz & 0.5 \\ <code>tape\_wow\_depth\_ms</code> & 慢摆深度；0 = 无调制 & 0–8 ms & 0 \\ <code>tape\_flutter\_rate\_hz</code> & 走带快抖速率 & 2–15 Hz & 6 \\ <code>tape\_flutter\_depth\_ms</code> & 快抖深度；0 = 无调制 & 0–2 ms & 0 \\ <code>tape\_seed</code> & 调制种子（整数部分） & 0–16777215 & 0 \\  磁带饱和参数 </p>
+<p>饱和曲线是 `pade_tanh(g·x)/g`，小信号增益约 1；`tape_trim_db` 补的是饱和后的电平损失，不是“再推一次驱动”。`tape_hf_hz` 只压湿路高频，拉到 20 kHz 等于旁通这一级低通；它不会改变驱动量。</p>
+<p>`tape_asym > 0` 产生偶次谐波，是“暖”的来源，但只在级建成时生效，且小信号增益会略降约 1 dB，用 trim 补。`tape_wow` / `tape_flutter` 是走带的慢摆与快抖，调制的是整段信号（干声一起动），不是合唱那种只调湿路的延迟；它们的相位与漂移都是 `(seed, 帧号)` 的纯函数，同种子同渲染逐位一致。磁带级有 31 个采样的过采样往返延迟，进器件延迟并参与 PDC。</p>
+<p>注意：通道条里也有一个 `filter_drive`，那是滤波器驱动，不是磁带饱和，而且不作用于采样器轨。要给采样器轨加饱和，用磁带级；不要把 `filter_drive` 当“采样器饱和”。</p>
+<h2>软削波与比特碾碎</h2>
+<p>软削波器是“膝以下线性、膝以上渐近 ceiling”的静态非线性；它不是失真踏板，没有音色控制、没有箱体模拟，只有驱动、天花板、膝宽、干湿与过采样。它在磁带之后、混响之前，在母带链里是“磁带 → 削波 → 限制器”的中间级。</p>
+<p>   参数 & 含义 & 范围 & 默认 \\  <code>clipper\_drive\_db</code> & 输入驱动，决定削多少 crest & 0–24 dB & 6 \\ <code>clipper\_ceiling\_db</code> & 渐近天花板，全湿时严格不超过 & −6–0 dB & −1 \\ <code>clipper\_knee\_db</code> & 软膝宽度；0 近硬削、6 最软 & 0–6 dB & 3 \\ <code>clipper\_mix</code> & 干湿并行比；1 = 全湿 & 0–1 & 1 \\ <code>clipper\_oversample</code> & 过采样倍数（只认 1/2/4/8） & 1–8× & 4 \\  软削波器参数 </p>
+<p>比特碾碎是“先量化、再采样保持降采样”的老采样器质感：`crush_bits` 是量化位数，`crush_down` 是采样保持除数，`crush_aa` 在分频前后各混一级单极点低通压混叠。它在磁带之后、削波之前，是“介质退化”级，不是调制。</p>
+<p>   参数 & 含义 & 范围 & 默认 \\  <code>crush\_bits</code> & 量化位数；16 近透明、8 经典、4 近方波 & 4–16 bit & 16 \\ <code>crush\_down</code> & 采样保持除数；有效采样率被它整除 & 1–64× & 1 \\ <code>crush\_aa</code> & 抗混叠量；0 原始混叠、1 两级低通全开 & 0–1 & 0 \\  比特碾碎参数 </p>
+<p>注意：碾碎的缺省 16 bit / 1 / 0 不是逐位恒等：量化步长真实改低位。只要投影出这台器件，它就会改变输出；不要把它当“默认透明”。</p>
+<h2>相邻但不算调制的器件</h2>
+<p>- <strong>瞬态塑形</strong>：快/慢双包络差值，`transient_attack` / `transient_sustain` 各 −1–1，0 为恒等；它在通道条之后、磁带之前，是动态塑形，不是调制。 - <strong>采样延迟</strong>：纯延迟、无反馈，`sample_delay_samples` 0–48000、`sample_delay_invert` 极性反转；它是手动相位对齐，不是合唱。 - <strong>噪声源</strong>：链头加性源，底噪 + 爆裂声，种子可复现；它是 lofi 的“介质底噪”，不是调制。 - <strong>滤波器驱动</strong>：通道条的 `filter_drive`，在滤波器之前加驱动；它只作用于非采样器轨，且是滤波级的一部分。</p>
+<p>这些器件都没有手工“装”的按钮；它们由工程/MCP 写入，或由鼓机工厂风格按预置自动装到生成轨上。设备卡能显示已存在的器件与已识别参数，但没有可拧的旋钮。</p>
+<h2>夜半没有的内置器件</h2>
+<p>   器件 & 夜半内置？ & 替代/边界 \\  合唱 Chorus & 未提供 & 需要调制延迟线；只能靠第三方 VST3 效果器或外部制作 \\ 镶边 Flanger & 未提供 & 同上；短延迟 + 反馈 + LFO \\ 相位器 Phaser & 未提供 & 需要全通级联；夜半无此 DSP \\ 失真/过载踏板 & 未提供 & 只有磁带饱和与软削波，不是踏板/箱体模拟 \\ 音箱模拟 Amp Sim & 未提供 & 无箱体、无麦克风模拟 \\ 颤音 Vibrato & 未提供为独立效果 & 音高/延迟调制不在内置效果组 \\  内置调制/染色器件的缺口 </p>
+<p>第三方 VST3 效果器是另一条路：插件面板可以扫描、装载效果器，离线渲染时首台非旁通带绑定的效果器胜出。它不属于“夜半内置效果”，也不在实时播放里执行；本章不把第三方插件算进内置清单。</p>
+<h2>怎么用、怎么听</h2>
+<ol>
+<li>先判断要“时间变化”还是“谐波变化”。要合唱/镶边/相位，夜半内置没有；要饱和/削波/颗粒，走磁带/削波/碾碎。</li>
+<li>磁带饱和先设 `tape_mix` 到能听见的比例，再用 `tape_drive` 推；`tape_trim_db` 补电平，不要用推子补染色。</li>
+<li>要“暖”先加 `tape_asym`，要“硬”保持 0；要更亮把 `tape_hf_hz` 拉高，要更暗拉低。</li>
+<li>软削波先设 `clipper_ceiling_db`，再推 `clipper_drive_db`；`clipper_knee_db` 越大越软，`clipper_mix` 调低保留瞬态。</li>
+<li>比特碾碎从 `crush_bits=8`、`crush_down=2` 试；`crush_aa=0` 最脏，1 最顺。不要同时把三位都拉满。</li>
+<li>这些级都没有手工入口；如果设备卡上没有，不要以为“菜单里还有一台”。先用鼓机风格生成或经 MCP 写入，再回听。</li>
+</ol>
+<figure class="fig-placeholder">[截图见 PDF 版：设备机架里一条生成轨的设备卡显示磁带饱和与已识别参数读数；没有驱动/混合旋钮。]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：设备机架里显示软削波器与比特碾碎两张卡片，参数为只读读数。]</figure>
+<h2>常见误区</h2>
+<ul>
+<li><strong>把“合唱”当夜半内置效果。</strong> 内置没有合唱、镶边、相位器；只有第三方 VST3 效果器或外部制作。</li>
+<li><strong>把软削波当失真踏板。</strong> 它没有音色控制、没有箱体模拟；只是软膝削波。</li>
+<li><strong>把通道条 <code>filter\_drive</strong> 当采样器饱和。</code> 它不作用于采样器轨；采样器轨要饱和用磁带级。</li>
+<li><strong>把磁带 wow/flutter 当合唱。</strong> 它调制整段信号（干声一起动），不是只调湿路的调制延迟。</li>
+<li><strong>把碾碎缺省当透明。</strong> 16 bit / 1 / 0 仍真实改低位；投影出器件就改变输出。</li>
+<li><strong>用实时监听判断染色。</strong> 实时引擎只接部分级；瞬态/碾碎/削波/噪声的最终音色以离线导出为准。</li>
+<li><strong>把第三方 VST3 效果器算进内置清单。</strong> 它是插件路径，离线执行、首台胜出，和内置器件不是同一套入口。</li>
+</ul>
+<h2>练习</h2>
+<aside class="note">
+<ol>
+<li>选一条鼓或贝斯，把 <code>tape\_drive</code> 从 0 调到 0.3，再把 <code>tape\_mix</code> 从 0 调到 0.5；用 <code>tape\_trim\_db</code> 把电平补回。</li>
+<li>在相同监听音量下 A/B：先听瞬态，再听低频，最后听噪声/齿音；每项写“变/不变”，不要只写“更暖”。</li>
+<li>记住实时链与离线导出链并不完全相同；不要用实时监听判断导出染色。</li>
+</ol>
+</aside>
+<h2>帮助主题映射</h2>
+<p>   小节 & 应用内帮助锚点 \\  三条原理 & <code>mod-three-principles</code> \\ 夜半的内置染色链 & <code>mod-coloration-chain</code> \\ 磁带饱和 & <code>mod-tape</code> \\ 软削波与比特碾碎 & <code>mod-clipper-crusher</code> \\ 相邻但不算调制的器件 & <code>mod-adjacent-devices</code> \\ 夜半没有的内置器件 & <code>mod-gaps</code> \\ 怎么用、怎么听 & <code>mod-workflow</code> \\ 常见误区 & <code>mod-mistakes</code> \\  第 6 章帮助主题映射</p>
+<h2>延伸阅读</h2>
+<ul>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a>——Sound On Sound 技术栏目：对照调制、饱和与失真类效果的实际听感与参数边界。</li>
+<li><a href="https://www.native-instruments.com/en/">https://www.native-instruments.com/en/</a>——Native Instruments 官方站：浏览效果器与声音设计工具，补足调制类设备的类型地图。</li>
+</ul>
+<nav class="manual-pager"><a href="05-space-effects.html">← 空间效果</a><span></span><a href="07-stereo-image.html">声像与立体声 →</a></nav>
+</main></body></html>

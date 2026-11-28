@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Projects</h1>
+<p></p>
+<blockquote class="classquote"><p>九层之台，起于累土。</p><cite>Laozi, Dao De Jing, ch. 64 (《道德经·第六十四章》)</cite><p class="gloss">Translation: “A nine-story terrace begins with a basket of earth.” A project begins as an empty container with its first track: set the frame first, then add content.</p></blockquote>
+<p>This chapter covers the whole project lifecycle: how to create, open, save and reuse a project, plus Yeban's distinctive "undo is versioning" model. By the end you should be able to save work confidently, find it again, and return to any past state.</p>
+<h2>Create, Open and Save</h2>
+<h3>Five entries in the File menu</h3>
+<p>The File menu has five project-related items:</p>
+<ul>
+<li><strong>New Empty Project</strong>: a project with only the master bus.</li>
+<li><strong>New from Template...</strong>: opens the template chooser to start from a factory or user template.</li>
+<li><strong>Open / Restore Project...</strong>: pick a <code>.yeban</code> file in the file dialog.</li>
+<li><strong>Save Project (Cmd/Ctrl+S)</strong>: write the current project back to its file.</li>
+<li><strong>Save As (Cmd/Ctrl+Shift+S)</strong>: save under a different name or location.</li>
+</ul>
+<p>You can also open directly from the command line: <code>yeban-app --open <path></code>.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The File menu expanded, labelling New Empty Project, New from Template, Open/Restore, Save and Save As]</figure>
+<h3>The startup project chooser</h3>
+<p>When you launch without specifying a project, the startup project chooser appears. It groups entry points into <strong>Recent Projects</strong>, <strong>Demo Projects</strong>, <strong>Factory Templates</strong>, <strong>User Templates</strong>, and an empty-project entry left on the “New Project” tab. A demo lets you look around without touching your work; a recent project returns you to where you left off.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The startup project chooser with its four category tabs and the “New Project” tab]</figure>
+<h3>Saving is atomic</h3>
+<p>Saving is atomic: content is written to a temporary location first and replaces the target only once it is complete. A power cut mid-write cannot leave a half-written project — you get either the new version or the previous one.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Project lifecycle: new/from template $$ edit $$ save $$ reopen; you can return to an older version at any time </p>
+<h2>Project Files and the Asset Pool</h2>
+<p>A project uses the <code>.yeban</code> extension and is the only project format. One container holds tracks, clips, notes, device chains, and the materials the project uses (kept in the asset pool, addressed by content hash).</p>
+<p>The asset pool means "the project brings its own materials": copy a project to another machine and the audio and SFZ samples it uses travel with the container. Stem export and Save As Template both take the pool from the same source, matching the CLI and MCP behaviour (see Chapter 8).</p>
+<p> Where things live inside a project   Content & Location in the project \\  Tracks / clips / notes & Arrangement data \\ Device chains & The device sequence of each track \\ History DAG & The undo chain, saved with the project \\ Used materials & Asset pool, addressed by content hash \\ Project settings & Tempo / key / time signature / sample rate \\ </p>
+<h2>Templates: New from Template, Save As, Factory Directory</h2>
+<h3>New from template</h3>
+<p>File $$ New from Template... opens the template chooser, listing two kinds: <strong>factory templates</strong> (shipped with the app) and <strong>user templates</strong> (ones you saved). Selecting one creates a new project from that skeleton. When the list is long, the chooser reports the number of hidden rows rather than silently dropping entries.</p>
+<h3>Save as template</h3>
+<p>File $$ Save As Template... opens a dialog: enter a name, then confirm to write into the user template directory. If a template with that name already exists, the app does not overwrite it directly — it stops and asks for confirmation; cancelling writes nothing. The user template directory is created on first use; if it is unavailable, the dialog shows the error rather than failing silently.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The Save As Template dialog showing the name field, hint line and same-name confirmation state]</figure>
+<h2>Recent Projects and Recovery</h2>
+<p>Every successful open records the path in Recent Projects. You find it under the “Recent Projects” tab of the startup chooser and open it with one click; the list also offers a removal entry for records you no longer need. Recent projects, language and layout share one local settings store, so changing language or layout does not push recent projects out.</p>
+<p>Open / Restore Project... is also used for recovery: after you select a container file, the app restores the scene from the history DAG and asset pool recorded in it.</p>
+<h2>Project Settings: Sample Rate, Tempo, Time Signature</h2>
+<p>On the “New Project” tab of the startup chooser you can set a few basics for the empty project; they are written into the new project:</p>
+<ul>
+<li><strong>Tempo (BPM)</strong>: accepted range 20--999; out-of-range or invalid input is folded back into the legal domain.</li>
+<li><strong>Key signature</strong>: it can be unset (the factory state of a canonical empty project), or use sharps/flats from $-7$ to $+7$.</li>
+<li><strong>Time signature</strong>: numerator 1--32; denominator only 1, 2, 4, 8, 16 or 32.</li>
+<li><strong>Sample rate</strong>: the project's audio sample rate (Hz).</li>
+</ul>
+<p>These drive later conversions: bar length comes from the time signature, and the timecode grid from the project's time signature. When a time signature is invalid, the app reports the reason literally (e.g.\ “invalid time signature, cannot compute clip length”) instead of quietly substituting a default.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The New Project tab showing the four inputs: tempo, key signature, time signature and sample rate]</figure>
+<h2>Undo Is Versioning: the Time Machine</h2>
+<p>Yeban has no separate "version history" feature: every edit is a commit, and undo/ redo merely move along that commit chain.</p>
+<ul>
+<li><strong>Undo</strong>: Cmd/Ctrl+Z; <strong>Redo</strong>: Cmd/Ctrl+Shift+Z.</li>
+<li><strong>Time Machine (Undo Tree)</strong>: Edit $$ Time Machine (Undo Tree)...; Cmd/Ctrl+Shift+H also opens it.</li>
+</ul>
+<p>The Time Machine draws the whole commit chain as a graph: click any version node to return the project to that state. If there are too many older versions to fit, the panel reports how many were not drawn rather than pretending all are shown. The history DAG is saved with the project, so it is still there next time you open it.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The Undo Tree graph with a historical node selected and highlighted]</figure>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  Five entries in the File menu & <code>project-file-menu</code> \\ Startup project chooser & <code>project-startup-chooser</code> \\ Saving is atomic & <code>project-atomic-save</code> \\ Project files and asset pool & <code>project-container-assets</code> \\ New from template & <code>project-template-new</code> \\ Save as template & <code>project-template-save</code> \\ Recent projects and recovery & <code>project-recent-recovery</code> \\ Project settings & <code>project-settings</code> \\ Undo is versioning: Time Machine & <code>project-undo-tree</code> \\ </p>
+<p>What you will be able to do Create, open, save and reuse a project, return to any historical version with the Time Machine, and explain what a <code>.yeban</code> container holds.</p>
+<p>Hands-on exercise Create a project from a template, set tempo to 96 BPM and time signature 3/4; save it, then save it as a template; make several edits, undo with Cmd/Ctrl+Z and jump back to the earliest version with the Time Machine; finally quit, reopen from Recent Projects in the startup chooser and verify the settings survived.</p>
+<nav class="manual-pager"><a href="ch01-quickstart.html">← Getting Started</a><span></span><a href="ch03-tracks-clips.html">Tracks and Clips →</a></nav>
+</main></body></html>

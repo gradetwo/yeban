@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>和弦 — \bookname\\[0.3em]\large 从零开始的音高、节奏与和声 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">\bookname\\[0.3em]\large 从零开始的音高、节奏与和声</a></nav>
+<p></p>
+<h1>和弦</h1>
+<blockquote class="classquote"><p>诗言志，歌永言，声依永，律和声。八音克谐，无相夺伦，神人以和。</p><cite>《尚书·舜典》</cite><p class="gloss">诗、歌、声、律层层相生，最后要“八音克谐，无相夺伦”——不同乐器各守其位，才能和谐。和弦就是让几个不同的音同时发声，既不互相掩埋，也不彼此打架。</p></blockquote>
+<p></p>
+<h3>学完这一章能做什么</h3>
+<ul>
+<li>听/看三个音就能判断它是不是三和弦，并说出根音、三音、五音。</li>
+<li>分清大三、小三、减三、增三与常见七和弦，写出它们的半音公式与和弦标记。</li>
+<li>用转位与斜杠记号改变低音，让和声连接更平滑。</li>
+<li>在夜半的钢琴卷帘里叠出和弦、听出根音位置，并看懂和弦轨的试听与边界。</li>
+</ul>
+<h3>和弦：三个以上的音组成一个功能单位</h3>
+<p>和弦（chord）不是“随便几个音同时响”，而是以一个根音（root）为核心、按一定音程叠起来的一组音。最常见的是三和弦（triad）：根音、三音、五音三个音。三音决定大/小，五音决定纯/减/增；根音决定这个和弦在调里的功能。</p>
+<p>写和弦时先定根音，再按半音往上数。以 C 为根音：</p>
+<p>\[ C4 {+4 E4 +3 G4} \]</p>
+<p>C–E 是大三度（4 个半音），E–G 是小三度（3 个半音），合起来 C–E–G 就是大三和弦。若把三音降一个半音，C–E–G 就是小三和弦；三音、五音都变，性质也跟着变。</p>
+<h3>四种三和弦</h3>
+<p>  类型 & 半音公式（从根音） & 以 C 为根音 & 听感 \\  大三和弦 & 0, 4, 7 & C E G & 明亮、稳定 \\ 小三和弦 & 0, 3, 7 & C E G & 柔和、内敛 \\ 减三和弦 & 0, 3, 6 & C E G & 紧张、不稳定 \\ 增三和弦 & 0, 4, 8 & C E G & 悬浮、对称 \\ </p>
+<p>表 5-1：四种三和弦。公式里的 0 是根音，后两个数是三音、五音相对根音的半音数。</p>
+<p>减三和弦的三音与五音都偏低，增三和弦的五音偏高；两者都不属于“稳定协和”的底色，常用来制造过渡或色彩。大、小三和弦则是绝大多数流行、摇滚、爵士和声的骨架。</p>
+<p></p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p> 图 5-1：C 大三和弦与小三和弦的叠置。竖线位置是相对根音的半音高度；大三和弦的三音在 +4，小三和弦的三音在 +3，五音都在 +7。</p>
+<h3>七和弦：在三和弦上再加一个三音</h3>
+<p>七和弦（seventh chord）是在三和弦上再叠一个七音。它不是“三和弦加任意音”，七音与根音的关系决定和弦的性质。常用的五种：</p>
+<p> {3pt}  类型 & 半音公式 & 以 C 为根音 & 标记 \\  属七和弦 & 0, 4, 7, 10 & C E G B & C7 \\ 大七和弦 & 0, 4, 7, 11 & C E G B & Cmaj7 \\ 小七和弦 & 0, 3, 7, 10 & C E G B & Cm7 \\ 半减七和弦 & 0, 3, 6, 10 & C E G B & Cm75 \\ 减七和弦 & 0, 3, 6, 9 & C E G B（等音 A） & Cdim7 \\ </p>
+<p>表 5-2：五种常用七和弦。属七的七音比大七低一个半音，这是 C7 与 Cmaj7 最直接的差别。</p>
+<p>属七和弦（dominant seventh）的 \(0,4,7,10\) 是功能和声里最常用的“紧张—解决”单元：它带着一个倾向主音的三音和一个倾向三音的七音，所以 V7 → I 听起来最顺。大七和弦把七音升高到 11，听感更“亮、悬浮”；小七和弦把三音降下来，常用于小调与爵士；半减七与减七则更不稳定。</p>
+<h3>转位与低音</h3>
+<p>同一个和弦，把最低音换掉，就叫转位（inversion）。以 C 大三和弦为例：</p>
+<ul>
+<li>原位（root position）：C–E–G，低音是根音 C，标记 <code>C</code>。</li>
+<li>第一转位：E–G–C，低音是三音 E，标记 <code>C/E</code>。</li>
+<li>第二转位：G–C–E，低音是五音 G，标记 <code>C/G</code>。</li>
+</ul>
+<p>转位不改变和弦的“音集”，只改变低音与声部排列。它最实用的价值是让低音线更平滑：C → F 时，如果 F 和弦用原位 F–A–C，低音从 C 跳到 F；若用 F 的第一转位 A–C–F，低音从 C 走到 A，跳动更小。实际编配时，先看低音要不要级进，再决定用原位还是转位。</p>
+<p></p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p> 图 5-2：C 大三和弦的原位、第一转位、第二转位。三列的音集相同，最低音分别落在 C、E、G；斜杠记号把低音写在和弦名后面。</p>
+<h3>和弦标记：从字母到罗马数字</h3>
+<p>流行/爵士谱用字母和弦标记：根音字母 + 性质后缀。常用写法：</p>
+<ul>
+<li><code>C</code> 大三和弦；<code>Cm</code> 小三和弦；<code>Cdim</code> 减三；<code>Caug</code> 增三。</li>
+<li><code>C7</code> 属七；<code>Cmaj7</code> 大七；<code>Cm7</code> 小七；<code>Cm75</code> 半减七；<code>Cdim7</code> 减七。</li>
+<li>斜杠后的字母是低音，如 <code>C/E</code>、<code>C/G</code>；它不改变和弦性质，只改变转位。</li>
+<li>扩展音 9、11、13 写在性质后，如 <code>Cm9</code>、<code>Fm11</code>；它们是在七和弦上继续叠音，具体听感取决于排列与语境。</li>
+</ul>
+<p>功能分析用罗马数字：大调里 I、ii、iii、IV、V、vi、vii°；小调里 i、ii°、III、iv、v/V、VI、vii°。以 C 大调为例：I = C，ii = Dm，iii = Em，IV = F，V = G，vi = Am，vii° = Bdim。罗马数字让你一眼看出“这是主、属还是下属”，比死记和弦名更有用。</p>
+<h3>常用进行与声部连接</h3>
+<p>三个最值得先练的进行：</p>
+<ul>
+<li><strong>I–V–vi–IV</strong>（C–G–Am–F）：流行歌最常用的循环之一，主—属—下中音—下属，情绪从稳定到明亮再回到柔和。</li>
+<li><strong>ii–V–I</strong>（Dm–G–C）：爵士与功能和的骨架；ii 先准备，V 制造紧张，I 解决。小调里常写成 ii°–V–i 或 ii–V–i。</li>
+<li><strong>i–VI–iv–V</strong>（Cm–A–Fm–G）：小调的史诗/流行走向，夜半和弦轨的示例正是这一组（Cm9、A Maj7、Fm11、G79、Cm11）。</li>
+</ul>
+<p>连接时先守着两条：能不动就不动（共同音保留），必须动就就近动（尽量小跳）。这就是声部连接（voice leading）。例如 C → Am，C 和弦的 E、G 可以留在 Am 的 E、G 上，只把 C 换成 A；C → F 时，共同音 C 保留，E 移到 F、G 移到 A，低音 C 移到 F。不要让所有声部同时大跳。</p>
+<p>低音区要特别小心：把根音和五音放在低音区能稳住和声，但不要把三音也塞到很低的位置，否则低频会浑浊；三音、七音、扩展音更适合放在中高音区。具体频率下限没有唯一标准，以监听不糊、低频不打架为准。</p>
+<h3>在夜半里怎么做</h3>
+<ol>
+<li>在编曲区菜单里选“显示 / 隐藏和弦轨”（或点轨道头上方的“和弦展开”开关），编曲区会出现一条全局和弦轨。</li>
+<li>和弦轨是演示用的固定五块：<code>Cm9</code>（i9）、<code>AbMaj7</code>（VI7）、<code>Fm11</code>（iv11）、<code>G79</code>（V79）、<code>Cm11</code>（i11）。点任意一块会向引擎发 NoteOn/Off 试听，不是播放整个工程。</li>
+<li>要写自己的和弦，打开钢琴卷帘（<code>P</code>/<code>F7</code>），在同一个拍点把根音、三音、五音放在相邻行距对应的行上。以 C 大三和弦为例：C4 行、E4 行（+4）、G4 行（+7）；小三和弦把 E4 换成 E4（+3）。</li>
+<li>写第一转位：把最低的 C4 用 <code>Shift+↑</code> 升高一个八度到 C5，音符变成 E4–G4–C5；听低音从 C 变成 E。第二转位同理，把 E4 再升八度，得到 G4–C5–E5。</li>
+<li>用 <code>Space</code> 播放，先只听低音，再听三音/五音；要对比原位与转位，复制同一小节，只改最低音，其他音保持不动。</li>
+<li>写进行时按小节分块：第 1 小节 C，第 2 小节 G，第 3 小节 Am，第 4 小节 F；每块先用原位，再试把 F 改成 F/A 或 C/E，听低音线是否更顺。</li>
+</ol>
+<figure class="fig-placeholder">[截图见 PDF 版：C 大三和弦在卷帘中的叠置]</figure>
+<p><strong>范围说明：</strong>夜半当前没有和弦识别、和弦轨编辑或“按和弦名自动铺音”的功能；和弦轨的五块是固定演示数据，试听走引擎 NoteOn/Off。试听解析只覆盖三和弦与常见七和弦（大三/小三/减/增、属七/大七/小七/半减七/减七、sus）；<code>Cm9</code>、<code>Fm11</code>、<code>Cm11</code> 这类带 9/11 的标签实际只按基础三和弦发，<code>G79</code> 只按属七发，扩展音不会自动加入。要听扩展音，需在卷帘里自己叠音；不要把标签当成完整和弦数据。</p>
+<h3>练习</h3>
+<aside class="note">
+<ol>
+<li>写出 C 大三和弦的三个音与相邻半音数；它为什么不是 C–E–A？\\</li>
+<p><em>答案：</em>C E G；C–E 4 个半音，E–G 3 个半音；C–E–A 的 A 是六音，不是三和弦的五音。</p>
+<li>写出 A 小三和弦；它的第一转位低音是谁、斜杠标记怎么写？\\</li>
+<p><em>答案：</em>A C E；第一转位是 C E A，低音 C，标记 Am/C。</p>
+<li>C7 与 Cmaj7 相差几个半音？差在哪个音？\\</li>
+<p><em>答案：</em>相差 1 个半音；C7 的七音是 B（10），Cmaj7 的七音是 B（11）。</p>
+<li>在 C 大调写出 ii–V–I 的三个和弦与罗马数字；V 到 I 时哪个音最容易保留？\\</li>
+<p><em>答案：</em>Dm–G–C；ii–V–I；G 的根音 G 同时是 C 的五音，可以保留；G 的三音 B 到 C 的根音 C 只差半音，G 的五音 D 到 C 的三音 E 差一个全音。</p>
+<li>在夜半里叠出 C/E（E4–G4–C5），再与 C 原位（C4–E4–G4）对比；听到的低音变化是什么？\\</li>
+<p><em>提示：</em>先确认 C4 行、E4 行、G4 行；把 C4 用 <code>Shift+↑</code> 移到 C5，最低音变成 E4；低音从 C 变成 E，和弦音集仍是 C、E、G。</p>
+</ol>
+</aside>
+<h3>帮助主题映射</h3>
+<p> {3pt}  本章小节 & 应用内帮助锚点 & 备注 \\   和弦与根音 & <code>music-theory-chord-root</code> & 概念 \\ 四种三和弦 & <code>music-theory-triads</code> & 表 5-1 \\ 七和弦 & <code>music-theory-sevenths</code> & 表 5-2 \\ 转位与低音 & <code>music-theory-chord-inversion</code> & 图 5-2 \\ 和弦标记 & <code>music-theory-chord-symbols</code> & 记号 \\ 常用进行 & <code>music-theory-progressions</code> & 功能 \\ 声部连接与低频 & <code>music-theory-voice-leading</code> & 编配 \\ 在夜半里怎么做 & <code>music-theory-piano-roll-chords</code> & 操作 \\ 练习 & <code>music-theory-ch5-practice</code> & 答案在章末 \\ </p>
+<h3>延伸阅读</h3>
+<ul>
+<li><strong>Open Music Theory, “Triads and seventh chords.”</strong> <a href="https://openmusictheory.github.io/triads.html">https://openmusictheory.github.io/triads.html</a> —— 把三和弦、七和弦的构成与转位一次讲全，补本章的命名与写法。</li>
+<li><strong>YouTube, “What are the triads (chords) that appear in the major scale?”</strong> <a href="https://www.youtube.com/watch?v=E1ke56nbAeg">https://www.youtube.com/watch?v=E1ke56nbAeg</a> —— 在大调音阶里逐个搭出七种三和弦，补“为什么这些和弦能一起用”。</li>
+</ul>
+<nav class="manual-pager"><a href="ch04-scales-and-modes.html">← 音阶与调式</a><span></span><a href="ch06-harmonic-progression.html">和声进行与功能 →</a></nav>
+</main></body></html>

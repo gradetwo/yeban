@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>采样与 SFZ — 乐器与合成器手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">乐器与合成器手册</a></nav>
+<h1>采样与 SFZ</h1>
+<p></p>
+<blockquote class="classquote"><p>荃者所以在鱼，得鱼而忘荃；蹄者所以在兔，得兔而忘蹄；言者所以在意，得意而忘言。</p><cite>《庄子·外物》</cite><p class="gloss">工具是为了达成目的；SFZ 与采样文件是“筌”，音乐意图才是“鱼”，不要让文件管理盖过声音本身。</p></blockquote>
+<p>合成器用算法“算”出声音，采样乐器用录音“播”出声音。夜半的采样侧以 SFZ 为核心：一份 SFZ 文本描述“哪个音区、哪个力度、用哪个音频文件、怎么移调”，音频文件本身留在磁盘上。理解这层分工，才能判断“装了没声音”到底是文件缺失、音区没覆盖，还是轨道绑错了入口。</p>
+<h2>SFZ 是什么，不是什么</h2>
+<p>SFZ 是一个文本定义文件。它不内含 PCM，也不把整份音库塞进工程；它只写区域（region）和样本路径。夜半读取 SFZ 后，把区域表摊平成可发声的乐器，再按音符与力度选区域。工程里只保存“这条轨绑了哪份 SFZ”的路径，所以工程文件很小，但换机器、删库、移动样本目录都可能让路径断掉。</p>
+<p>一条轨道只有一件主音源真正发声：分派次序是<strong>鼓机 ＞ SFZ ＞ 复音合成器</strong>。同一轨同时挂了鼓机、SFZ 和合成器时，鼓机先发声，另外两件被忽略；这不是 bug，而是“一轨一主音源”的既定口径。</p>
+<h2>三个入口，别走错</h2>
+<p>夜半界面里有几处都写着“SFZ/采样库”，落点并不相同：</p>
+<p>   入口 & 实际动作 & 是否绑定当前轨 \\  设备机架的“+ 加载 SFZ” / 左栏采样库条目 & 打开音源管理，选中条目后载入当前轨 & 是，写轨道采样器 \\ 顶部模块条的“装载 SFZ” & 选一份 SFZ 作为导出/试听的音源，报告区域数与探测读数 & 否，不改轨道绑定 \\ 文件菜单的“装载 SFZ 音色库...” & 与模块条同一条模块动作 & 否，当前实现不写轨道绑定 \\  三个 SFZ 入口的实际落点 </p>
+<p>想把音色真正装到某条轨上，用设备机架的空态按钮或左栏采样库条目：选中条目并载入当前轨，工程会提交一次 `SetTrackSampler`。顶部“装载 SFZ”是“整份工程试听/导出用这份音源”的旁路，它把乐器放进内存槽供下一次导出使用；它不会替当前轨换音源。若缺省路径没有文件，它会直接打开音源管理，而不是报一个术语错误。</p>
+<h2>音区、根音与力度层</h2>
+<p>SFZ 的每个区域至少回答四件事：覆盖哪些键（<code>lokey</code>/<code>hikey</code>）、覆盖哪些力度（<code>lovel</code>/<code>hivel</code>）、根音在哪（<code>pitch_keycenter</code>，默认 60）、播哪个文件（<code>sample</code>）。音符落在区域内才触发；多个区域同时覆盖同一个键与力度时会叠加，这就是分层采样。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>图中每个格子代表一组“键区 × 力度层”的区域。真实 SFZ 不必铺满整张表：只写 C3 的中力度，C4 就没有声音；只写高力度，轻按就不触发。遇到“某些键有声音、某些没有”，先查区域覆盖，而不是先怀疑引擎。</p>
+<p>根音决定移调。样本若在 C3 录的，却把 <code>pitch_keycenter</code> 写成 60（C4），播放 C3 时会整体低一个八度。夜半的装载报告会做记法适配：文件用音名写键位、样本又没有嵌入根音时，证据不足就不自动移位，并在回执里提示“可能差一个八度”；工程字段支持 <code>note\_octave\_override</code>，但当前界面没有独立的八度旋钮，不能指望一键修正所有库。</p>
+<p>力度响应由 <code>amp\_veltrack</code>（默认 100%，范围 $-100$–$100$）和可选的 <code>amp\_velcurve\_N</code> 点表决定；键位响度由 <code>amp\_keytrack</code>（默认 0 dB/键，范围 $-96$–$12$）决定。多数音库不需要改这两项；若同一力度层整体过响或过轻，先查库本身的设置，再考虑在夜半侧改。</p>
+<h3>MPC：采样不是音色包</h3>
+<p>Akai 与 Roger Linn 在 1988 年推出 MPC60：12 bit 采样、十六个力度感应打击垫、内置音序与 swing。DJ Premier、Pete Rock、J Dilla 等制作人都长期使用 MPC 系列；它真正改变音乐的地方，不是“能采样”，而是把采样、演奏与音序做成了同一件乐器。</p>
+<p>这对 SFZ 的启示很直接：一个区域不是“一个音色文件”，而是一次触发。采样选哪个根音、哪个力度层，决定你按下这个垫子时听到什么；垫子的 feel 则来自演奏与时间，不来自文件格式。夜半的 SFZ 只负责“键区、根音、力度、样本”的映射，不负责 MPC 的 swing；要做 MPC 式的拖拽，得在 MIDI/鼓机时序里解决（第 9 章会讲 <code>micro\_timing\_ticks</code>），不要指望改 SFZ 的 region 就能得到。</p>
+<p>所以，做采样乐器时先做两件事：选对根音与力度层，让每个垫子“按下去像那件乐器”；再把演奏（力度、时机、重复）当成编配的一部分。一个“MPC 味”不是某个采样包，而是采样选择＋打击演奏＋时序共同的结果。</p>
+<p>边界：夜半当前没有 MPC 的十六垫界面，也没有 MPC swing 旋钮；本章能复现的是采样映射与力度层，时序与 pad 演奏要在 MIDI/鼓机侧完成。不要用一张循环采样冒充“MPC 演奏”。</p>
+<h2>支持的文件与失败回退</h2>
+<p>夜半读样本按后缀分派：<code>.wav</code>/<code>.wave</code> 走 PCM／浮点 WAV 解码；其余常见格式（FLAC、OGG 等）走通用解码器。两条腿都保留声道，超过双声道的样本会被明确拒绝，不会悄悄折成单声道。</p>
+<p>   情况 & 夜半的行为 \\  单/双声道 WAV、FLAC、OGG 等 & 正常解码；立体声保留左右声道 \\ 采样率与工程不同 & 不重采样；按播放速率换算，报告里保留原采样率 \\ 样本文件缺失/读不动 & 回退到 440 Hz 内存正弦，并把路径列入 missing；不是静默成功 \\ 超过双声道 & 明确拒绝该样本 \\ <code>sample=*silence</code> & 内建静音伪样本：区域存在、会触发，但不发声 \\ <code>\#include</code> 缺失或无匹配 & 装载继续，逐条列入 include\_issues \\  样本读取的成功与失败口径 </p>
+<p>回退正弦是诊断信号，不是“替代音色”。听到整齐的 440 Hz 正弦，说明样本没读到；这时看装载回执的 missing 列表，修路径或补文件，而不是调 EQ。</p>
+<p>每条轨的 SFZ 声部池是 16 个；超过时按既有窃取策略换掉旧声部，并累计窃取计数。这个上限对普通编曲足够，但超大编制或长释放叠置时要知道它会窃取，而不是无限扩声部。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：音源管理面板打开，已安装音源列表可见，某条目旁有载入当前轨的入口，当前轨为 MIDI 轨。]</figure>
+<h2>声库管理</h2>
+<p>夜半的采样库根目录由程序统一管理，不在工程目录里。设备机架的采样库按钮在未安装时显示“下载采样库（约 9.4 GiB）”；已安装时同一按钮变成“校验采样库”。下载只在用户点击时发生，不会在后台偷偷拉取。</p>
+<p>音源包安装前会校验 SHA-256 与体积；校验不过不会落盘，也不会留下半个目录。删除某个库时，程序会列出仍绑定在该库上的轨道名，提醒这些轨会失去音源；删除是显式动作，不是“清理缓存”。工程里库内路径会存成相对库根的 `assets/samples/...` 形式，换机器后只要库根还在同一位置就能找回；库外绝对路径不迁移，换机器就可能断。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：装载回执展开，能看到 regions 数量、样本来源与 probe 的帧数/能量；若失败则能看到 missing 或 include 列表。]</figure>
+<h2>常见问题排查</h2>
+<ol>
+<li><strong>完全没有声音</strong>：先看轨道是否真的绑了 SFZ（不是只点了顶部“装载 SFZ”），再看区域是否覆盖当前音区，最后看样本是否 missing。</li>
+<li><strong>只有部分键有声</strong>：查 <code>lokey</code>/<code>hikey</code> 是否漏了音区；分层库通常不会为每个半音都写区域。</li>
+<li><strong>整体低/高一个八度</strong>：查 <code>pitch\_keycenter</code> 与音库记法；当前没有界面八度旋钮，先按回执提示判断。</li>
+<li><strong>力度变化很怪</strong>：查 <code>amp\_veltrack</code> 与 <code>amp\_velcurve\_N</code>；不是所有库都按 0–127 线性。</li>
+<li><strong>换电脑后无声</strong>：查库根是否移动、工程里存的是相对路径还是库外绝对路径。</li>
+<li><strong>装了采样库但列表空</strong>：先点“校验采样库”，看库根是否可写、包是否完整；不要把空列表当成“没有音源”。</li>
+</ol>
+<h2>帮助主题映射</h2>
+<p>   小节 & 应用内帮助锚点 \\  SFZ 是什么，不是什么 & <code>sfz-what-it-is</code> \\ 三个入口，别走错 & <code>sfz-entry-points</code> \\ 音区、根音与力度层 & <code>sfz-zones-velocity</code> \\ 支持的文件与失败回退 & <code>sfz-file-fallback</code> \\ 声库管理 & <code>sfz-library-management</code> \\ 常见问题排查 & <code>sfz-troubleshooting</code> \\  第 4 章帮助主题映射</p>
+<h2>延伸阅读</h2>
+<ul>
+<li><a href="https://sfzformat.com/opcodes/">https://sfzformat.com/opcodes/</a>——SFZ opcode 参考：逐项核对 region、sample、pitch、velocity 等字段的真实语义。</li>
+<li><a href="https://www.soundonsound.com/techniques/sampling">https://www.soundonsound.com/techniques/sampling</a>——Sound On Sound 采样专题：补足采样率、循环点、力度分层与多麦克风采样的工程背景。</li>
+</ul>
+<nav class="manual-pager"><a href="03-factory-voices.html">← 内置合成音色</a><span></span><a href="05-physical-modeling.html">物理建模乐器 →</a></nav>
+</main></body></html>

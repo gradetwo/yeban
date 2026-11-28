@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export and Sharing — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Export and Sharing</h1>
+<p></p>
+<blockquote class="classquote"><p>既以为人己愈有，既以与人己愈多。</p><cite>Laozi, Dao De Jing, ch. 81 (《道德经·第八十一章》)</cite><p class="gloss">Translation: “The more one gives to others, the more one has; the more one shares, the more one gains.” Export and sharing hand the work to others; the more you share, the more you gain.</p></blockquote>
+<p>Once a piece is finished it needs to leave Yeban: for mixing elsewhere, for mastering, or simply as a playable file. This chapter covers what each export route produces and how to verify the result — the word "complete" alone does not mean it exported right.</p>
+<h2>WAV Export</h2>
+<h3>Export the full mix</h3>
+<p>File $$ Export Audio (WAV)... mixes the whole piece into one WAV file. The dialog offers:</p>
+<ul>
+<li><strong>Output path</strong>: browse with Ctrl+O.</li>
+<li><strong>Sample rate</strong>: can be specified; defaults to the project's (shown as <code>auto</code>).</li>
+<li><strong>Bit depth</strong>: 24 by default.</li>
+<li><strong>Duration</strong>: in seconds.</li>
+<li><strong>Bus limiter</strong>: off by default; when on, rendering applies peak limiting on the bus to prevent clipping.</li>
+</ul>
+<figure class="fig-placeholder">[截图见 PDF 版：The Export Audio (WAV) dialog labelling path, sample rate, bit depth, duration and limiter toggle]</figure>
+<h3>Read the export receipt</h3>
+<p>The export receipt gives measured readings: frame count, true peak and the limiter's workload, plus the output location. These numbers come from the actual render, not from copying back the input fields; whether the limiter was on and whether clipping occurred should be read from the receipt, not guessed.</p>
+<h2>Stem Export</h2>
+<h3>When to use stems</h3>
+<p>File $$ Export Stems... renders each source-node track into its own WAV, for mixing in another program or for mastering. The master bus produces no file but is named in the skipped list — that is not a dropped track.</p>
+<p>Export runs on a background thread so the interface stays responsive; when it finishes the status message reports how many stems were written, how many skipped and where. Each stem is a 32-bit Float WAV at the project's sample rate, with a numbered filename prefix; a <code>stems-manifest.json</code> index in the output directory records each file's track identity, name, byte count and hash.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The stem-export completion message showing written count, skipped count and output directory]</figure>
+<h3>Check the receipt, not just "complete"</h3>
+<p>The stem receipt starts with a <code>exported-stems:</code> summary line, followed by one line per stem and per skipped track. Beyond the track-level "skipped" count, look at the <strong>audio-clip</strong> dimension: rendered/skipped clip counts. If every audio clip in a stem was skipped, the message should downgrade to a warning rather than still saying merely “stems complete”. When you see “complete”, cross-checking the clip counts in the receipt is a good habit.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Export flow: pick route $$ set options $$ render $$ write $$ verify with the receipt </p>
+<p>The CLI can export stems too: <code>yeban-app --open X.yeban --export-stems stems/</code>; no window, no MCP session, and the same receipt convention as the GUI.</p>
+<h2>Project Packaging and Archiving</h2>
+<p>The <code>.yeban</code> file is itself the package: tracks, clips, notes, device chains and the materials they use all live in one container, and saving is atomic (Chapter 2). So "sharing a project" usually means handing over that file with the assets it references; the asset pool is addressed by content hash, so opening it elsewhere does not turn it silent.</p>
+<p>Diagnostics $$ Export Project Diagnostic Bundle produces a troubleshooting bundle, not artwork audio; attach it when asking someone to look at a broken project.</p>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  Full mix / dialog options & <code>export-wav-dialog</code> \\ Read the WAV receipt & <code>export-wav-receipt</code> \\ When to use stems & <code>export-stems-purpose</code> \\ Check the receipt, not just “complete” & <code>export-stems-receipt</code> \\ Project packaging and archiving & <code>export-project-archive</code> \\ </p>
+<p>What you will be able to do Pick the right export route, set dialog options, verify output with the receipt (including clip counts), and know that a diagnostic bundle is not the piece.</p>
+<p>Hands-on exercise Export a full-mix WAV with the limiter on and read the frame count and true peak in the receipt; then export stems, check file names and byte counts against <code>stems-manifest.json</code>, and find the rendered/skipped audio-clip counts in the receipt; finally export stems for the same project from the CLI and compare the audio samples from both routes.</p>
+<nav class="manual-pager"><a href="ch07-mixer-overview.html">← Mixer Overview</a><span></span><a href="ch09-shortcuts.html">Shortcuts and Command Reference →</a></nav>
+</main></body></html>

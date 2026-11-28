@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Physical-Modeling Instruments — Instruments and Synthesizers — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Instruments and Synthesizers</a></nav>
+<h1>Physical-Modeling Instruments</h1>
+<p></p>
+<blockquote class="classquote"><p>臣以神遇而不以目视，官知止而神欲行。</p><cite>《庄子·养生主》 / Zhuangzi, "The Secret of Caring for Life" (Yang Sheng Zhu)</cite><p class="gloss">Translation: I meet it with the spirit rather than look at it with the eye; the senses stop and the spirit moves. Note: physical-model tuning works the same way — listen to the resonance first, then read the numbers.</p></blockquote>
+<p>Physical modeling is not "sample a real instrument and play it back"; it uses a set of resonating modes to simulate how an object vibrates after being struck. Pitch, material, size, and strike position become computable parameters, so it can produce continuous variations that a sample library cannot enumerate. Yeban currently has only the DSP core of this path, not an instrument that can be placed on a track. This chapter therefore writes "principle + current state", without pretending that controls exist.</p>
+<h2>The basic idea of modal synthesis</h2>
+<p>A strike provides broadband excitation: a short impulse, a noise burst, or a mixture. The object itself is a set of resonators, each mode with its own frequency, damping, and shape. Excitation enters all modes at once, and the output is a weighted sum by pickup position. Changing the excitation point changes which modes are excited; changing the pickup point changes which modes are heard. That is the physical meaning of "strike here, listen there".</p>
+<p>Yeban's <code>ModalVoice</code> derives the fundamental from MIDI pitch as $f_0 = 4402^{(note-69)/12}$ and excitation strength from velocity; mapping happens at note-on, and the per-sample path only reads coefficients already computed. It has no lookahead, no sample playback, and no dependency on an external sample library.</p>
+<h2>Four models</h2>
+<p>The difference between the four models is <strong>how partials are spaced</strong>. At the same fundamental, string harmonics are close to integer multiples, beam partials spread further apart as they go up, membrane follows a two-dimensional square-root law, and plate follows a two-dimensional square law. Yeban's formulas are ($f_0$ is the fundamental, $k$ and $n$ are mode indices):</p>
+<p>   Model & Frequency spacing & Key parameter \\  String & $f_k=f_0\,k1+B k^2$ & Stiffness $B$, default 0.0005; $B=0$ is pure harmonic \\ Beam & $f_n=f_0\,n(1-b)+b n^2$ & String$$beam mix $b$, default 0; $b=0$ soft string, $b=1$ beam \\ Membrane & $f_{m,n}=f_0{m^2+(n/a)^2}{1+1/a^2}$ & Aspect ratio $a$, default 1; two-dimensional \\ Plate & $f_{m,n}=f_0m^2+(n/a)^2{1+1/a^2}$ & Aspect ratio $a$, default 1; two-dimensional \\  Frequency laws of the four modal models </p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>The vertical lines only mark the first few partial positions; amplitude is not drawn. A larger string stiffness $B$ pulls high partials upward; the beam's $b$ moves continuously from integer-like harmonics to the beam's square law; membrane and plate are two-dimensional and enumerate $(m,n)$, with aspect ratio changing the spacing between the two directions.</p>
+<h2>Shared parameters</h2>
+<p>   Parameter & Meaning & Range & Default \\  <code>damping</code> & Base damping ratio $_0$ & 0.0001–1 & 0.005 \\ <code>damping\_slope</code> & Damping slope vs frequency ratio $_1$ & 0–10 & 0.02 \\ <code>stiffness</code> & String stiffness $B$ & 0–1 & 0.0005 \\ <code>mix</code> & Beam string$$beam mix $b$ & 0–1 & 0 \\ <code>aspect</code> & 2D aspect ratio $a$ & $0.01$ & 1 \\ <code>excitation\_x</code> / <code>excitation\_y</code> & Excitation position (normalized) & 0–1 & 0.5 \\ <code>pickup\_x</code> / <code>pickup\_y</code> & Pickup position (normalized) & 0–1 & 0.5 \\ <code>coupling</code> & Two-resonator coupling $k$ & 0–0.2 & 0 \\ <code>coupling\_ratio</code> & Second resonator pitch ratio & 0.25–4 & 1.0 \\  Shared parameters of the modal resonator </p>
+<p>Damping answers "how long it rings": a larger $_0$ decays faster, and $_1$ makes high partials decay faster than low ones. Excitation and pickup positions are weighted by mode shape: exactly on a node suppresses that mode. This is geometry, not a filter. Two-dimensional models need both $x$ and $y$, because membrane and plate nodal lines are two-dimensional.</p>
+<p>Two-resonator coupling is the second-stage capability: two spring-coupled oscillators split their normal frequencies. At $k=0$ it degenerates to a single resonator and the second one is silent; as $k$ grows, the split becomes obvious. <code>coupling\_ratio</code> sets the second resonator's pitch relative to the fundamental; close to 1 means detune. It is for "one object with two coupled cavities", not two independent instruments stacked.</p>
+<h2>Excitation and voices</h2>
+<p>Yeban has two excitations: <code>NoiseBurst</code> (a deterministic-seed noise burst with per-sample decay) and <code>Mallet</code> (a short impulse plus a one-pole low-pass; higher <code>hardness</code> is brighter and shorter). Excitation strength is mapped from velocity and set at note-on; the per-sample path only smooths it. The noise seed is fixed, so the same input renders bit-identically twice — useful for assertions, but it does not vary randomly on every hit.</p>
+<p>The partial ceiling is 64. Configuration fills from low index upward and stops when frequency reaches $0.495$ sample rate, so the active count is usually below 64; two-dimensional models enumerate in the deterministic order $(1,1),(2,1),(2,2),(3,1),$. The membrane gain-compensation ceiling is 64 and the other three are 32; that is a compensation clamp for long decays, not "only 32 partials".</p>
+<h2>Current state: DSP core only</h2>
+<p>Checked before writing: `yeban-dsp/src/modal.rs` has <code>ModalModel::String/ Beam/ Membrane/ Plate</code>, <code>ModalParams</code>, <code>ModalVoice</code>, two-resonator coupling, and the 64-partial ceiling. But `yeban-app`, `yeban-engine`, `yeban-model`, and `yeban-mcp` contain no reference to <code>yeban\_dsp::modal</code> or <code>ModalModel</code>. That means:</p>
+<ul>
+<li>there is no "physical-modeling instrument" device or source type that can be placed on a track;</li>
+<li>there is no GUI parameter surface; the UI has no damping/stiffness/aspect knobs;</li>
+<li>there are no factory presets and no instrument identity for "save as preset";</li>
+<li>the usable instruments remain the poly synth, SFZ sampler, and drum machine; physical modeling is not among them.</li>
+</ul>
+<p>This chapter therefore cannot be an operation guide. The instrument entry in the device rack has no "physical modeling" category; if something similar appears, check whether it is another source first, and do not turn nonexistent controls according to this parameter table.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The device-rack instrument entry is open; only current synth presets and SFZ sources are listed, with no physical-modeling category or parameter panel.]</figure>
+<h2>When it will matter</h2>
+<p>Physical modeling's value is "continuous parameter variation" and "material differences under the same excitation": string stiffness, beam mix, membrane aspect, plate pickup position can all produce intermediate states that a sample library cannot enumerate. It suits mechanical sustained tones, realistic plucked/struck sounds, and designs that need "the same object with a different material".</p>
+<p>But physical modeling is not "no recording needed, so everything is solved": wrong mode count, damping, or excitation position can sound like metallic noise or produce no tail; it also cannot replace the real recorded detail of a sample library. Yeban does not have this instrument chain yet, so users should still use the synth or SFZ to make sound. The parameters and formulas here are design reference for a later wiring, not controls that exist now.</p>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  The basic idea of modal synthesis & <code>modal-basics</code> \\ Four models & <code>modal-four-models</code> \\ Shared parameters & <code>modal-shared-params</code> \\ Excitation and voices & <code>modal-excitation-voices</code> \\ Current state: DSP core only & <code>modal-current-status</code> \\ When it will matter & <code>modal-use-cases</code> \\  Help-topic mapping for Chapter 5</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://ccrma.stanford.edu/ jos/pasp/">https://ccrma.stanford.edu/ jos/pasp/</a> — CCRMA Physical Audio Signal Processing: go deeper into the maths and implementation of modes, waveguides, and resonators.</li>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a> — Sound On Sound techniques: use audible examples to compare physical modelling with sample-based synthesis.</li>
+</ul>
+<nav class="manual-pager"><a href="04-sampling-sfz.html">← Sampling and SFZ</a><span></span><a href="06-drum-machine.html">Drum Machine →</a></nav>
+</main></body></html>

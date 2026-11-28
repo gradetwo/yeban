@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sound and pitch — \bookname\\[0.3em]\large Pitch, Rhythm, and Harmony from Scratch — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">\bookname\\[0.3em]\large Pitch, Rhythm, and Harmony from Scratch</a></nav>
+<h1>Sound and pitch</h1>
+<p>凡音之起，由人心生也。人心之动，物使之然也。感于物而动，故形于声。\\ All sound arises from the human heart. When the heart is moved, something outside has made it so. Stirred by things, it takes shape as sound.{The Book of Rites · The Record of Music, “The Origin of Music”}{Sound is not invented from nothing: the world touches the heart, and the heart answers. Pitch is only the most audible face of that answer; frequency, duration, loudness, and timbre together make the note you hear.}</p>
+<p></p>
+<h3>What you can do after this chapter</h3>
+<ul>
+<li>Given a note name (C4, A4, F3), locate it on a piano keyboard and on Yeban's piano-roll pitch rows.</li>
+<li>Convert among note names, frequencies, and MIDI numbers with the frequency formula; know the reference points A4 = 440 Hz, middle C = C4, and MIDI 60 = C4.</li>
+<li>Explain what an octave, a semitone, and 12-tone equal temperament each solve, without confusing note names, solfège, and numbered notation.</li>
+</ul>
+<h3>Four dimensions of a sound</h3>
+<p>What we hear as “one note” has at least four independent dimensions. Theory mostly governs the first two; recording and mixing mostly govern the last two.</p>
+<li>[Pitch] How high or low a sound seems; determined by its fundamental frequency. Higher frequency means higher pitch. The unit is hertz (Hz), vibrations per second.</li>
+<li>[Duration] How long a note lasts. It is set by the note's start and end and is the raw material of rhythm and meter.</li>
+<li>[Loudness] How loud it seems; related to amplitude, spectral distribution, and monitoring. In Yeban this maps to volume, velocity, and faders.</li>
+<li>[Timbre] Why a piano and a violin at the same pitch and loudness sound different: different harmonic ratios and envelopes.</li>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p> Figure 1-1. Halving the frequency doubles the period; 220 Hz and 440 Hz are one octave apart. The vertical axis is normalized amplitude, not sound-pressure level.</p>
+<p>Pluck a 440 Hz string and a 220 Hz string together and you hear “the same note, only higher and lower,” not two unrelated sounds. The ear groups frequencies in a 2:1 ratio as the same pitch class, which is why note names repeat.</p>
+<h3>Note names and the piano keyboard</h3>
+<p>The seven white keys of a piano form one group, named C, D, E, F, G, A, B in order. Black keys sit between white keys and take a sharp () or flat () name: C and D are two names for the same key, an enharmonic pair.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p> Figure 1-2. Note names and MIDI numbers across one octave. Yeban's piano roll uses the same C4 = 60 convention as this keyboard.</p>
+<p>The distance between two adjacent keys, including black keys, is a semitone. Two semitones make a whole tone. From C to the next C there are eight white keys and twelve semitones: one octave. On a piano there is no black key between E and F or between B and C, so those pairs are already a semitone apart; the other adjacent white keys are a whole tone apart.</p>
+<h3>Scientific pitch notation and MIDI numbers</h3>
+<p>The same note name recurs in every octave, so a number is required to make it unique. Scientific pitch notation names middle C as C4, then C5, C6 upward and C3, C2 downward. The number follows the letter and does not change with accidentals. Yeban and MIDI files both use C4 for middle C; this matches the pitch-range labels in the in-app manual.</p>
+<p>MIDI encodes pitch as an integer from 0 to 127, with middle C = 60 and A4 = 69. The conversion is:</p>
+<p>n = 69 + 12_2\!(f{440}),  f = 440  2^{(n-69)/12}. </p>
+<p>Here \(n\) is the MIDI number and \(f\) is frequency in Hz. Equation eq:midi-frequency assumes 12-tone equal temperament and makes frequency and pitch number invertible. Substituting \(n=60\) gives about 261.63 Hz for C4; C5 is 523.25 Hz, exactly double.</p>
+<h3>Twelve-tone equal temperament</h3>
+<p>If an octave is exactly 2:1, dividing it into twelve equal semitones requires each semitone to multiply frequency by:</p>
+<p>r = 2^{1/12}  1.059463. </p>
+<p>One semitone above A4 = 440 Hz is A4/B4:</p>
+<p>\[ 440  2^{1/12}  466.16\ Hz. \]</p>
+<p>This system is 12-tone equal temperament. It lets you transpose freely in any key with a uniform keyboard shape; the price is that, except for the octave, most intervals deviate slightly from the simple integer ratios of just intonation. Pop, rock, jazz, and Yeban's default pitch system all assume it.</p>
+<p>  White-key frequencies in the octave of middle C (equal temperament, A4 = 440 Hz).  Note & C4 & D4 & E4 & F4 & G4 & A4 & B4 \\  MIDI & 60 & 62 & 64 & 65 & 67 & 69 & 71 \\ Frequency/Hz & 261.63 & 293.66 & 329.63 & 349.23 & 392.00 & 440.00 & 493.88 \\ </p>
+<h3>Note names, solfège, and numbered notation</h3>
+<p>A pitch can be called by four common systems, each for a different job:</p>
+<ul>
+<li><strong>Note names</strong>: C, D, E, and so on are fixed names and do not change with key. Yeban's roll labels, MIDI files, and chord symbols use them.</li>
+<li><strong>Solfège</strong>: do, re, mi, fa, sol, la, si. In fixed-do, C is always do; in movable-do, the tonic is do, so the pitch behind a syllable changes when the key changes.</li>
+<li><strong>Numbered notation</strong>: 1–7 denote scale degrees, with 1 as the tonic. “1 = C” means C is the tonic. It is good for fast melodic shorthand but poor for exact chord inversions.</li>
+<li><strong>Scale degrees</strong>: Roman I, II, III or Arabic numbers denote the position in a scale; this is the usual language of harmonic function.</li>
+</ul>
+<p>Beginners most often confuse note names with solfège: note names are absolute, solfège is relative. Seeing C4 should first bring up “middle C, MIDI 60, 261.63 Hz,” not an automatic “do”—C is sung as do only in C major with fixed-do.</p>
+<h3>How to do it in Yeban</h3>
+<ol>
+<li>Press <code>P</code> or <code>F7</code> to open the piano roll; it is the first tab of the bottom console.</li>
+<li>The vertical axis is made of pitch rows. The default view shows 16 rows (C4–E5), and only C anchors are labeled on the left; scroll up or down for higher or lower octaves. Row heights and note names come from the same pitch mapping, so there is no second coordinate system where a row looks like C4 but sounds like something else.</li>
+</ol>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p> Figure 1-3. Pitch rows in Yeban's piano roll. Time runs horizontally, pitch vertically; only C4--B4 are drawn here, while the default view shows 16 rows (C4--E5).</p>
+<li>Select a MIDI clip in the arrangement area, choose the draw tool (number key <code>2</code>), and click the C4 row to write a C4 note; drag to lengthen it.</li>
+<li>With a note selected, <code>↑</code>/<code>↓</code> transpose by a semitone and <code>Shift+↑</code>/<code>Shift+↓</code> by a whole octave. The note name and frequency follow Equation eq:midi-frequency.</li>
+<li>Press <code>Space</code> to play. Compare against an A4 = 440 Hz reference: your C4 should be nine semitones below it (60 versus 69).</li>
+<figure class="fig-placeholder">[截图见 PDF 版：Piano-roll pitch labels against the piano keyboard]</figure>
+<p><strong>Not yet available:</strong> this volume does not describe spectrum analyzers or automatic pitch detection that Yeban does not currently provide. If a later version adds them, this section will link to them rather than show a button that does not exist.</p>
+<h3>Exercises</h3>
+<aside class="note">
+<ol>
+<li>Give the note name for MIDI numbers 60, 64, 67, and 69.\\</li>
+<p><em>Answer:</em> C4, E4, G4, A4.</p>
+<li>Given A4 = 440 Hz, find the frequencies of A3 and C5.\\</li>
+<p><em>Hint:</em> A3 is one octave below A4, so halve the frequency; C5 is one octave above C4, which is about 261.63 Hz.\\ <em>Answer:</em> A3 = 220 Hz; C5 $$ 523.25 Hz.</p>
+<li>How many semitones are there from C4 to G4?\\</li>
+<p><em>Answer:</em> Seven: C–C–D–D–E–F–F–G.</p>
+<li>Why is there no black key between E and F?\\</li>
+<p><em>Answer:</em> In the natural scale E–F is already a semitone; black keys only fill the semitones inside whole tones.</p>
+<li>In Yeban, write C4–D4–E4–G4–G4–F4–E4–D4, play with <code>Space</code>, then raise the last two notes by one semitone with <code>↑</code> and listen to the change.\\</li>
+<p><em>Hint:</em> Align to the C4 row first and click cell by cell with the draw tool; do not guess pitch by dragging.</p>
+</ol>
+</aside>
+<h3>Help topic map</h3>
+<p> {3pt}  Section & In-app help anchor & Note \\   Four dimensions of sound & <code>music-theory-sound-dimensions</code> & concept \\ Note names and keyboard & <code>music-theory-note-names-keyboard</code> & Figure 1-2 \\ Octave and semitone & <code>music-theory-octave-semitone</code> & Figure 1-2 \\ Scientific pitch and MIDI & <code>music-theory-scientific-pitch-midi</code> & Equation eq:midi-frequency \\ Equal temperament & <code>music-theory-equal-temperament</code> & Table 1-1 \\ Note names, solfège, numbers & <code>music-theory-solfege-numbered-notation</code> & concept \\ How to do it in Yeban & <code>music-theory-piano-roll-pitch</code> & procedure \\ Exercises & <code>music-theory-ch1-practice</code> & answers above \\ </p>
+<h3>Further reading</h3>
+<ul>
+<li><strong>Open Music Theory, “Pitches.”</strong> <a href="https://openmusictheory.github.io/pitches.html">https://openmusictheory.github.io/pitches.html</a> — separates pitch, pitch class, frequency, and octave, adding the physical intuition behind this chapter.</li>
+<li><strong>YouTube, “The Harmonic Series </strong> The Language of Sound.” <a href="https://www.youtube.com/watch?v=NBB47aLlj88">https://www.youtube.com/watch?v=NBB47aLlj88</a> — shows how overtones stack inside one note, connecting pitch with timbre.</li>
+</ul>
+<nav class="manual-pager"><span></span><a href="ch02-rhythm-and-meter.html">Rhythm and meter →</a></nav>
+</main></body></html>

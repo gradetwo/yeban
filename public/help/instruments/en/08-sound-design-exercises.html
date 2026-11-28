@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sound-Design Exercises — Instruments and Synthesizers — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Instruments and Synthesizers</a></nav>
+<h1>Sound-Design Exercises</h1>
+<p></p>
+<blockquote class="classquote"><p>不积跬步，无以至千里；不积小流，无以成江海。</p><cite>《荀子·劝学》 / Xunzi, "Encouraging Learning" (Quan Xue)</cite><p class="gloss">Translation: Without small steps, you cannot reach a thousand li; without small streams, you cannot form a river or sea. Note: sound design grows from repeated small exercises — change one parameter, listen once.</p></blockquote>
+<p>This chapter turns the nine parameters from the previous two chapters into three exercises with emotional scenes: a pad, a lead and a bass. Each scene asks first "who is listening, how close are they, is there danger?", then translates that judgment into the nine parameters; each exercise starts from the default synthesizer and changes only the nine parameters, touching no EQ, reverb or compression, and assuming no ADSR, LFO, filter envelope, glide or sub oscillator. Emotion is not an effect added at the end; it is a decision about where the sound should stand.</p>
+<p>Each of the three exercises has a listening coordinate: the Juno chorus teaches the pad to be "thin but wide", the Minimoog ladder filter teaches the lead to be "sparse but heavy", and the TR-808 long tail teaches the bass to be "deep, not explosive". They are not there for you to replicate hardware; they give the parameters an auditory reference. When you hesitate between 1600 Hz and 2200 Hz, ask first how wide this room needs to be, then turn the knob. The envelope is always the fixed 5 ms attack, 80 ms decay, sustain 0.7 and 50 ms release. A “pad” here is a timbre and a chord, not a slow fade-in.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<h2>Before you start: nine parameters and a fixed envelope</h2>
+<p>The nine parameters fall into three groups: filter <code>cutoff\_hz</code>, <code>resonance</code>, <code>drive</code>; oscillator wavetables <code>osc1\_wave</code>, <code>osc2\_wave</code>; and branch levels/detune <code>osc1\_level</code>, <code>osc1\_detune\_cents</code>, <code>osc2\_level</code>, <code>osc2\_detune\_cents</code>. Wavetable indices are fixed: 0 = hollow, 1 = organ, 2 = vocal, 3 = metallic, 4 = glass.</p>
+<p>   Parameter & Role & Range & Default (unwritten) \\  <code>cutoff\_hz</code> & four-pole ladder low-pass corner & 20 Hz--0.45×sample rate & filter bypassed \\ <code>resonance</code> & resonance around the corner & 0--1 & 0 \\ <code>drive</code> & pre-filter drive/saturation & 0--1 & 0 \\ <code>osc1\_wave</code> & first branch wavetable & 0--4 & 0 (hollow) \\ <code>osc2\_wave</code> & second branch wavetable & 0--4 & 0 (hollow) \\ <code>osc1\_level</code> & first branch level & 0--1 & 1.0 \\ <code>osc1\_detune\_cents</code> & first branch detune & ±4800 cents & 0 \\ <code>osc2\_level</code> & second branch level & 0--1 & 0 (off) \\ <code>osc2\_detune\_cents</code> & second branch detune & ±4800 cents & 0 \\  The exercises use only these nine parameters; there is no ADSR, LFO, filter envelope, glide or sub oscillator </p>
+<p>Each track has at most 16 sounding voices. A four-note chord can be stacked four times at most; more than 16 voices triggers stealing, not automatic thickening. A branch level of 0 bypasses that branch bit-exactly; <code>osc2\_level</code> unwritten is 0, and written 0 is also off.</p>
+<h3>How to write the parameters</h3>
+<p>These are parameter recipes, not a tutorial for nine knobs. The current UI exposes only some quick readouts; write the nine parameters through the device-parameter path (project data or MCP <code>setParam</code> with <code>lane</code> set to <code>DeviceParam</code> and addressing by name). If a knob is not in the UI, do not assume it is hidden elsewhere; it may have no UI at all. Parameter names are case-insensitive, wavetable indices round to the nearest integer, and cutoff is clamped by the device to 20 Hz--0.45×sample rate.</p>
+<h2>Exercise 1: The Room at 4 A.M. (Pad)</h2>
+<aside class="note">
+<p>Goal: for "4 A.M., a room with only rain outside the window", make a wide bed that supports the lead without fighting for the midrange. This scene does not need brightness; it needs the thickness of "someone is still in the room". Start with a new MIDI synth track and the default synth; do not add EQ or reverb yet.</p>
+<p>   Parameter & Value & Reason \\  <code>osc1\_wave</code> & 2 (vocal) & main colour with a vowel-like body \\ <code>osc1\_level</code> & 0.82 & main branch, not quite full \\ <code>osc1\_detune\_cents</code> & $-9$ & offset against the second branch \\ <code>osc2\_wave</code> & 0 (hollow) & adds body without competing with the vowel \\ <code>osc2\_level</code> & 0.58 & second branch at about seventy percent \\ <code>osc2\_detune\_cents</code> & $+9$ & opposite offset from the first \\ <code>cutoff\_hz</code> & 1600 & removes sibilance and air, keeps low-mids \\ <code>resonance</code> & 0.22 & slight emphasis at the corner \\ <code>drive</code> & 0.00 & keep it clean first \\  Pad recipe </p>
+<p>Steps:</p>
+<ol>
+<li>Create a MIDI synth track named “Pad” and write the nine values above; play a single C3 first.</li>
+<li>Play a three- or four-note close chord (for example C3--E3--G3) for two bars; listen for whether the branches blend. If they sound like two separate flutes, lower <code>osc2\_level</code> to 0.50 or narrow both detunes to $6$.</li>
+<li>Sweep <code>cutoff\_hz</code> from 1600 up to 2200 and back down to 1200, one change at a time; note the “air opening” and “muffled” boundaries. A pad usually sits around 1400--2000.</li>
+<li>Raise <code>osc2\_level</code> from 0.58 to 0.70, then lower it to 0.45; listen to the trade between thickness and clarity. Above 0.70 the midrange starts to smear; do not keep adding.</li>
+<li>Finally play four chords of four notes each; confirm you stay within 16 voices. If not, reduce the chord size instead of adding tracks.</li>
+</ol>
+<p>Boundaries: the fixed 5 ms attack cannot produce a slow fade-in. To make the pad “come in gradually”, start its notes later in the arrangement or use volume automation later. Vocal is a synthesis wavetable, not a sampled choir; there are no lyrics, vowel or formant controls.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：Nine-parameter recipe for the pad exercise]</figure>
+</aside>
+<p><strong>Emotion check.</strong> Listen with eyes closed for ten seconds and ask, "is this room empty, or is someone next door?" If the answer is "empty", lower <code>osc2\_level</code> a little; do not push the volume up.</p>
+<h2>Exercise 2: A Monologue on a Rainy Phone Call (Lead)</h2>
+<p>Goal: for "one sentence spoken into a phone on a rainy night", make a monophonic lead that cuts through the pad, with a glassy edge but without becoming a bell. This scene should feel close, not bright enough to hurt. Start with another MIDI synth track and the default synth.</p>
+<p>   Parameter & Value & Reason \\  <code>osc1\_wave</code> & 0 (hollow) & stable main body \\ <code>osc1\_level</code> & 0.88 & near full level \\ <code>osc1\_detune\_cents</code> & $-3$ & slight offset \\ <code>osc2\_wave</code> & 4 (glass) & edge only, not the body \\ <code>osc2\_level</code> & 0.32 & about one third of the main branch \\ <code>osc2\_detune\_cents</code> & $+7$ & pushes the glass branch right \\ <code>cutoff\_hz</code> & 3000 & keeps articulation and brightness \\ <code>resonance</code> & 0.18 & a little emphasis \\ <code>drive</code> & 0.10 & adds harmonics without squashing dynamics \\  Lead recipe </p>
+<p>Steps:</p>
+<ol>
+<li>Create a “Lead” track, write the table above, and play a single-note line in C4--C6; do not stack chords.</li>
+<li>Lower <code>osc2\_level</code> from 0.32 to 0.20, then raise it to 0.45; 0.20 is closer to pure hollow, 0.45 starts to sound like a glass bell. A lead usually sits at 0.28--0.38.</li>
+<li>Raise <code>drive</code> from 0.10 to 0.20, then back to 0; listen for added harmonics without a large overall level jump. If it is already piercing, lower <code>cutoff\_hz</code> before adding more drive.</li>
+<li>Lower <code>cutoff\_hz</code> from 3000 to 2000, then raise it to 4200; note the dark and bright ends. A lead separates from the pad most easily around 2600--3400.</li>
+<li>Play with the pad: if the lead is buried, lower the pad fader first, or keep the lead's <code>osc1\_level</code> at 0.88; do not solve it by pushing the lead cutoff to 6000.</li>
+</ol>
+<p>Boundaries: there is no glide/portamento and no adjustable ADSR; legato does not slide into the next note. For pitch glides, write a pitch curve in MIDI (a later chapter), not a knob on this synth.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：Nine-parameter recipe for the lead exercise]</figure>
+<p><strong>Emotion check.</strong> Play lead and pad together, listen with eyes closed for ten seconds; if you hear "bright" before "person", lower <code>cutoff\_hz</code> by 200--400 Hz. Do not turn a monologue into a broadcast with the fader.</p>
+<h2>Exercise 3: After the Drum Machine Stops in the Basement (Bass)</h2>
+<p>Goal: for "the drum machine has just stopped in the basement and the air is still shaking", make a solid low end that still speaks on small speakers, without a sub oscillator. This scene should feel deep, not explosive. Start with a third MIDI synth track and the default synth.</p>
+<p>   Parameter & Value & Reason \\  <code>osc1\_wave</code> & 0 (hollow) & low-frequency body \\ <code>osc1\_level</code> & 0.95 & near full \\ <code>osc1\_detune\_cents</code> & $0$ & do not spread the low end \\ <code>osc2\_wave</code> & 1 (organ) & adds low-mid substance \\ <code>osc2\_level</code> & 0.30 & small amount, never over the fundamental \\ <code>osc2\_detune\_cents</code> & $-5$ & slight thickness \\ <code>cutoff\_hz</code> & 360 & removes upper harmonics \\ <code>resonance</code> & 0.40 & emphasises the fundamental region \\ <code>drive</code> & 0.28 & saturation, not a distortion pedal \\  Bass recipe </p>
+<p>Steps:</p>
+<ol>
+<li>Create a “Bass” track, write the table above, and play single notes in C1--C3, one at a time.</li>
+<li>Raise <code>cutoff\_hz</code> from 360 to 500, then lower it to 250; 500 adds low-mids and speaks better on small speakers, 250 is purer sub but may become rumble. The usual range is 300--450.</li>
+<li>Raise <code>resonance</code> from 0.40 to 0.55, then lower it to 0.25; resonance emphasises the corner and becomes more obvious on higher notes. Do not use it as a volume control.</li>
+<li>Raise <code>drive</code> from 0.28 to 0.40, then back to 0.15; listen to the harmonics and the tightness of the low end. If it turns muddy, lower <code>osc2\_level</code> first, not more drive.</li>
+<li>Play with the pad and lead: the bass owns the low end; do not push its fader as loud as the lead. Use your ears; this chapter gives no fixed dB value.</li>
+</ol>
+<p>Boundaries: there is no sub oscillator, octave switch, glide or separate envelope; the low end comes from the 360 Hz low-pass and the two branch levels. For more complex bass, use MIDI arrangement and later effects; one recipe does not cover every bass.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：Nine-parameter recipe for the bass exercise]</figure>
+<p><strong>Emotion check.</strong> Mute lead and pad, leave only the bass for ten seconds; if it feels like "a machine under the floor", lower <code>drive</code> first, then consider lowering <code>osc2\_level</code>. This scene wants "the air still shaking", not "the wall shaking".</p>
+<h2>Three-track audition and checks</h2>
+<p>Put the three scenes in one eight-bar section: the pad plays long chords, the lead plays a two-bar phrase, and the bass plays roots. Ask first whether the three scenes steal each other's spotlight, then check in this order:</p>
+<p>   Symptom & Change first \\  Lead buried under pad & lower the pad fader first; then lower pad <code>osc2\_level</code> or <code>cutoff\_hz</code> \\ Low end muddy & lower bass <code>osc2\_level</code> or <code>drive</code>; do not raise bass cutoff to 800 \\ Pad sounds like two flutes & narrow both detunes or lower the second branch; do not add a third branch (there is none) \\ Lead too piercing & lower <code>cutoff\_hz</code> or <code>drive</code>; do not look for an EQ that is not in this chapter \\ Chords swallow notes & check whether simultaneous voices exceed 16; reduce the chord size \\  Troubleshooting order for the three-track audition </p>
+<p>This chapter does not cover EQ, reverb, compression, pan or buses; those belong to the mixing manual. Nor are “pad”, “lead” and “bass” three different synthesizers: they are three parameter sets on the same poly synth, changing only wavetables, levels, detune and filtering.</p>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  Nine parameters before the exercises & <code>exercise-common-base</code> \\ Pad exercise & <code>exercise-pad</code> \\ Lead exercise & <code>exercise-lead</code> \\ Bass exercise & <code>exercise-bass</code> \\ Three-track audition and checks & <code>exercise-three-tracks</code> \\ Troubleshooting order & <code>exercise-troubleshooting</code> \\  Chapter 8 help-topic mapping </p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.ableton.com/en/blog/">https://www.ableton.com/en/blog/</a> — Ableton blog: find follow-along sound-design exercises and continue the one-parameter-at-a-time method.</li>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a> — Sound On Sound techniques: fill in the listening judgment behind envelopes, filters, and dynamics in real production.</li>
+</ul>
+<nav class="manual-pager"><a href="07-plugin-instruments.html">← Plugin Instruments</a><span></span><a href="09-iconic-instruments.html">An Illustrated Ear Guide to Iconic Instruments →</a></nav>
+</main></body></html>

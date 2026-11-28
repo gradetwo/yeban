@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>终端与自动化入口 — 夜半用户手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">夜半用户手册</a></nav>
+<h1>终端与自动化入口</h1>
+<p></p>
+<blockquote class="classquote"><p>天下同归而殊涂，一致而百虑。</p><cite>《周易·系辞下》</cite><p class="gloss">图形界面、终端与 MCP 是不同入口，通向的是同一个工程。</p></blockquote>
+<p>同一份工程可以从三个入口操作：桌面 GUI、终端 TUI、命令行 CLI，此外还有给 AI agent 用的 MCP 工具面。它们共用同一套工程模型与后端，所以做的是同一件事， 只是交互方式不同。这一章各给一节，告诉你什么时候用哪个。</p>
+<h2>TUI</h2>
+<p>夜半提供一个终端用户界面（TUI）入口，源码在 <code>crates/yeban-tui</code>。它给没有 图形桌面、或习惯在终端里工作的场景使用，不必开窗口；具体可用的面板与键位以 该入口自身的帮助为准，本章不在此手抄一份可能过期的清单。</p>
+<p> 三种入口各适合什么   入口 & 适合的场景 \\  桌面 GUI & 日常编曲、写音符、混音、看界面 \\ TUI & 终端环境、无图形桌面、远程终端 \\ CLI & 批处理、脚本、导出、CI \\ MCP & AI agent 通过工具调用编辑与查询 \\ </p>
+<h2>CLI</h2>
+<h3>先看帮助</h3>
+<p>完整的开关与退出码以 <code>yeban-app --help</code> 为准；文档只是导览，不替代帮助 输出。几个常用入口：</p>
+<li>[<code>--open <路径></code>] 直接打开指定工程（GUI 或批处理都可接）。</li>
+<li>[<code>--export-wav</code>] 导出整轨 WAV，可配 <code>--loudness-target</code> 与 <code>--true-peak-ceiling</code> 做母带化；目标不可达时响亮失败，不静默降级。</li>
+<li>[<code>--export-stems <目录></code>] 用与 MCP 同一份后端导出分轨；可配选轨开关只导点名的轨。</li>
+<li>[<code>--apply-ops</code>] 把一份编辑操作文件当作一个批次提交。</li>
+<li>[<code>--export-song-overview</code>] 导出整曲概览（能量/频率/密度/情绪四层与异常摘要）。</li>
+<li>[<code>--print-shortcuts</code>] 打印快捷键策略表（与 GUI「帮助 → 快捷键速查」同源）。</li>
+<li>[<code>--headless</code>] 无显示器机器上运行。</li>
+<h3>feature 门控要知道</h3>
+<p>有些开关由编译 feature 门控。缺省构建里与 MCP 相关的 <code>in-process-mcp</code> 默认开，但「编译进来」不等于「正在监听」：运行时还需要 <code>--enable-mcp-http</code> 或环境变量 <code>YEBAN\_MCP\_HTTP=1</code> 才会监听。用 <code>--no-default-features</code> 构建时，调用被门控的开关会得到点名 feature 的用法错误（退出码 2），而不是静默 忽略。实验性导出（如 <code>--export-als</code>、<code>--export-logic</code>）默认关闭， 给了开关才编译。</p>
+<h2>MCP</h2>
+<h3>两种形态，一份注册表</h3>
+<p>MCP 有两形态，共用同一份 <code>TOOLS</code> 注册表与同一个领域实现：</p>
+<li>[形态 A（库形态）] 由 <code>yeban-app</code> 进程内托管，AI agent 在正在运行的 DAW 上工作；传输为环回 HTTP（<strong>仅</strong> <code>127.0.0.1</code>）或进程内直调。</li>
+<li>[形态 B（二进制形态）] 独立 <code>yeban-mcp</code> 二进制走 stdio 批处理，无 GUI 环境也能用。</li>
+<p>网络监听只绑环回地址，不绑 <code>0.0.0.0</code>——这是安全红线。<code>yeban-mcp</code> 自身的 <code>mcp-http</code> 绝不进它的默认 feature，只能由宿主显式转发打开。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：MCP 两形态示意：GUI 进程内挂载走环回 HTTP，独立二进制走 stdio]</figure>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>MCP 两形态共用一份注册表；网络监听只绑环回地址 </p>
+<h3>工具数量别信文档里的手抄值</h3>
+<p>工具数以 <code>crates/yeban-mcp/src/tools.rs</code> 的三个常量与 <code>schemas/mcp-tools.schema.json</code> 的 enum 现读为准：文档里的数字曾多次过期， 历史手册里写的值互相矛盾。本章刻意不写具体数字。</p>
+<p>部分工具依赖宿主注入的 provider（例如外部 SVS singing 服务）；在形态 B 里没有 注入方，调用这类工具会得到 <code>providerUnavailable</code> 契约的回复，而不是假装成功。</p>
+<h2>帮助主题映射</h2>
+<p> 本章小节 $$ 应用内帮助锚点   本章小节 & 帮助主题 \\  TUI & <code>entry-tui</code> \\ CLI：先看帮助 / 常用开关 & <code>entry-cli-switches</code> \\ CLI：feature 门控 & <code>entry-cli-features</code> \\ MCP：两种形态 & <code>entry-mcp-forms</code> \\ MCP：工具数量与 provider & <code>entry-mcp-tools</code> \\ </p>
+<p>本章学完能做什么 按场景选对入口，知道 CLI 的常用开关与 feature 门控，并说清 MCP 两形态共用注册表、网络只绑环回地址。</p>
+<p>动手练习 用 <code>yeban-app --help</code> 找出导出分轨的确切开关，对同一工程分别用 GUI 与 CLI 导出一次分轨并对照回执；运行 <code>yeban-app --print-shortcuts</code> 与 GUI 速查面板对照；最后确认不带 <code>--enable-mcp-http</code> 时 MCP HTTP 端口没有在监听。</p>
+<nav class="manual-pager"><a href="ch09-shortcuts.html">← 快捷键与命令速查</a><span></span><a href="ch11-troubleshooting.html">故障排查 →</a></nav>
+</main></body></html>

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>导出与分享 — 夜半用户手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">夜半用户手册</a></nav>
+<h1>导出与分享</h1>
+<p></p>
+<blockquote class="classquote"><p>既以为人己愈有，既以与人己愈多。</p><cite>《道德经·第八十一章》</cite><p class="gloss">导出与分享把作品交到别人手里；越分享，收获越多。</p></blockquote>
+<p>作品写好后要离开夜半：交给别的软件混音、送去母带、或只是留一份可播放的 文件。这一章讲三种出口各导出什么，以及怎么核对导出的结果——「完成」两个字 不等于真的导对了。</p>
+<h2>WAV 导出</h2>
+<h3>导出整轨混音</h3>
+<p>「文件 $$ 导出音频 (WAV)...」把整首作品混成一份 WAV 文件。对话框里可以设：</p>
+<ul>
+<li><strong>输出路径</strong>：可用 Ctrl+O 浏览选择。</li>
+<li><strong>采样率</strong>：可指定，默认跟随工程（界面显示 <code>auto</code>）。</li>
+<li><strong>位深</strong>：默认 24 位。</li>
+<li><strong>导出时长</strong>：以秒计。</li>
+<li><strong>母线限制器</strong>：默认关闭；打开后渲染会在总线上做峰值限制，防止削波。</li>
+</ul>
+<figure class="fig-placeholder">[截图见 PDF 版：导出音频 (WAV) 对话框，标出路径、采样率、位深、时长与限制器开关]</figure>
+<h3>读懂导出回执</h3>
+<p>导出回执给出实测读数：帧数、真峰值与限制器的工作量，以及输出位置。这些 数字来自实际渲染，不是从输入框抄回来的；限制器开没开、有没有削波，看回执 而不是凭感觉。</p>
+<h2>分轨导出（Stems）</h2>
+<h3>什么时候用分轨</h3>
+<p>「文件 $$ 导出分轨 (Stems)...」把每条源节点轨单独导成一份 WAV，交给别的 软件混音或送母带时用。主总线不出文件，但会在跳过清单里点名——这不是丢轨。</p>
+<p>导出在后台线程进行，不卡住界面；完成后状态提示会报出导了几条、跳过几条与 输出目录。每条分轨是 32-bit Float WAV，采样率取自工程；文件名带序号前缀， 并在输出目录里写一份 <code>stems-manifest.json</code> 索引，记下每份文件的轨身份、 文件名、字节数与哈希。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：分轨导出完成后的状态提示，显示导出条数、跳过条数与输出目录]</figure>
+<h3>核对回执，别只看「完成」</h3>
+<p>分轨回执以 <code>exported-stems:</code> 开头的一行汇总，随后每条分轨一行、每条 跳过轨一行。除了轨级的「跳过几条」，还应看<strong>音频片段</strong>维度的渲染/跳过 计数：如果某条分轨里的音频片段全被跳过，提示应降级为警告，而不是仍然只说 「分轨完成」。看到「完成」时，对照回执里的片段计数核对一遍是稳妥习惯。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>导出流程：选出口 $$ 设参数 $$ 渲染 $$ 落盘 $$ 读回执核对 </p>
+<p>命令行同样可以导出分轨：<code>yeban-app --open X.yeban --export-stems stems/</code>； 不开窗口、不建 MCP 会话，回执口径与 GUI 一致。</p>
+<h2>工程打包与归档</h2>
+<p><code>.yeban</code> 本身就是打包格式：轨道、片段、音符、设备链与所用素材都在一个 容器里，保存是原子写入（见第 2 章）。因此「分享工程」通常就是把这个文件连同 它引用的资产一起交出去；资产池按内容哈希寻址，换机器打开不会变成无声。</p>
+<p>「诊断 $$ 导出工程诊断报告包」导出的是排障用的诊断包，不是作品音频；作品 有问题要找人看时附上它。</p>
+<h2>帮助主题映射</h2>
+<p> 本章小节 $$ 应用内帮助锚点   本章小节 & 帮助主题 \\  导出整轨混音 / 对话框参数 & <code>export-wav-dialog</code> \\ 读懂导出回执 & <code>export-wav-receipt</code> \\ 什么时候用分轨 & <code>export-stems-purpose</code> \\ 核对回执，别只看「完成」 & <code>export-stems-receipt</code> \\ 工程打包与归档 & <code>export-project-archive</code> \\ </p>
+<p>本章学完能做什么 按用途选对导出方式，设置对话框参数，导出后用回执（含片段计数）核对产物，并知道诊断包不是作品。</p>
+<p>动手练习 先导出整轨 WAV，打开限制器，读回执里的帧数与真峰值；再导出分轨，对照 <code>stems-manifest.json</code> 核对文件名与字节数，并从回执里找出音频片段的渲染/跳过计数；最后用命令行对同一工程导出一次分轨，比较两路音频样本是否一致。</p>
+<nav class="manual-pager"><a href="ch07-mixer-overview.html">← 混音台概览</a><span></span><a href="ch09-shortcuts.html">快捷键与命令速查 →</a></nav>
+</main></body></html>

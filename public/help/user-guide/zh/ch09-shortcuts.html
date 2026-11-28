@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>快捷键与命令速查 — 夜半用户手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">夜半用户手册</a></nav>
+<h1>快捷键与命令速查</h1>
+<p></p>
+<blockquote class="classquote"><p>以无厚入有间，恢恢乎其于游刃必有余地矣。</p><cite>《庄子·养生主》</cite><p class="gloss">快捷键让高频动作变得从容；手熟之后，心思留给音乐本身。</p></blockquote>
+<p>夜半有一张**唯一的快捷键策略表**：程序里「帮助 $$ 快捷键速查」显示的那张， 与命令行 <code>yeban-app --print-shortcuts</code> 打印的是同一份。本章按工作流挑出 常用键做导览，方便记忆；它不是第二份权威表——要查全量键位与落地状态，请 以应用内速查为准。</p>
+<h2>与应用内速查同源的策略表</h2>
+<h3>为什么本章不抄一张全表</h3>
+<p>策略表随版本演进：哪些键已落地、哪些「键已绑定但宿主尚未实现」，表里都有 逐行标记。手抄一份很快就会过期，也会把「未实现」误写成「可用」。因此本章 只做两件事：给出键位的规范写法说明，以及按工作流挑出高频操作。</p>
+<h3>规范写法与平台折叠</h3>
+<p>表里保留跨平台的规范写法 <code>Cmd/Ctrl+</code>：macOS 上渲染成 <code>Cmd+</code>， 其余平台渲染成 <code>Ctrl+</code>。所以你在 Windows 上看到的 <code>Ctrl+S</code>，与 macOS 上的 <code>Cmd+S</code>，是同一条规范键位。带「（未实现）」标记的键表示 键已绑定、也能解析出动作，但宿主还没有对应实现，按下会被拒绝——那不是键坏了。</p>
+<h2>按工作流分组的常用键</h2>
+<p>以下键位均取自策略表，按做事的顺序分组。</p>
+<h3>工程与编辑</h3>
+<li>[Cmd/Ctrl+N] 新建 MIDI 合成器轨。</li>
+<li>[Cmd/Ctrl+O] 打开工程。</li>
+<li>[Cmd/Ctrl+S] 保存工程；Cmd/Ctrl+Shift+S 另存为。</li>
+<li>[Cmd/Ctrl+Z] 撤销；Cmd/Ctrl+Shift+Z 重做。</li>
+<li>[Tab] 视图切换（仅画布聚焦）；F5 Session 视图，F6 Arrangement 视图。</li>
+<h3>编排与编辑片段</h3>
+<li>[Space] 播放 / 暂停；Shift+Space 从光标处续播。</li>
+<li>[Enter] 回到起点；C 循环播放开关。</li>
+<li>[Cmd/Ctrl+T] 在播放头处切分选中的剪辑。</li>
+<li>[Cmd/Ctrl+C / V / X] 复制 / 粘贴 / 剪切片段。</li>
+<li>[Cmd/Ctrl+= / -] 时间轴水平放大 / 缩小。</li>
+<li>[Cmd/Ctrl+↑ / ↓] 音轨垂直缩小 / 放大。</li>
+<h3>底部控制台与面板</h3>
+<li>[P / F7] 钢琴卷帘；X / F8 混音控制台；F9 设备机架；F3 控制台设备堆叠。</li>
+<li>[I] 显隐左侧检查器。</li>
+<li>[Cmd/Ctrl+Shift+A] 自动化泳道显示。</li>
+<li>[Cmd/Ctrl+Shift+B] 打开统一浏览器（音色/采样/预设/效果）。</li>
+<li>[E] 编辑器视图切换。</li>
+<h3>录音与其他</h3>
+<li>[R] 录制开 / 关。</li>
+<li>[Cmd/Ctrl+Shift+H] 时光机。</li>
+<li>[Esc] 关闭命令面板 / 热区透视。</li>
+<h3>输入法的例外</h3>
+<p>在文本输入与 IME 合成态下，除 F5/F6 之外的键都被输入法吞掉，不会触发上面的 动作——这是刻意的，避免打字时误触快捷键。策略表专门有两列说明「画布聚焦」 与「文本输入 + IME 合成态」的差别。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：「帮助 → 快捷键速查」面板，显示规范写法、键位、说明与落地状态列]</figure>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>权威来源是应用内速查与 <code>--print-shortcuts</code> 的同一张策略表；本章只是导览 </p>
+<h2>帮助主题映射</h2>
+<p> 本章小节 $$ 应用内帮助锚点   本章小节 & 帮助主题 \\  与应用内速查同源 / 规范写法 & <code>shortcuts-policy-table</code> \\ 工程与编辑 & <code>shortcuts-project-edit</code> \\ 编排与编辑片段 & <code>shortcuts-arrange</code> \\ 底部控制台与面板 & <code>shortcuts-panels</code> \\ 录音与其他 & <code>shortcuts-record-misc</code> \\ 输入法的例外 & <code>shortcuts-ime-exception</code> \\ </p>
+<p>本章学完能做什么 按工作流找到高频键位，知道 <code>Cmd/Ctrl+</code> 的平台折叠规则，并知道查全量键位要到应用内速查而不是本章。</p>
+<p>动手练习 打开「帮助 $$ 快捷键速查」，对照本章挑出三个你最常用但还不熟的键；在命令行运行 <code>yeban-app --print-shortcuts</code>，确认它与面板显示的是同一批键位；最后只用键盘完成一次「打开工程 $$ 切分片段 $$ 保存」。</p>
+<nav class="manual-pager"><a href="ch08-export-sharing.html">← 导出与分享</a><span></span><a href="ch10-entry-points.html">终端与自动化入口 →</a></nav>
+</main></body></html>

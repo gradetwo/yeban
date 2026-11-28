@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recording and Audio Editing — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Recording and Audio Editing</h1>
+<p></p>
+<blockquote class="classquote"><p>感于物而动，故形于声。</p><cite>Book of Rites, “Record of Music” (《礼记·乐记》)</cite><p class="gloss">Translation: “Moved by things, the heart takes form in sound.” Recording turns a moment of touching into editable sound; editing and processing serve to keep it true.</p></blockquote>
+<p>This chapter covers getting outside sound into a project: recording, importing, placing audio clips on tracks, and basic trimming and fading. Recorded and imported material goes into the project's asset pool and travels with it.</p>
+<h2>Recording Flow and Input Monitoring</h2>
+<h3>Open the record panel</h3>
+<p>File $$ Record WAV in Real Time... opens the recording panel. It has an Arm switch, input-device selection and an input test; the recording path uses the project's sample rate (48 kHz by default). Transport keys are recording-aware: stopping ends the write rather than quietly carrying on.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The recording panel with the Arm switch, input-device selection and level monitoring]</figure>
+<h3>Where recordings land</h3>
+<p>After a successful stop, the bytes land in the project's asset pool with their real decoded facts (frames, sample rate, channels, bit depth) and, when the wiring is complete, an “add clip” operation is committed to the project — so the recording appears on the timeline, not only as a WAV on disk. If the current assembly does not wire the recording write face into the project, the app only writes to disk and does not pretend a commit happened; that is existing headless/diagnostic behaviour.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Recording path: pick input $$ arm/monitor $$ record/stop $$ asset pool $$ timeline clip </p>
+<h2>Audio Clip Trim, Fade In/Out and Crossfade</h2>
+<h3>Import and place</h3>
+<p>File $$ Import Audio File... reads audio into the project; Track $$ Place Latest Imported Audio on Current Audio Track puts it on the current audio track's timeline. The landing point follows the playhead and the selected track, so check both before placing to avoid putting material on the wrong track or at the wrong position.</p>
+<h3>Trim and fade</h3>
+<p>Once placed, dragging a clip's left or right edge changes its time span: trimming leading silence or trailing excess is the most common audio cleanup. A fade-in brings the head up from silence; a fade-out lets the tail die away; a crossfade across the overlap of two adjacent clips removes an abrupt seam.</p>
+<p>The exact entry points for these operations (clip parameter area, context menu or Edit menu) depend on the build you use; do not assume a control that is not present. Fades change only the gain envelope, never the original bytes in the asset pool.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：An audio clip with draggable left/right edges and fade handles labelled]</figure>
+<h3>Don't be misled by a "complete" message</h3>
+<p>Stem export measures what was actually rendered and skipped. If every audio clip in a stem was skipped, the receipt should give the clip-skip count and downgrade the message rather than still saying merely “stems complete”. Even when you see “complete”, cross-check the counts in the receipt (Chapter 8).</p>
+<h2>The Asset Pool and Audio Asset Management</h2>
+<p>Bytes from recording and importing go into the project's asset pool, addressed by content hash. The direct benefit is a self-contained project: copy the <code>.yeban</code> file and the sounds it uses travel with the container, so opening it on another machine does not turn it silent.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The asset pool panel listing a project's audio assets and content hashes]</figure>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  Record panel / input monitoring & <code>record-panel-input</code> \\ Where recordings land & <code>record-landing</code> \\ Import and place & <code>audio-import-place</code> \\ Trim and fade & <code>audio-trim-fade</code> \\ Don't be misled by “complete” & <code>audio-receipt-honesty</code> \\ Asset pool and audio assets & <code>audio-asset-pool</code> \\ </p>
+<p>What you will be able to do Record and land a clip on the intended track, import and trim audio, add fades, and verify an export against the receipt.</p>
+<p>Hands-on exercise Create an audio track and put the playhead at 001.01.000; record two bars with Record WAV in Real Time... and stop, verifying the clip appears on the timeline; trim the leading silence and add a fade-out; import another file and place it on a second track with Place Latest Imported Audio...; finally export stems and compare the clip counts in the receipt.</p>
+<nav class="manual-pager"><a href="ch04-piano-roll.html">← The Piano Roll</a><span></span><a href="ch06-automation-modulation.html">Automation and Modulation →</a></nav>
+</main></body></html>

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自动化与调制 — 夜半用户手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">夜半用户手册</a></nav>
+<h1>自动化与调制</h1>
+<p></p>
+<blockquote class="classquote"><p>易穷则变，变则通，通则久。</p><cite>《周易·系辞下》</cite><p class="gloss">自动化让参数随时间变化；懂得变通，声音才不会僵住。</p></blockquote>
+<p>自动化让参数随时间变化：你可以画一条曲线，也可以边播放边把操作录进去。 这一章讲怎么显示泳道、四种写入模式各是什么意思，以及当前版本在调制上的 真实边界。</p>
+<h2>自动化曲线与写入模式</h2>
+<h3>显示泳道</h3>
+<p>在编曲区按 A，或用「视图」里的自动化开关（Cmd/Ctrl+Shift+A）显示自动化泳道。 每条非主总线的轨可以有自己的泳道，按目标参数排列；泳道里是一条折线，顶点 按时间顺序连接，横轴与编曲区的时间对齐，因此可以直接对照片段位置来读曲线。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：编曲区展开的自动化泳道，显示一条带顶点的参数曲线]</figure>
+<h3>画曲线与改顶点</h3>
+<p>泳道里的折线由若干顶点组成。添加顶点即在某个时间点给参数定一个值，两个 顶点之间按折线插值。拖动顶点可以改变它的时间或数值；删除顶点则让曲线在 相邻两点之间重新连起来。曲线随工程保存，播放时按这条曲线驱动参数，导出时 同样生效。</p>
+<h3>四种写入模式</h3>
+<p>夜半的模型定义了四种自动化写入模式，理解它们能避免「录了一堆没用的曲线」：</p>
+<li>[Off（不录制）] 默认值。播放时不写入任何自动化；手动改参数不会改动曲线。</li>
+<li>[Write（写到底）] 走带时只要参数被改动就持续写入，直到你显式停止。</li>
+<li>[Touch（触碰写入）] 只在你正手动触碰该参数时写入，松手即停。适合「推一下再放开」的修正。</li>
+<li>[Latch（锁存写入）] 一旦开始触碰就持续写入，松手也不停，直到显式停止。适合把一段推子动作整段锁进工程。</li>
+<p> 四种写入模式对照   模式 & 松手后的行为 \\  Off & 不写入 \\ Write & 持续写（需显式停止） \\ Touch & 立即停 \\ Latch & 继续写（需显式停止） \\ </p>
+<h2>参数绑定与 LFO</h2>
+<h3>参数绑定</h3>
+<p>自动化泳道绑定的是具体轨道上的具体参数：选择目标参数后就在这条泳道上画。 设备参数（如插入效果的参数）也可以成为自动化目标；把设备链插好后，在泳道 的目标里选对应参数即可。参数改动与自动化写入共用同一条提交路径，因此撤销 可以逐步还原，不会出现「曲线改了但工程没记」的情况。</p>
+<h3>LFO 的真实边界</h3>
+<p>夜半的 DSP 核心里确实实现了一个<strong>全局 LFO</strong>（低频振荡器）：所有声部共用 一份，按块求值，波形可选。但要特别注意：目前它<strong>还没有接进合成器的 调制入口</strong>——也就是说，不要指望在界面上打开一个 LFO 旋钮就得到颤音或滤波 摆动；这些调制路径仍在演进中。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>自动化流程与 LFO 边界：实线为当前可用路径，虚线为尚未接入调制的路径 </p>
+<p>因此，本章不把「颤音」「滤波摆动」写成已提供的功能；如果你在界面上找不到 对应控件，那就是它还没接上，不是你漏看了。</p>
+<h2>帮助主题映射</h2>
+<p> 本章小节 $$ 应用内帮助锚点   本章小节 & 帮助主题 \\  显示泳道 & <code>automation-show-lanes</code> \\ 画曲线与改顶点 & <code>automation-edit-curve</code> \\ 四种写入模式 & <code>automation-write-modes</code> \\ 参数绑定 & <code>automation-target-binding</code> \\ LFO 的真实边界 & <code>modulation-lfo-boundary</code> \\ </p>
+<p>本章学完能做什么 显示并编辑自动化曲线，说清 Off/Write/Touch/Latch 的区别，并知道 LFO 目前只有 DSP 核心实现、尚未接入合成器。</p>
+<p>动手练习 在一条轨上展开自动化泳道，选音量参数，用 Touch 模式边播放边推一下音量再松手，确认只写入触碰那一段；改回 Off，手动拖动一个顶点并试听差异；最后找一找界面上有没有 LFO 颤音控件，确认它当前尚未提供。</p>
+<nav class="manual-pager"><a href="ch05-recording-audio.html">← 录音与音频编辑</a><span></span><a href="ch07-mixer-overview.html">混音台概览 →</a></nav>
+</main></body></html>

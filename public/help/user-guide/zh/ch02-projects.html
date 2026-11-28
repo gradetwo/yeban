@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工程 — 夜半用户手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">夜半用户手册</a></nav>
+<h1>工程</h1>
+<p></p>
+<blockquote class="classquote"><p>九层之台，起于累土。</p><cite>《道德经·第六十四章》</cite><p class="gloss">一个工程从空白容器和第一条轨道开始，先立骨架，再添内容。</p></blockquote>
+<p>这一章讲工程的整个生命周期：怎么建、怎么开、怎么存、怎么复用，以及夜半 「撤销就是版本」的独特模型。读完之后，你应该能放心地把一段工作存下来、 找回来，并回到任意一个过去的状态。</p>
+<h2>新建、打开与保存</h2>
+<h3>文件菜单里的五个入口</h3>
+<p>「文件」菜单与工程直接相关的五项：</p>
+<ul>
+<li><strong>新建空白工程</strong>：得到一个只有主总线的空工程。</li>
+<li><strong>从模板新建...</strong>：打开模板选择器，从工厂模板或你自己的模板起步。</li>
+<li><strong>打开 / 恢复工程...</strong>：在文件对话框里选一个 <code>.yeban</code> 文件。</li>
+<li><strong>保存工程（Cmd/Ctrl+S）</strong>：把当前工程写回原文件。</li>
+<li><strong>另存为（Cmd/Ctrl+Shift+S）</strong>：换一个文件名或位置保存。</li>
+</ul>
+<p>命令行也可以直接打开：<code>yeban-app --open <路径></code>。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：文件菜单展开，标出新建空白工程、从模板新建、打开/恢复、保存、另存为五项]</figure>
+<h3>启动工程选择器</h3>
+<p>不指定工程启动时，会出现启动工程选择器。它把入口分成几类：<strong>最近工程</strong>、 <strong>演示工程</strong>、<strong>工厂模板</strong>、<strong>用户模板</strong>，以及停在「新建工程」一栏 的空白工程入口。选演示工程可以先逛一圈界面而不动你的作品；选最近工程则直接 回到上次的工作。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：启动工程选择器，四个分类标签与「新建工程」一栏]</figure>
+<h3>保存是原子的</h3>
+<p>保存采用原子写入：先把内容写到临时位置，确认完整后再替换目标文件。写一半 断电不会留下半个工程文件——要么是新版本，要么还是上一版。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>工程生命周期：新建/从模板 $$ 编辑 $$ 保存 $$ 再打开；编辑中可随时回到旧版 </p>
+<h2>工程文件与资产池</h2>
+<p>工程文件的扩展名是 <code>.yeban</code>，它是唯一的工程格式。一个 <code>.yeban</code> 容器里装着：轨道、片段、音符、设备链，以及工程用到的素材（放在资产池里， 按内容哈希寻址）。</p>
+<p>资产池的意义在于「工程自带素材」：把工程拷到另一台机器，用到的音频与 SFZ 样本会随容器同行，不必到处找文件。导出分轨、另存为模板时，资产池都按同一 来源取，与命令行和 MCP 的口径一致（见第 8 章）。</p>
+<p> 工程里几样东西各放在哪   内容 & 在工程中的位置 \\  轨道 / 片段 / 音符 & 工程的编曲数据 \\ 设备链 & 每条轨的设备序列 \\ 提交图谱（history DAG） & 撤销链，随工程一起保存 \\ 所用素材 & 资产池，按内容哈希寻址 \\ 工程设置 & 速度 / 调号 / 拍号 / 采样率 \\ </p>
+<h2>模板：新建、另存为与工厂目录</h2>
+<h3>从模板新建</h3>
+<p>「文件 $$ 从模板新建...」打开模板选择器，列出两类模板：<strong>工厂模板</strong> （随应用提供）与<strong>用户模板</strong>（你自己保存的）。选中一项即以其为骨架建出新 工程。列表很长时，选择器会提示被折叠的行数，不会悄悄丢掉条目。</p>
+<h3>另存为模板</h3>
+<p>「文件 $$ 另存为模板...」打开保存对话框：先填名字，确认后写入用户模板目录。 如果同名模板已存在，应用不会直接覆盖，而是停下来问你是否确认覆盖；取消则 什么也不写。用户模板目录在第一次使用时创建；目录不可用时，对话框会显示 错误原因，而不是静默失败。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：另存为模板对话框，显示命名输入、提示行与同名确认态]</figure>
+<h2>最近工程与恢复</h2>
+<p>每次成功打开工程，路径都会被记进「最近工程」。它可以从启动工程选择器的 「最近工程」分类里找到并一键打开；列表里也提供移除入口，把不再需要的记录 删掉。最近工程、语言与布局共用同一份本机设置存储，所以改语言或界面布局 不会把最近工程挤掉。</p>
+<p>「打开 / 恢复工程...」除了打开正常保存的工程，也用于恢复场景：选中容器文件 后，应用按其中记录的提交图谱与资产池还原现场。</p>
+<h2>工程设置：采样率、速度、拍号</h2>
+<p>在启动工程选择器的「新建工程」一栏，可以给空白工程设定几项基础参数，它们 会写进新工程：</p>
+<ul>
+<li><strong>速度（BPM）</strong>：可填范围内为 20--999；越界或非法输入会被收回到合法域。</li>
+<li><strong>调号</strong>：可以不设（规范空工程的出厂态就是无调号），也可选升降号范围 $-7$ 到 $+7$。</li>
+<li><strong>拍号</strong>：分子 1--32；分母只接受 1、2、4、8、16、32。</li>
+<li><strong>采样率</strong>：工程的音频采样率（Hz）。</li>
+</ul>
+<p>这几项决定后续换算：小节长度由拍号算出，时间码由工程拍号推出；拍号非法时 应用会如实报出原因（例如「拍号非法，无法计算片段长度」），而不是悄悄用 一个默认值顶上。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：新建工程一栏，显示速度、调号、拍号、采样率四个输入]</figure>
+<h2>撤销即版本：时光机</h2>
+<p>夜半没有单独的「历史版本」功能：每一次编辑都是一次提交，撤销与重做只是在 这条提交链上移动。</p>
+<ul>
+<li><strong>撤销</strong>：Cmd/Ctrl+Z；<strong>重做</strong>：Cmd/Ctrl+Shift+Z。</li>
+<li><strong>编曲版本时光机（Undo Tree）</strong>：「编辑 $$ 编曲版本时光机 (Undo Tree)...」；Cmd/Ctrl+Shift+H 也可打开。</li>
+</ul>
+<p>时光机把整条提交链画成图谱：点任意一个版本节点，工程就回到那一版。如果 更早的版本太多、画布放不下，面板会如实报出没有画出的数量，而不是假装都 画了。提交图谱随工程一起保存，所以下次打开还能接着看。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：编曲版本时光机图谱，选中某个历史节点并高亮]</figure>
+<h2>帮助主题映射</h2>
+<p> 本章小节 $$ 应用内帮助锚点   本章小节 & 帮助主题 \\  文件菜单里的五个入口 & <code>project-file-menu</code> \\ 启动工程选择器 & <code>project-startup-chooser</code> \\ 保存是原子的 & <code>project-atomic-save</code> \\ 工程文件与资产池 & <code>project-container-assets</code> \\ 从模板新建 & <code>project-template-new</code> \\ 另存为模板 & <code>project-template-save</code> \\ 最近工程与恢复 & <code>project-recent-recovery</code> \\ 工程设置 & <code>project-settings</code> \\ 撤销即版本：时光机 & <code>project-undo-tree</code> \\ </p>
+<p>本章学完能做什么 独立完成工程的建、开、存、复用，并能用时光机回到任意历史版本；说清 <code>.yeban</code> 容器里装了什么。</p>
+<p>动手练习 用「从模板新建」建一个工程，改速度到 96 BPM、拍号 3/4；保存后另存为模板；故意做几次编辑，用 Cmd/Ctrl+Z 撤销再用时光机跳回最早的版本；最后关闭应用，从启动选择器的「最近工程」重新打开，核对设置还在。</p>
+<nav class="manual-pager"><a href="ch01-quickstart.html">← 快速上手</a><span></span><a href="ch03-tracks-clips.html">轨道与片段 →</a></nav>
+</main></body></html>

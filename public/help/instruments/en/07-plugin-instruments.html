@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plugin Instruments — Instruments and Synthesizers — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Instruments and Synthesizers</a></nav>
+<h1>Plugin Instruments</h1>
+<p></p>
+<blockquote class="classquote"><p>它山之石，可以攻玉。</p><cite>《诗经·小雅·鹤鸣》 / The Book of Songs, "Minor Odes, He Ming"</cite><p class="gloss">Translation: Stones from another hill can polish jade. Note: third-party plugin instruments bring outside sound sources in — but first understand the boundaries of scanning, loading, and offline rendering.</p></blockquote>
+<p>A plugin instrument brings a third-party sound source into Yeban: you scan local VST3s, choose an instrument class, load it onto the current MIDI track, and the project gains an "external instrument" device. It is not the same implementation as the built-in synth or SFZ sampler: its parameters are not on Yeban's device card, and real-time playback does not execute it; actual sound happens in offline export and full-song preview. This chapter follows that real path and does not turn "it can scan" into "it can play live".</p>
+<h2>Supported scope</h2>
+<p>   Format & Scan & Load & Execution \\  VST3 instrument & Yes & Yes, as <code>ExternalInstrument</code> & Not in real time; offline export/full-song preview runs the first one \\ VST3 effect & Yes & Yes, as <code>ExternalEffect</code> & Offline: first non-bypassed bound effect wins (not this chapter) \\ CLAP & Not provided & Not provided & Host docs say "VST3 first, CLAP later"; no CLAP entry now \\ AU / Audio Unit & Not provided & Not provided & The panel lists VST3 only \\  Plugin formats and execution scope </p>
+<p>The UI lists VST3 only: scan, row state, path, target track, and load button all live in the "Plugins and ARA" panel. CLAP and AU are not in the current panel; do not infer format support from the architecture document's CLAP license note.</p>
+<h2>Entry and scanning</h2>
+<p>There are two entries: the "Plugins" button in the device rack's local action row, and "+ Plugins and ARA..." in an empty device chain. Both open the same "Plugins and ARA" panel.</p>
+<p>   Control & Purpose & Value & Note \\  Extra scan dirs & Append to default search paths & Multiple, separated by <code>;</code> & Affects scanning only; loading still passes the path gate \\ Scan & Read local VST3s, one row per class & — & Bad plugins stay as red failure rows; the panel is not aborted \\ Row & One class per row & Class/ vendor/ instrument or effect/ ARA/ usable & Module-level failure has an empty class name \\ Load to current track & Validate-load and write a device definition & Usable rows only & Failure text goes to the result line; no default fallback \\  Scan and load controls in the plugin panel </p>
+<p>Default search paths are platform-specific: Linux uses <code>/.vst3</code> and <code>/usr/lib/vst3</code>; macOS uses <code>/Library/ Audio/ Plug-Ins/ VST3</code> and <code>/Library/Audio/Plug-Ins/VST3</code>; Windows uses <code>%COMMON PROGRAMFILES%/ VST3</code>. Extra dirs are operator-supplied; nonexistent dirs are skipped silently.</p>
+<p>Warning: A scan directory is not automatically a loadable directory. The path gate recognizes roots from the <code>YEBAN\_VST3\_PATHS</code> environment variable plus platform defaults; extra dirs typed in the panel only participate in scanning and are not in that root set. To load a plugin found in an extra dir, put the dir into <code>YEBAN\_VST3\_PATHS</code> and restart; otherwise you will see "scanned but load rejected".</p>
+<h2>Load contract</h2>
+<p>Loading is not "put a file path into the project"; it passes three gates:</p>
+<ol>
+<li><strong>Shape</strong>: only a <code>.vst3</code> bundle or a platform dynamic-library extension.</li>
+<li><strong>Canonicalization</strong>: the path must exist; symlinks are checked in canonical form and cannot escape.</li>
+<li><strong>Origin</strong>: the canonical path must fall under a plugin root (<code>YEBAN\_VST3\_PATHS</code> plus platform defaults).</li>
+</ol>
+<p>Only then does validation loading run: the host opens the module, activates the class (or the first instrument class when no class is named), and returns the original error on failure — never falling back to a default plugin. On success the project gets an <code>ExternalInstrument</code> device:</p>
+<p>- device name = plugin instance name; - <code>latency\_samples</code> = latency reported by the plugin, included in track PDC; - <code>plugin</code> binding = path, class name, and a state snapshot taken at load time; - <code>params</code> empty — Yeban does not map plugin parameters into its own DeviceParams.</p>
+<p>The state snapshot is captured at load: processor state and controller blob are encoded into the binding. A failed capture does not fail the load, but the project saves an empty state and reopens at the plugin default; a corrupt state during render fails loudly instead of silently rendering defaults.</p>
+<h2>Execution: not live, only export</h2>
+<p>This is the chapter's most important boundary: <strong>loading only registers; real-time playback does not execute the plugin</strong>. The real-time engine has no lock-free plugin-instance lifecycle; it plays the track's built-in source (poly synth, drum machine, or SFZ). If a track has only an external instrument and no built-in source parameters, real-time monitoring plays the default poly synth, not the plugin — do not judge the plugin by live monitoring.</p>
+<p>Offline export and full-song preview do execute the plugin: the first non-bypassed, bound external instrument on the track wins over the engine synth and sampler binding; a second bound device and unbound devices do not silently take over — they go into the render receipt as "second bound device, first wins" or "unbound plugin". A bound device that fails to load makes rendering fail loudly, without falling back to a built-in source.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<h2>Using the panel</h2>
+<figure class="fig-placeholder">[截图见 PDF 版：The "Plugins and ARA" panel is open; the left VST3 list shows class, vendor, instrument/effect, usable/failed state, and path.]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：The panel has a usable instrument row selected; the bottom shows "Target track: <name>", the load button is enabled, and the result line shows the "registration only" note.]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：The current track's device card in the device rack shows the plugin instrument name and latency readout; there is no plugin parameter panel.]</figure>
+<h2>ARA is not a plugin instrument</h2>
+<p>The panel's right side is ARA sessions: bind a plugin path + wav, query a session, render output. It handles in-track audio analysis/rendering, not "mount a plugin as an instrument on a MIDI track". ARA sessions are capped at 64; this chapter does not cover ARA binding/rendering steps, only notes that it shares the panel but is not the same chain.</p>
+<h2>Boundaries and risks</h2>
+<ul>
+<li><strong>No real-time execution.</strong> Plugins run only in offline export/full-song preview; real-time monitoring plays a built-in source, possibly the default poly synth.</li>
+<li><strong>No resident plugin editor.</strong> The panel only scans, loads, and snapshots state; the plugin's own GUI does not appear, and Yeban has no parameter mapping. You cannot "open the plugin and tweak it" after loading.</li>
+<li><strong>State captured only at load.</strong> Internal plugin changes after loading are not written back automatically; reload or wait for a later editor.</li>
+<li><strong>No cross-process crash isolation.</strong> Phase 1 is an in-process host; the architecture's cross-process isolation/shared memory/watchdog is phase 2. A bad plugin during scan/offline render can affect the application process; do not treat it as a sandbox.</li>
+<li><strong>CLAP/AU not provided.</strong> Only VST3 is listed; do not infer format support from architecture license notes.</li>
+<li><strong>The device rack's "Commercial Plugin Host [v2.0.0 · Not implemented]" is an old placeholder.</strong> It refers to a future isolated commercial host, not the current VST3 registration panel; the real entries are the lower-dock "Plugins" button and the empty-chain "+ Plugins and ARA...".</li>
+<li><strong>A second external instrument does not replace the first.</strong> The first non-bypassed bound one wins; the rest go into the receipt, never a silent source swap.</li>
+<li><strong>Extra scan dirs are not loadable roots.</strong> To load, the dir must be in <code>YEBAN\_VST3\_PATHS</code>.</li>
+</ul>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  Supported scope & <code>plugin-formats</code> \\ Entry and scanning & <code>plugin-scan</code> \\ Load contract & <code>plugin-load-contract</code> \\ Execution: not live, only export & <code>plugin-execution</code> \\ Using the panel & <code>plugin-workflow</code> \\ ARA is not a plugin instrument & <code>plugin-ara-boundary</code> \\ Boundaries and risks & <code>plugin-limits</code> \\  Help-topic mapping for Chapter 7</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://github.com/gradetwo/yeban">https://github.com/gradetwo/yeban</a> — Yeban repository: check the README and source for the real boundaries of plugin scanning, loading, and offline rendering.</li>
+<li><a href="https://www.steinberg.net/cubase/">https://www.steinberg.net/cubase/</a> — Steinberg Cubase: understand plugin formats, scanning, and project compatibility from the host side of VST3.</li>
+</ul>
+<nav class="manual-pager"><a href="06-drum-machine.html">← Drum Machine</a><span></span><a href="08-sound-design-exercises.html">Sound-Design Exercises →</a></nav>
+</main></body></html>

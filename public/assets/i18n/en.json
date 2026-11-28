@@ -164,5 +164,6 @@
   "ui.shot3_alt": "Mixer console in the lower dock: six track channel strips plus bus and master, each with a fader and a dB readout",
   "ui.shot3_caption": "Mixer console in the lower dock — channel strips, bus and master",
   "ui.shot4_alt": "The terminal UI (yeban-tui) on the same demo project: track list, clip grid and inspector",
-  "ui.shot4_caption": "The yeban-tui terminal UI — the same demo project"
+  "ui.shot4_caption": "The yeban-tui terminal UI — the same demo project",
+  "nav.help": "Help"
 }

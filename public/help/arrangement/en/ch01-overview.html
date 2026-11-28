@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arrangement Overview: Build the Layers First — Arrangement and Orchestration — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Arrangement and Orchestration</a></nav>
+<h1>Arrangement Overview: Build the Layers First</h1>
+<p></p>
+<blockquote class="classquote"><p>不积跬步，无以至千里；不积小流，无以成江海。</p><cite>Xunzi, "Encouraging Learning"</cite><p class="gloss">Without accumulated steps one cannot reach a thousand li; without gathered small streams there is no river or sea. Arrangement, too, is built one small layer at a time. Arrangement is not putting the largest number of instruments into the same bar. It is letting each layer say the right thing at the right moment.</p></blockquote>
+<h2>What arranging actually arranges</h2>
+<p></p>
+<p>A song can be one guitar and one voice, or forty tracks. Both can be well arranged. The difference is not the track count but whether the <strong>functional layers</strong> are clear. This volume uses four arrangement layers{arrangement-layer}:</p>
+<ol>
+<li><strong>Rhythm layer</strong>: drums, percussion and bass, plus the rhythm guitar or keyboard that carries the groove. It answers “how does this song move?”</li>
+<li><strong>Harmony layer</strong>: pads, arpeggios and chordal instruments. It answers “what harmonic ground does this song stand on?”</li>
+<li><strong>Melody layer</strong>: lead vocal, lead instrument and counter-melody. It answers “which sentence should the listener remember?”</li>
+<li><strong>Colour and atmosphere layer</strong>: synth pads, samples, ambience and sound effects. It answers “what colour is this song?”</li>
+</ol>
+<p>The four layers are <strong>functions</strong>, not a fixed instrumentation. One piano can carry harmony and rhythm at once; one synth pad can supply harmony and atmosphere. The test is not “what instrument is it?” but “which layer is it serving right now?”</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>The four functional layers of arrangement. They support one another; they are not a track-count leaderboard. </p>
+<h2>The role card: three boxes before writing a part</h2>
+<p></p>
+<p>Before placing the first note in the piano roll, write a three-box role card{role-card} for the part. If the three boxes are unclear, no number of notes will keep the parts from colliding.</p>
+<p> Box & Question & What goes wrong if it is vague \\    Box & Question & What goes wrong if it is vague \\   Function & Is it a root bed, a groove, harmonic filling, a lead, a counter-line or atmosphere? & Two parts fight for one job; the result is thick but muddled. \\ Register & Roughly where are its low, centre and high notes? & Everything sits in the midrange and the vocal disappears. \\ Rhythmic character & Sustained bed, even eighths, syncopation, space, or a free phrase? & Every part moves at once and the listener loses the landing point. \\ </p>
+<p>Start registers from the table below, then calibrate against reference records. These are <strong>starting points</strong>, not prohibitions:</p>
+<p> Part & Typical register (MIDI notes) & Note \\    Part & Typical register (MIDI notes) & Note \\   Bass & E1--G2 (28--43) & Mostly root notes; frequent excursions above C3 tend to sound melodic and steal focus. \\ Rhythm guitar & Around the E3--B3 fundamental range & A single-note riff often sounds heavier than full chords; leave a little space every four bars. \\ Keyboard / pad & C3--C5 & Stay out of the vocal's most comfortable register; leave the middle to the melody. \\ Lead & The comfortable register of the reference vocal or lead instrument & Do not lift the whole part an octave for “power”; change density and instrumentation first. \\ Drums & Low and midrange jobs & Kick carries the low end, snare carries the midrange skeleton; the snare is not the groove's lead voice. \\ </p>
+<aside class="note">
+<p>The card does not need to live in the project file. A track name or a note in an empty clip is enough: “Bass -- root bed -- E1/G2 -- mostly eighths, one beat of space every four bars”. Writing it down is more reliable than stacking tracks by feel.</p>
+</aside>
+<h2>Arrange first, mix later</h2>
+<p></p>
+<p>Arrangement and mixing solve different problems:</p>
+<ul>
+<li><strong>Arrangement</strong> decides which sounds exist, in which register, at which moment, and for which function.</li>
+<li><strong>Mixing</strong> decides how those sounds share level, frequency range, space and dynamics.</li>
+</ul>
+<p>The order cannot be reversed. The practical reason: if two parts start in the same register, on the same beat, doing the same job, the mix engineer can only separate them by heavy EQ, hard compression or pushing one far away. The result is thin, artificial and loses the arranging intention. Solve the conflict with register, rhythm and instrumentation first; then mixing can add polish instead of fighting a fire.</p>
+<p>When something sounds muddy, ask three arrangement questions first: Are these two parts in the same register? Are they doing the same thing on the same beat? Could one of them simply be removed? Only after ruling those out should you reach for EQ and compression.</p>
+<h2>Seeing the four layers in Yeban: the six-track demo</h2>
+<p></p>
+<p>Yeban opens a demo project by default. It is not a tutorial screenshot; it is a real <code>YebanProjectV1</code> with six ordinary tracks and one master bus, which makes it a useful place to watch the four layers separate.</p>
+<p> Track & Type & What to observe \\    Track & Type & What to observe \\   Drums & MIDI & The rhythm skeleton; the demo solos it by default, which makes the groove easy to hear first. \\ Bass & Audio & Root motion and low end; together with the drums it decides how the song moves. \\ Pad & MIDI & The sustained harmonic background; check whether it leaves the midrange to the vocal. \\ Lead & MIDI & The melody-layer lead; check whether it shares a register with the pad. \\ Strings & MIDI & Colour and atmosphere, but also able to carry harmony or counterpoint; whether it thickens or steals focus depends on the writing. \\ Percussion & Audio & Colour and detail in the rhythm layer; muted by default, which makes it useful for A/B. \\ Master & Master output & The summing point of all tracks; it is not an arrangement layer, but it decides the final impression. \\ </p>
+<p>With the demo open, do three things:</p>
+<ol>
+<li>Press <strong>Space</strong> and listen to the whole first. Do not solo anything immediately.</li>
+<li>In the arrangement area, solo each track in turn and hear what job it does; then mute it and hear what the whole loses.</li>
+<li>Open the piano roll (<strong>P / F7</strong>) and look at which registers the drums, pad and lead occupy; open the mixer (<strong>X / F8</strong>) and see how much level each part takes.</li>
+</ol>
+<p>This is not passive listening. It is taking a finished piece apart into functional layers. Only when you can take it apart can you build your own.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The six ordinary tracks and master bus of the demo project: solo and mute each track to observe the four layers]</figure>
+<h2>The three-pass method: from an eight-bar skeleton to a full section</h2>
+<p></p>
+<p>Do not start at bar one and fill every part at once. Use three passes; each pass solves one problem.</p>
+<h3>Pass one: skeleton</h3>
+<p>Write the rhythm layer and the harmonic roots first. At minimum: kick and snare placement, a bass root motion, and a pad or keyboard that makes the chord changes audible. Do not write lead ornaments or atmosphere yet. The goal is: <strong>three or four parts, an eight-bar loop that stands up on its own.</strong></p>
+<h3>Pass two: protagonist</h3>
+<p>Write the lead melody or vocal. Use one sound to make the sentence clear; do not stack three tracks at once. When it is written, mute the pad temporarily and check whether the lead stands alone; then unmute the pad and check whether it blocks the lead's centre register.</p>
+<h3>Pass three: colour</h3>
+<p>Only now add strings, synth pads, percussion detail, counter-melodies and answering phrases. For every added layer, answer: “which gap does it fill? What does the whole lose if I remove it?” If you cannot answer, do not add it yet.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>The three-pass method: each pass adds one class of function, so you can hear who is fighting whom. </p>
+<h2>Energy is not only “an octave up”</h2>
+<p></p>
+<p>The chorus{chorus} must feel stronger than the verse{verse}, but “stronger” does not mean transposing every instrument up an octave. A more reliable order is:</p>
+<ol>
+<li><strong>Add parts</strong>: verse has drums, bass and pad; chorus adds string sustains, rhythm guitar or a second vocal.</li>
+<li><strong>Add density</strong>: the verse drums play only key accents; the chorus adds eighth- or sixteenth-note closed hi-hats, and the bass moves from long notes to directed eighths.</li>
+<li><strong>Add velocity</strong>: let the performance or programming breathe; the chorus sits one controlled level above the verse instead of the whole song sharing one velocity.</li>
+<li><strong>Consider register last</strong>: an octave lift brightens the sound but most easily crowds the vocal; use it only after the first three moves are not enough.</li>
+</ol>
+<p>This is the judgement order repeated throughout the volume: <strong>function first, register second, timbre last.</strong> Mixing handles frequency balance and space afterwards.</p>
+<h2>Common mistakes and fixes</h2>
+<p></p>
+<p> Common mistake & Fix \\    Common mistake & Fix \\   Every part sits in the midrange & Write a register for each part; move the pad away from the vocal centre and put the bass back in the low end. \\ More tracks must mean “fuller” & Remove layers with no function; every layer must answer “what is missing without it?”. \\ One flat velocity for the whole song & Leave dynamic room between verse and chorus; a velocity difference is more natural than a pitch difference. \\ Copy the eight-bar loop from top to bottom & Change at least one thing per section -- instrumentation, density or register -- and check the energy curve at the section markers. \\ Use EQ and compression to hide arrangement conflicts & Change register, rhythm and part count first; mixing is for adding polish. \\ The pad covers the lead & Move the pad below or above the lead's centre register; reduce the number of pad voices if necessary. \\ </p>
+<h2>Exercise</h2>
+<p></p>
+<aside class="note">
+<p>Open the Yeban demo project and complete three tasks; write the results on one sheet of paper:</p>
+<ol>
+<li>Solo and mute each track, then write a three-box role card for each of the six ordinary tracks (function, register, rhythmic character).</li>
+<li>Using only drums, bass and pad, build an eight-bar loop; keep the bass mostly on roots and keep the pad out of the vocal's centre register.</li>
+<li>Write a four-bar lead over the loop. Then make two comparisons: remove the pad once, and lift the pad one octave once. Which version makes the lead clearer, and why?</li>
+</ol>
+</aside>
+<h2>Chapter takeaways</h2>
+<p></p>
+<ul>
+<li>Arrange by functional layer: rhythm, harmony, melody, colour and atmosphere.</li>
+<li>Write a role card before any part: function, register, rhythmic character.</li>
+<li>Arrange first and mix later; do not leave arrangement conflicts for EQ and compression.</li>
+<li>Use three passes: skeleton, protagonist, colour; each pass solves one problem.</li>
+<li>Build energy with parts, density and velocity first; an octave lift is the last resort.</li>
+</ul>
+<h2>Further reading</h2>
+<p></p>
+<ul>
+<li><a href="https://en.wikipedia.org/wiki/Arrangement">Arrangement</a>: Start by separating arranging from composing.</li>
+<li><a href="https://www.musictheory.net/lessons">Music Theory Lessons</a>: Free lessons on intervals and chords.</li>
+<li><a href="https://www.youtube.com/watch?v=6gHEIF0rT2w">Free music theory course</a>: A from-scratch course covering rhythm and notation.</li>
+<li><a href="https://www.youtube.com/watch?v=Mf6ZKAV0ZU4">Orchestrating a melody in practice</a>: Watch a melody turn into a full arrangement, layer by layer.</li>
+</ul>
+<p> Section & Help anchor \\  What arranging actually arranges & <code>arrangement-what-is-arrangement</code> \\ The role card & <code>arrangement-role-card</code> \\ Arrange first, mix later & <code>arrangement-before-mixing</code> \\ Seeing the four layers in Yeban & <code>arrangement-yeban-demo</code> \\ The three-pass method & <code>arrangement-three-pass</code> \\ Energy is not only an octave up & <code>arrangement-energy</code> \\ Common mistakes and fixes & <code>arrangement-common-mistakes</code> \\ Exercise & <code>arrangement-overview-exercise</code> \\ </p>
+<nav class="manual-pager"><a href="ch00-plan.html">← How This Volume Is Organised</a><span></span><a href="ch02-structure.html">Song Structure: Managing Attention by Section →</a></nav>
+</main></body></html>

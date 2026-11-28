@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stereo Image and Panning — Mixing — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Mixing</a></nav>
+<h1>Stereo Image and Panning</h1>
+<p></p>
+<blockquote class="classquote"><p>有无相生，难易相成，长短相形，高下相倾，音声相和，前后相随。</p><cite>《老子·第二章》 / Laozi, Chapter 2</cite><p class="gloss">Translation: Being and non-being generate each other; long and short define each other; high and low lean on each other; sound and voice harmonize; front and back follow. Note: stereo is relational — left only means something against right.</p></blockquote>
+<p>Pan answers “where is this sound placed left or right”, stereo width answers “how far apart are its two sides”, and mono compatibility answers “how much remains after the left and right channels are summed”. These three are often collapsed into one “image” knob, but in Yeban they live on different layers: track pan at the source, width in the channel strip's M/S stage, low-frequency narrowing in the strip's mono-maker, and mono checking in the control-room monitor path. This chapter follows those four layers and marks the controls that are not provided.</p>
+<h2>Three distinct layers</h2>
+<p>Yeban does not have one global image control. It has three independent parameter families:</p>
+<p>   Layer & Parameter / entry & Scope and boundary \\  Track & <code>TrackV3.pan</code>, each mixer strip's pan cell & $-1$--$+1$; every track, bus and master has its own; can be automated as <code>TrackPan</code> \\ Channel strip & <code>strip\_width</code>, <code>mono\_below\_hz</code>, <code>ms\_mid\_*</code> & Exists only when the track has a channel strip; not a width knob beside the fader \\ SFZ region & <code>pan</code>, <code>width</code>, <code>position</code> & Per sampler region; only in the SFZ file, no UI editor \\  The three layers of image parameters in Yeban </p>
+<p>Track pan moves the whole track left or right; channel-strip width spreads or collapses its left/right components; an SFZ region's pan places a particular slice of the sampled instrument. They can be combined, but one cannot do the job of another.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：The mixer strip has a track selected; the pan cell shows C or L50/R50 and the fader and pan values are visible.]</figure>
+<h2>Track pan and the four pan laws</h2>
+<p>Track pan is bounded to $-1$--$+1$: $-1$ is hard left, $0$ centre, $+1$ hard right. The UI converts the thousandths integer into readings such as <code>C</code>, <code>L50</code> and <code>R50</code>: centre shows <code>C</code>, negative values show <code>L</code> plus an integer percentage, positive values <code>R</code> plus a percentage. The mixer strip's pan cell, the inspector and the arrangement share one value.</p>
+<p>Pan is not a simple left/right gain pair. It follows the project-level <code>audio\_config.pan\_law</code>. Yeban has four laws:</p>
+<p>   Serialized name & Curve & Curve centre (before the identity rule) & Centre level \\  <code>Linear</code> & $L=1-p$, $R=p$, $p=(pan+1)/2$ & $(0.5,0.5)$ & $-6.02$ dB \\ <code>ConstantPower Minus3dB</code> & $L=$, $R=$ & $(2/2,2/2)$ & $-3.01$ dB \\ <code>ConstantPower Minus4\_5dB</code> & $L=^{}$, $R=^{}$ & $(0.5957,0.5957)$ & $-4.50$ dB \\ <code>ConstantPower Minus6dB</code> & $L=^2$, $R=^2$ & $(0.5,0.5)$ & $-6.02$ dB \\  The four pan laws; $=(pan+1)/4$, $=0.45/_{1021.4948677$} </p>
+<p>The default is <code>ConstantPower Minus3dB</code>: the sum of left and right energy is exactly one, so sweeping pan does not collapse the total energy. The linear law keeps the amplitude sum at one and loses 6 dB in the centre; $-4.5$ dB and $-6$ dB are the other two constant-power curves. The project field accepts the four serialized names above, but the current UI has no pan-law selector; change <code>audio\_config.pan\_law</code> directly in the project JSON, and note that MCP currently has no writer for it.</p>
+<h3>Centre identity and the 3 dB step</h3>
+<p>At dead centre Yeban does not use the curve centre. It uses identity:</p>
+<p><code>centered\_pan\_gains(pan, law)</code>: $<code>pan</code>=0$ or non-finite $ (1.0,1.0)$; otherwise <code>pan\_gains</code>.</p>
+<p>So a track reading <code>C</code> multiplies both sides by one, and monitoring and export agree bit-for-bit. As soon as pan leaves centre it falls onto the selected curve. For the default $-3$ dB law, $pan=$ gives about $0.7071$ on each side, $3.01$ dB below centre; the step is $6.02$ dB for the linear law, about $4.50$ dB for $-4.5$ dB, and $6.02$ dB for $-6$ dB. This is Yeban's existing contract, not a typo: centre must align with the offline “pan untouched” case, and the price is an audible step between exact centre and a tiny non-zero pan.</p>
+<p>The UI reading rounds to thousandths, so a very small non-zero pan may display <code>C</code> while processing already follows the curve. Do not infer “identity” from a displayed <code>C</code>; to reset exactly, write the value back to $0$.</p>
+<h3>Tracks, buses and automation</h3>
+<p>Tracks, auxiliary buses and the master each carry a <code>pan</code>, and all use the same <code>centered\_pan\_gains</code>. Master pan is not an output balance or a master gain; it moves the whole mix left or right. Do not use it to fix the position of one instrument.</p>
+<p>Pan can be written as a <code>TrackPan</code> automation lane. When automation exists, it replaces the track's static <code>pan</code>, smoothed per sample with a 5 ms time constant; the static value is used only when no automation exists. See the automation chapter for drawing and reading; this chapter does not repeat it.</p>
+<h2>Width: the channel strip's M/S scaling</h2>
+<p>Yeban has no per-track width fader and no track parameter named <code>width</code>. Real width lives in the channel-strip device as <code>strip\_width</code> (alias <code>channel\_width</code>), range $0.0$--$2.0$, default $1.0$:</p>
+<p>   Parameter & Meaning & Range & Default \\  <code>strip\_width</code> & M/S width scaling; $1$ neutral, $0$ mono, $2$ double & 0.0--2.0 & 1.0 \\ <code>mono\_below\_hz</code> & mono-maker corner; $0$ bypass & 0--1000 Hz & 0 \\ <code>ms\_mid\_gain\_db</code> & peak gain on mid only & $-60$--$24$ dB & 0 \\ <code>ms\_mid\_freq\_hz</code> & M/S mid peak centre & 100--12000 Hz & 2000 \\  Channel-strip width and M/S parameters </p>
+<p>The width stage computes:</p>
+<p><code>mid = 0.5(L+R)</code>; <code>side = 0.5(L-R) * strip\_width</code>; <code>(L,R) = (mid+side, mid-side)</code>.</p>
+<p>At $1.0$ the stage is skipped bit-for-bit: no M/S round trip, because in $f32$ $(m+s)+(m-s)$ is not guaranteed to equal $2m$. At $0.0$ side is multiplied by zero, both channels keep only mid, and the whole track becomes mono. At $2.0$ side is doubled, the left/right difference is exaggerated and the image feels wider, while the centre and low-frequency phase relationship is unchanged. Width never touches mid, so the centre of a vocal or kick does not drift sideways.</p>
+<p>The width stage sits inside the channel strip: input gain → high-pass → EQ → dynamic EQ → filter → compressor → <strong>width</strong> → M/S mid → mono-maker → output gain. It exists only when the track has a channel strip; without one there is no <code>strip\_width</code>. The UI has no width knob; the device card shows recognised parameters and a curve only. To change width, use MCP <code>setParam</code> with <code>lane</code> set to <code>DeviceParam</code> and address <code>strip\_width</code> by name, or edit the device parameters in the project. The current version does <strong>not provide</strong> a track-level width knob, a dedicated automation lane named “width”, or a width meter; automate width through the <code>DeviceParam</code> lane.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：F9 device rack with a channel-strip track selected; the card shows recognized parameter readouts and curves, with no width knob.]</figure>
+<h2>Low-frequency narrowing: mono-maker</h2>
+<p><code>mono\_below\_hz</code> is the channel strip's stage for narrowing low-frequency side energy, range $0$--$1000$ Hz, default $0$ (bypassed). Its contract is:</p>
+<p><code>mid</code> unchanged; <code>side</code> through a second-order Butterworth high-pass; reconstructed to left/right.</p>
+<p>It is not a brick-wall split: with a $120$ Hz corner, the side at $60$ Hz is about $-12$ dB, at $30$ Hz about $-24$ dB, and above $240$ Hz essentially untouched. It pins the low end to the centre; it does not make everything below $120$ Hz absolutely mono. For full-band mono, set <code>strip\_width</code> to $0$, not mono-maker.</p>
+<p>Mono-maker runs after width: width scales the whole side (including low frequencies), then mono-maker removes the low-frequency side. Reversing the order leaves a different low-frequency residue. It also exists only inside a channel strip.</p>
+<h2>M/S mid: centre only, sides untouched</h2>
+<p><code>ms\_mid\_gain\_db</code> is a peak EQ applied only to mid, range $-60$--$24$ dB, default $0$ (bypassed); <code>ms\_mid\_freq\_hz</code> ranges $100$--$12000$ Hz, default $2000$ Hz, with a fixed Q of $0.9$. It is not the ordinary EQ mid: <code>eq.mid\_*</code> is full-band, so boosting 3 kHz also boosts the cymbals and reverb tail in side. M/S mid boosts only the centre, bringing a lead vocal or melody forward without brightening the sides. At $0$ dB the stage is bypassed and performs no M/S round trip at all.</p>
+<p>It is neither width nor a mono-compatibility tool. Boosting mid does not replace mono-maker; it makes the centre louder, not the low-frequency side disappear.</p>
+<h2>The SFZ region image family</h2>
+<p>An SFZ region can declare three image parameters, all in percent:</p>
+<p>   SFZ parameter & Meaning & Range & Default \\  <code>pan</code> & Region pan; placement for mono samples, balance for stereo & $-100$--$100$ & 0 \\ <code>width</code> & Stereo width; $100$ neutral, $0$ mono, negative swaps L/R & $-100$--$100$ & 100 \\ <code>position</code> & Moves the whole image after width & $-100$--$100$ & 0 \\  SFZ region image parameters </p>
+<p>The order is <code>pan</code> → <code>width</code> → <code>position</code>. <code>width</code> and <code>position</code> apply only to stereo samples; a mono sample's voice does not enter the split-channel path and the values are not applied. The default combination (<code>width=100</code>, <code>position=0</code>) short-circuits bit-for-bit and performs no floating-point work. All three are clamped to $-100$--$100$ at load time; out-of-range values raise a <code>ClampedStaticValue</code> warning.</p>
+<p>Yeban can read mono and stereo sample files, but the UI has no SFZ region image editor; these values exist only in the SFZ file. The current version does <strong>not provide</strong> a graphical editor for region <code>pan</code>/<code>width</code>/<code>position</code>.</p>
+<h2>Mono-compatibility checking</h2>
+<p>Mono compatibility is not a plug-in; it is a set of switches in the control-room monitor path. Press F4 to show the control room and loudness meters. Its right side has <code>DIM</code>, <code>MONO</code> and <code>SIDE</code>; the lower-dock master strip also has a <code>MONO</code>, which is the same boolean as the control room, not a second state.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：F4 control room; DIM/MONO/SIDE buttons are visible, with MONO or SIDE lit.]</figure>
+<p>   Switch & Processing & Use & Boundary \\  <code>MONO</code> & both channels become $(L+R)/2$ & check cancellation and low-end thinning & monitor only, not export \\ <code>SIDE</code> & both channels become $L-R$ & hear the difference signal of reverb/wide sources & monitor only, not export \\ <code>DIM</code> & both channels multiply by $0.1$ ($-20$ dB) & temporarily lower monitoring level & monitor only, not export \\  Control-room monitor switches </p>
+<p>The order of the three switches is a contract: <strong>SIDE first, then MONO, then DIM</strong>. Therefore <code>SIDE</code> and <code>MONO</code> together still produce the difference signal, not silence; doing MONO first and SIDE second would subtract the two copies of $(L+R)/2$ and yield zero, which Yeban does not do. With all three off the stage is skipped entirely and touches no sample.</p>
+<p>A checking routine:</p>
+<ol>
+<li>Monitor normally and note where the vocal, kick and bass sit in the centre.</li>
+<li>Press <code>MONO</code>; listen for a thinner vocal, a kick that loses low end, or reverb that suddenly grows. An instrument that almost disappears in mono is relying on left/right difference.</li>
+<li>Press <code>SIDE</code>; confirm the difference signal does not contain the dry centre you want to keep. <code>SIDE</code>+<code>MONO</code> together is still the difference signal, not silence.</li>
+<li>Turn <code>MONO</code>/<code>SIDE</code> off and return to normal monitoring; use <code>DIM</code> if you need a lower monitoring level.</li>
+</ol>
+<p>The current version does <strong>not provide</strong> automatic mono-compatibility analysis, a left/right correlation meter, a phase-cancellation warning, or a before/after mono-fold difference meter. <code>MONO</code> is a manual monitoring switch, not an analyser; it will not tell you “this track lost 3 dB in mono”. The export path bypasses these switches, so do not judge export level while <code>MONO</code> is on.</p>
+<h2>Common mistakes</h2>
+<p>   Mistake & Actual behaviour \\  “Pan is width” & Pan moves the whole track; width scales only side, leaving mid alone \\ “Centre means 0 dB on the curve” & Centre is identity at 0 dB; leaving centre drops onto the curve, a $3.01$ dB step for the default law \\ “Width 0 is the same as mono-maker at 120 Hz” & Width 0 is full-band mono; mono-maker only rolls off low-frequency side at second order \\ “If an SFZ file says width, it must be audible” & It applies only to stereo samples; mono samples ignore it \\ “MONO also makes the export mono” & Monitor switches bypass export \\ “Channel-strip width can be dragged like a fader” & No width knob exists; use device parameters/MCP or the project file \\  Common mistakes about pan and stereo </p>
+<h2>Exercise</h2>
+<aside class="note">
+<ol>
+<li>Move a track's pan from <code>C</code> to <code>L50</code>, then to <code>R50</code>; return to the full mix after each move and listen to the center and sides.</li>
+<li>Write the pan back to a true $0$ and confirm the display reads <code>C</code>. Do not infer identity processing from a “C” display.</li>
+<li>Check the track with control-room MONO/SIDE; record what is lost in mono, and do not use the monitoring level as the export level.</li>
+</ol>
+</aside>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  Three layers & <code>stereo-layers</code> \\ Track pan and four laws & <code>track-pan-laws</code> \\ Centre identity and the step & <code>pan-center-identity</code> \\ Width and M/S parameters & <code>channel-strip-width</code> \\ mono-maker & <code>mono-maker</code> \\ SFZ region image family & <code>sfz-pan-family</code> \\ Mono-compatibility checking & <code>mono-compatibility</code> \\ Common mistakes & <code>stereo-mistakes</code> \\  Chapter 7 help-topic mapping </p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.izotope.com/en/learn.html">https://www.izotope.com/en/learn.html</a> — iZotope Learn: study diagrams of panning, width, and mono compatibility, and fill in the left–right relationship.</li>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a> — Sound On Sound techniques: compare panning decisions in real mixes, and learn why wider is not automatically better.</li>
+</ul>
+<nav class="manual-pager"><a href="06-modulation-coloration.html">← Modulation and Coloration</a><span></span><a href="08-automation.html">Automation Mixing →</a></nav>
+</main></body></html>

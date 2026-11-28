@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instruments and Tracks — Instruments and Synthesizers — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Instruments and Synthesizers</a></nav>
+<h1>Instruments and Tracks</h1>
+<p></p>
+<blockquote class="classquote"><p>工欲善其事，必先利其器。</p><cite>《论语·卫灵公》 / The Analects, Book XV (Wei Ling Gong)</cite><p class="gloss">Translation: To do a job well, sharpen your tools first. Note: learn how tracks, instruments, and sound sources connect before reaching for another preset.</p></blockquote>
+<p>This chapter explains how tracks, instruments, and sound sources relate in Yeban, and how the factory synthesizer presets are named and loaded. It describes only behaviour that exists in the live code and can be observed in the application or in project data.</p>
+<h2>Three signal paths</h2>
+<p>Yeban tracks fall into three groups by sound source. A MIDI synthesizer track produces sound through one instrument. An audio track plays audio clips and has no instrument. Auxiliary and master bus tracks only carry summing, effects and faders; they do not host instruments. After the instrument, a track's signal passes its insert effects, fader, and pan before it reaches a bus.</p>
+<p>{!}{tikzpicture[ node distance=10mm and 12mm, box/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=}, bus/.style={draw, rounded corners=2pt, minimum width=30mm, minimum height=8mm, align=center, font=, fill=black!4}, arrow/.style={-{Latex[length=2mm]}, thick} ] [box] (track) {MIDI synth track}; [box, right=of track] (inst) {Instrument\ / SFZ / drums}; [box, right=of inst] (fx) {Insert effects\ / Reverb / Compressor}; [bus, right=of fx] (bus) {Aux bus / Master};</p>
+<p>[arrow] (track) -- (inst); [arrow] (inst) -- (fx); [arrow] (fx) -- (bus);</p>
+<p>[box, below=of track] (audio) {Audio track}; [box, right=of audio] (clip) {Audio clip}; [arrow] (audio) -- (clip); [arrow] (clip) -| (bus);</p>
+<p>A track has at most one sound source. If a track somehow contains drum machine, SFZ, and poly-synth configuration at the same time, the engine dispatches in the order “drums first, then SFZ, then poly synth”; the suppressed sources do not sound together. This is an engine verdict, not a switch in the interface.</p>
+<h2>Tracks and instruments</h2>
+<p>When a MIDI synthesizer track is created, the application installs the default Yeban PolySynth and ensures that the track has a route to the master bus. Audio, auxiliary, and master bus tracks never receive an instrument.</p>
+<p>There are two entry points for changing an instrument:</p>
+<ul>
+<li>The bottom device rack (F9): inspect the current track's device</li>
+<p>chain and replace or add instruments and effects.</p>
+<li>The left sound library: browse factory synthesizer presets and</li>
+<p>SFZ instrument libraries; the selected preset becomes the current track's instrument.</p>
+</ul>
+<p>Changing a preset writes that preset's device parameters to the track's instrument device. Existing notes and clips are not lost when the timbre changes. If a track has no usable instrument, the application installs the default synth before playback or editing.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：Instrument entry and preset row in the device rack]</figure>
+<h2>Six factory synthesizer presets</h2>
+<p>Factory synthesizer presets use the <code>synth:</code> prefix. The interface gives the same preset different display names in different panels: the left library uses a timbre description, while the device rack and arrangement use “instrument type + timbre”. The engine name in the table below is the canonical name used in project data and on the engine side; use it when writing scripts, debugging a project, or comparing exports.</p>
+<p>   Preset ID & Left library label & Rack/arrangement label & Engine name \\  <code>synth:hollow</code> & Hollow Pad & Hollow Lead & Hollow Lead \\ <code>synth:organ</code> & Warm Organ & Warm Organ & Warm Organ \\ <code>synth:vocal</code> & Vocal Lead & Choir Pad & Choir Pad \\ <code>synth:metallic</code> & Metallic Pluck & FM Bell & FM Bell \\ <code>synth:glass</code> & Glass Bell & Glass Pluck & Glass Pluck \\ <code>synth:bass</code> & Neuro Bass & Sub Bass & Sub Bass \\  IDs, interface labels, and engine names of the six factory synth presets </p>
+<p>Different labels in different panels are historical UI wording, not different timbres. To determine which preset a track really uses, inspect the device parameters or the preset ID in project data, not a single panel's label.</p>
+<h2>Saving and loading presets</h2>
+<p>The “Native Preset Library” entry in the File menu lists factory-embedded presets and user-library presets. It can apply a preset to the current track and save the current track as a preset. Presets have two scopes:</p>
+<ul>
+<li>Instrument preset (instrument): stores the instrument identity and</li>
+<p>instrument parameters; applying it to another track replaces the instrument.</p>
+<li>Track snapshot (track): stores the device chain, sends, fader,</li>
+<p>pan, mute/solo, and macros; it does not require a portable instrument.</p>
+</ul>
+<p>The interface button “Save current track as preset” uses the instrument-preset path. It requires the current track to be bound to a factory-registered SFZ instrument. Built-in synth tracks and audio tracks have no portable instrument identity and are rejected with the reason shown in the preset panel. To keep a built-in synth track's whole setup as a template, use a track snapshot (<code>scope: "track"</code> in project data) or “Save as Template”, not an instrument preset.</p>
+<p>The six factory synth presets are parameter combinations of built-in timbres, not instrument presets in the user library. They do not appear in the result of “Save current track as preset”, and they do not depend on user-library files.</p>
+<h2>Help-topic mapping for this chapter</h2>
+<p>   Section & In-app help anchor \\  Three signal paths & <code>instrument-signal-flow</code> \\ Tracks and instruments & <code>track-instrument-routing</code> \\ Six factory synthesizer presets & <code>factory-synth-presets</code> \\ Saving and loading presets & <code>preset-save-load</code> \\  Help-topic mapping for Chapter 1</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a> — Sound On Sound techniques: fill in the engineering detail behind synthesis, sampling, and drum programming that this chapter only introduces.</li>
+<li><a href="https://www.yamaha.com/en/musical_instrument_guide/">https://www.yamaha.com/en/musical_instrument_guide/</a> — Yamaha instrument guide: work backward from acoustic construction and sound production to the track–instrument–source layers.</li>
+</ul>
+<nav class="manual-pager"><span></span><a href="02-synth-basics.html">Synthesizer Basics →</a></nav>
+</main></body></html>

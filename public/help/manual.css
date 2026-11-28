@@ -1,0 +1,16 @@
+.manual-page{max-width:46rem;margin:0 auto;padding:2rem 1.25rem 4rem;line-height:1.75}
+.manual-nav{margin-bottom:1.5rem;font-size:.95rem}
+.manual-page h1{font-size:1.9rem;line-height:1.3}
+.manual-page h2{font-size:1.45rem;margin-top:2.2rem}
+.manual-page h3{font-size:1.15rem;margin-top:1.6rem}
+.manual-page pre{overflow-x:auto;padding:1rem;border-radius:.5rem;background:rgba(127,127,127,.12)}
+.manual-page code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}
+.classquote{border-left:3px solid rgba(127,127,127,.5);margin:1.5rem 0;padding:.25rem 0 .25rem 1rem}
+.classquote cite{display:block;text-align:right;font-size:.9rem;opacity:.75}
+.classquote .gloss{font-size:.92rem;opacity:.85}
+.note{border:1px solid rgba(127,127,127,.35);border-radius:.5rem;padding:.75rem 1rem;margin:1rem 0}
+.fig-placeholder{border:1px dashed rgba(127,127,127,.5);border-radius:.5rem;padding:1rem;text-align:center;opacity:.8}
+.manual-pager{display:flex;justify-content:space-between;margin-top:3rem}
+.manual-toc li{margin:.35rem 0}
+.help-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));margin:1.5rem 0}
+.help-card{border:1px solid rgba(127,127,127,.3);border-radius:.75rem;padding:1rem 1.25rem}

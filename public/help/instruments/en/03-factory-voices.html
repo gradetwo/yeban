@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Built-in Factory Voices — Instruments and Synthesizers — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Instruments and Synthesizers</a></nav>
+<h1>Built-in Factory Voices</h1>
+<p></p>
+<blockquote class="classquote"><p>礼云礼云，玉帛云乎哉？乐云乐云，钟鼓云乎哉？</p><cite>《论语·阳货》 / The Analects, Book XVII (Yang Huo)</cite><p class="gloss">Translation: Ritual is not just jade and silk; music is not just bells and drums. Note: a factory preset's name is only an entry point — register, envelope, and placement decide its job in the song.</p></blockquote>
+<p>Yeban's built-in poly synth has six factory presets. They share one engine: two oscillator branches, a four-pole ladder low-pass, and a fixed ADSR; the only difference is the nine parameter values. This chapter walks through each preset with its parameters, typical use, and boundaries, so a preset name is not mistaken for a separate synthesis engine.</p>
+<h2>The common base of the six presets</h2>
+<p>All six use the <code>synth:</code> prefix and are reached from the left sound library and the bottom device rack. The same preset has slightly different labels in the left library and the arrangement; use the preset ID and engine name as the source of truth. center</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>None of the six contains an adjustable ADSR, LFO, modulation matrix, or separate envelope stages. There are only nine parameters:</p>
+<ul>
+<li>Filter: <code>cutoff\_hz</code>, <code>resonance</code>, <code>drive</code>;</li>
+<li>Two oscillator branches: <code>osc1\_wave</code>, <code>osc2\_wave</code>,</li>
+<p><code>osc1\_level</code>, <code>osc1\_detune\_cents</code>, <code>osc2\_level</code>, <code>osc2\_detune\_cents</code>.</p>
+</ul>
+<p>The wavetable index is fixed: 0 = hollow, 1 = organ, 2 = vocal, 3 = metallic, 4 = glass. A branch level of 0 bypasses that branch bit-exactly; detune is in cents with a device range of ±4800. The device clamps cutoff between 20 Hz and 0.45 times the sample rate; resonance and drive are 0–1.</p>
+<h2>Parameter tables for the six presets</h2>
+<p>   Preset & <code>cutoff\_hz</code> & <code>resonance</code> & <code>drive</code> \\  Hollow Lead & 2400 & 0.20 & 0.00 \\ Warm Organ & 1800 & 0.15 & 0.10 \\ Choir Pad & 2200 & 0.25 & 0.00 \\ FM Bell & 4200 & 0.30 & 0.15 \\ Glass Pluck & 3600 & 0.20 & 0.00 \\ Sub Bass & 420 & 0.35 & 0.25 \\  Filter parameters of the six factory presets </p>
+<p>   Preset & <code>osc1\_wave</code> & <code>osc2\_wave</code> & <code>osc1\_level</code> & <code>osc1\_detune</code> & <code>osc2\_level</code> & <code>osc2\_detune</code> \\  Hollow Lead & 0 & 0 & 0.90 & $-4$ & 0.35 & $+5$ \\ Warm Organ & 1 & 1 & 0.80 & $-5$ & 0.60 & $+6$ \\ Choir Pad & 2 & 0 & 0.85 & $-8$ & 0.55 & $+8$ \\ FM Bell & 3 & 4 & 0.85 & $-3$ & 0.50 & $+11$ \\ Glass Pluck & 4 & 4 & 0.85 & $-4$ & 0.45 & $+4$ \\ Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\  Oscillator parameters of the six factory presets; detune in cents </p>
+<figure class="fig-placeholder">[截图见 PDF 版：The preset entry in the bottom device rack is open, all six synth presets are visible, and the current track is a MIDI synth track.]</figure>
+<h3>DX7 and Rhodes: factory voices do not come from nowhere</h3>
+<p>The six presets did not get their names by accident. Real instruments and synths stand behind them; knowing where they come from keeps a preset name from being mistaken for an engine specification.</p>
+<p><strong>The Yamaha DX7 (1983)</strong> used digital FM synthesis: six operators, thirty-two algorithms, and frequency ratios plus feedback between operators to make glass, bells and electric piano. Its E Piano 1 preset brought digital electric piano into a great deal of pop production and took part of the Rhodes market with it. This chapter's FM Bell borrows the “FM” association, but Yeban's built-in engine is not FM: it is a two-oscillator wavetable plus a four-pole ladder low-pass, with no carrier/modulator ratio, FM depth or operator envelope. What you can do is use metallic/glass branches, a 4200 Hz cutoff and a little drive to create a “glass/bell” impression, not to fake the DX7 algorithm table.</p>
+<p><strong>The Fender Rhodes (mass-produced from 1965)</strong> used tines and electromagnetic pickups to turn a strike into a bell-like transient plus a long tail. Its appeal is the grain at attack and the tail, not the words “electric piano”. This chapter's envelope is fixed at 5 ms / 80 ms / 0.7 / 50 ms, so it cannot make the Rhodes tail; to approach it, use a short voice such as Glass Pluck and give the tail to arrangement, reverb or later effects. Do not pretend it is a sampled Rhodes.</p>
+<p><strong>The Hammond and Warm Organ</strong> follow the same rule: Hammond's drawbars, tonewheel and rotary speaker are a complete electromechanical system; Warm Organ is an organ wavetable plus detune, not a drawbar organ. For a real Hammond voice, use a licensed sample or a third-party instrument.</p>
+<p>Factory presets are “listening coordinates”, not “certificates of historical replication”. Ask first how thick, bright and long the scene needs to be, then choose a preset and the parameters to change; the name helps you find a direction, it does not make the judgment for you.</p>
+<h2>Hollow Lead</h2>
+<p>Hollow Lead is the historical default: the first branch uses the hollow table at level 0.90 and −4 cents detune; the second branch also uses hollow at level 0.35 and +5 cents; cutoff 2400 Hz, resonance 0.20, drive 0.</p>
+<p><strong>Use</strong>: soft lead lines and short melodic phrases, or one layer inside a bed. Two branches of the same table, slightly detuned, sound thicker than one branch without turning into a different instrument.</p>
+<p><strong>Boundaries</strong>: it is one synth voice, not a complete chord bed; filling out harmony still needs multiple tracks or arrangement. It has no adjustable ADSR; attack, decay, sustain, and release are fixed at 5 ms / 80 ms / 0.7 / 50 ms.</p>
+<h2>Warm Organ</h2>
+<p>Warm Organ uses the organ table on both branches: the first at level 0.80 and −5 cents; the second at level 0.60 and +6 cents; cutoff 1800 Hz, resonance 0.15, drive 0.10.</p>
+<p><strong>Use</strong>: organ-like sustained tones, chord pads, and passages that need a stable pitch. Both organ branches are open and detuned for thickness; drive 0.10 adds a little harmonic content without changing overall loudness.</p>
+<p><strong>Boundaries</strong>: it has no organ drawbars, rotary speaker, or percussion key control; “Organ” describes a timbre direction. Those effects need separate effects, not a hidden control in this preset.</p>
+<h2>Choir Pad</h2>
+<p>Choir Pad uses vocal on the first branch at level 0.85 and −8 cents; hollow on the second at level 0.55 and +8 cents; cutoff 2200 Hz, resonance 0.25, drive 0.</p>
+<p><strong>Use</strong>: vocal-coloured beds, ambient sections, and harmonic backgrounds. The vocal table supplies the main colour while the hollow branch adds body; the wider detune keeps the two branches from lining up exactly.</p>
+<p><strong>Boundaries</strong>: vocal is a synthesis wavetable, not a sampled choir, and there is no formant, lyric, or phoneme control. The labels “Vocal Lead / Choir Pad” describe a timbre, not a singing synthesizer. For real voices, use audio-track material.</p>
+<h2>FM Bell</h2>
+<p>FM Bell uses metallic on the first branch at level 0.85 and −3 cents; glass on the second at level 0.50 and +11 cents; cutoff 4200 Hz, resonance 0.30, drive 0.15.</p>
+<p><strong>Use</strong>: bright, metallic, bell-like short phrases and accents. Two high tables, a high cutoff, and a little drive produce a bright, hard transient.</p>
+<p><strong>Boundaries</strong>: the “FM” in the name is only preset naming; Yeban's built-in synth is not an FM engine. It is a two-oscillator wavetable synth with a four-pole ladder low-pass, with no carrier/modulator ratio, FM depth, or operator envelope controls. Do not apply an FM synth parameter chart here.</p>
+<h2>Glass Pluck</h2>
+<p>Glass Pluck uses glass on both branches: the first at level 0.85 and −4 cents; the second at level 0.45 and +4 cents; cutoff 3600 Hz, resonance 0.20, drive 0.</p>
+<p><strong>Use</strong>: plucked, glassy, short point-like sounds and bright ornaments. The slight detune between two branches of the same table keeps the pluck from sounding thin.</p>
+<p><strong>Boundaries</strong>: it has no separate pluck decay, string damping, or per-note envelope control; the envelope is still the fixed ADSR. For a shorter or longer tail, use arrangement, note duration, or later effects; there is no pluck-decay control in this preset.</p>
+<h2>Sub Bass</h2>
+<p>Sub Bass uses hollow on the first branch at level 0.95 and 0 cents; organ on the second at level 0.35 and −5 cents; cutoff 420 Hz, resonance 0.35, drive 0.25.</p>
+<p><strong>Use</strong>: low-end foundation, sub bass, and sections that need a heavy bottom. The 420 Hz low-pass removes the highs and leaves the low end; the organ branch adds a little low-mid body.</p>
+<p><strong>Boundaries</strong>: it has no separate sub oscillator, octave switch, or glide control; the low end comes from the low cutoff and the two branch levels. For more complex bass lines, solve it in MIDI arrangement and effects rather than expecting one preset to cover the whole bass design.</p>
+<h2>Preset selection and saving boundaries</h2>
+<p>The six factory presets are parameter combinations of the built-in synth, not instrument presets in the user library. A built-in synth track has no portable instrument identity and cannot be saved as an instrument preset through “Save current track as preset”. To keep a whole-track setup, use a track snapshot or “Save as Template”. Chapter 1 covered this boundary; this chapter does not repeat it in detail.</p>
+<h2>Help-topic mapping for this chapter</h2>
+<p>   Section & In-app help anchor \\  The common base of the six presets & <code>voice-common-base</code> \\ Parameter tables for the six presets & <code>voice-parameter-tables</code> \\ Hollow Lead & <code>voice-hollow-lead</code> \\ Warm Organ & <code>voice-warm-organ</code> \\ Choir Pad & <code>voice-choir-pad</code> \\ FM Bell & <code>voice-fm-bell</code> \\ Glass Pluck & <code>voice-glass-pluck</code> \\ Sub Bass & <code>voice-sub-bass</code> \\ Preset selection and saving boundaries & <code>voice-preset-boundary</code> \\  Help-topic mapping for Chapter 3</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.soundonsound.com/reviews">https://www.soundonsound.com/reviews</a> — Sound On Sound reviews: read reviews of comparable synths and train the name–timbre–use mapping.</li>
+<li><a href="https://www.yamaha.com/en/musical_instrument_guide/">https://www.yamaha.com/en/musical_instrument_guide/</a> — Yamaha instrument guide: compare acoustic and synthesized sound production, and do not treat a preset name as a quality guarantee.</li>
+</ul>
+<nav class="manual-pager"><a href="02-synth-basics.html">← Synthesizer Basics</a><span></span><a href="04-sampling-sfz.html">Sampling and SFZ →</a></nav>
+</main></body></html>

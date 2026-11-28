@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mixing Overview — Mixing — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Mixing</a></nav>
+<h1>Mixing Overview</h1>
+<p></p>
+<blockquote class="classquote"><p>审一以定和，比物以饰节，节奏合以成文。</p><cite>《礼记·乐记》 / The Book of Rites, "Yue Ji" (Record of Music)</cite><p class="gloss">Translation: Set one tone to establish harmony, arrange things to mark the beat, and let rhythm and tempo combine into form. Note: a mix needs a reference and a hierarchy before decoration.</p></blockquote>
+<p>Mixing is not about making every track louder. It is about letting the listener hear what matters at each moment: lead vocal, groove, low end, and space each in its place. This chapter gives Yeban's signal path, monitoring entry points, and a practical mixing order. Individual parameters and effects are covered later.</p>
+<h2>Goals of mixing</h2>
+<p>A mix has to satisfy three things at once:</p>
+<ul>
+<li>Intelligibility: the lead vocal and main melody stay clear and are</li>
+<p>not buried by drums, bass, or reverb.</p>
+<li>Balance: no obvious gap or pile-up in the low, mid, or high range;</li>
+<p>the whole song does not depend on one track to hold it up.</p>
+<li>Control: there is headroom from quiet to loud; the export does not</li>
+<p>clip or collapse on different playback devices.</p>
+</ul>
+<p>“Sounds good” is an aesthetic judgment. “Intelligible, balanced, controlled” are engineering goals that can be checked one by one. Satisfy the latter first, then discuss style.</p>
+<h2>Yeban's signal path</h2>
+<p>In Yeban, each track passes through its own device chain, then its fader and pan, then into an auxiliary bus or the master bus. The master bus sends the final signal to the control room. The device chain's order is the signal-flow order: instrument first, effects after it.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>The mixer console (X / F8) shows each track as a channel strip: fader, pan, mute/solo, and the entry to that track's device chain. The left inspector (I) shows the same track's channel-strip details; it is the same state as the mixer, so a change in one place appears in the other. All tracks finally sum into the master bus.</p>
+<h2>Monitoring: trust meters, then trust your ears</h2>
+<p>The control room (F4, or Mixing $$ Show/Hide Control Room) is a separate master-monitoring area. It shows the master bus's integrated loudness, short-term loudness, and peak reading, and offers DIM ($-20$ dB), MONO, and SIDE ($S=L-R$) audition switches. These switches change only how you monitor; they do not move any track fader. The master fader is still project state, and changes to it are saved.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The mixer console is open with at least three track channel strips; the master fader and meter are visible.]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：The control room is expanded and the integrated/short-term LUFS and peak dBTP readings are visible.]</figure>
+<p>The monitoring environment itself can mislead. Headphone mixing tends to make the low end too heavy; living-room speaker mixing tends to make the high end too bright. Check at least twice: once on your usual monitors, once on another pair of headphones or at another volume. A balance that holds in both is more likely to be real.</p>
+<h2>Reference tracks</h2>
+<p>A reference track is not for copying its melody. It calibrates how loud, bright, and wide this song should be. A practical routine:</p>
+<ol>
+<li>Import the reference with File $$ Import Audio File... into the</li>
+<p>media pool.</p>
+<li>Place it on a separate audio track; do not stack it on the same track as</li>
+<p>your own material.</p>
+<li>Bypass the effects on that reference track so the reference plays as</li>
+<p>close to its source state as possible.</p>
+<li>Read the reference's integrated loudness and peak in the control room and</li>
+<p>note the magnitude. Switch back to your project and compare like with like (chorus against chorus), not the whole song against one section.</p>
+</ol>
+<p>Use the reference only for A/B judgment; it must not enter the final export. Mute or remove the reference track before exporting so it is not rendered with the song.</p>
+<h2>A practical mixing order</h2>
+<p>The order below is not mandatory, but it avoids the rework that comes from adding reverb first and discovering that all the levels are wrong:</p>
+<ol>
+<li>Rough balance: put every track fader at a sensible starting point,</li>
+<p>with no clipping or distortion; solo each track to confirm there is no accidental mute, solo, or missing clip.</p>
+<li>Gain structure: give each track a sensible working level inside its</li>
+<p>own device chain, then use faders for relative balance. The fader decides “who is louder”, not “who fixes distortion”.</p>
+<li>EQ: fix masking and resonances before chasing tone. Usually handle</li>
+<p>low-end conflict and midrange masking first; leave high-end fine-tuning for last.</p>
+<li>Dynamics: add compression, limiting, or gating as needed. Ask what</li>
+<p>problem you are solving before choosing an effect; do not add it because it is available.</p>
+<li>Space: prefer shared reverb and delay on auxiliary buses so several</li>
+<p>tracks share one space; use insert-style space only for close, local effects.</p>
+<li>Automation: write section-to-section changes in volume, pan, sends,</li>
+<p>and effect parameters. Do not make sudden manual changes at section boundaries.</p>
+<li>Bus and finish: check loudness and peak in the control room, do the</li>
+<p>bus processing and pre-export checks, then listen to the exported file, not only the meters inside the project.</p>
+</ol>
+<p>Each step solves one class of problem. If a step makes things worse, undo it before deciding whether to try another method; do not stack more effects on top of an unresolved step.</p>
+<h2>Exercise</h2>
+<aside class="note">
+<ol>
+<li>Take an 8-bar section and run the order “rough balance $$ gain structure $$ EQ $$ dynamics $$ space $$ automation $$ bus finish”; record one decision per step.</li>
+<li>Use the same reference track in the control room under normal, DIM, MONO, and SIDE; write at least three differences. Do not judge your level by the reference's loudness.</li>
+<li>Put the seven-step order in a project note; if a step was skipped, write why. Do not leave it blank.</li>
+</ol>
+</aside>
+<h2>Help-topic mapping for this chapter</h2>
+<p>   Section & In-app help anchor \\  Goals of mixing & <code>mixing-goals</code> \\ Yeban's signal path & <code>mixing-signal-flow</code> \\ Monitoring: trust meters, then trust your ears & <code>mixing-monitoring</code> \\ Reference tracks & <code>mixing-reference-track</code> \\ A practical mixing order & <code>mixing-workflow</code> \\  Help-topic mapping for Chapter 1</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a> — Sound On Sound techniques: fill in the overview judgment behind mixing, mastering, and monitoring.</li>
+<li><a href="https://www.izotope.com/en/learn.html">https://www.izotope.com/en/learn.html</a> — iZotope Learn: use visual frequency and dynamics examples to build the habit of hearing the problem before touching a control.</li>
+</ul>
+<nav class="manual-pager"><span></span><a href="02-gain-structure.html">Gain Structure →</a></nav>
+</main></body></html>

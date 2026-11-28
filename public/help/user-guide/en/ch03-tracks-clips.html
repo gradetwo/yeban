@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tracks and Clips — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Tracks and Clips</h1>
+<p></p>
+<blockquote class="classquote"><p>方以类聚，物以群分。</p><cite>Book of Changes, “Appended Judgments I” (《周易·系辞上》)</cite><p class="gloss">Translation: “Things gather according to their kind; creatures divide according to their group.” Tracks and clips find their place by kind; clear grouping is what makes editing orderly.</p></blockquote>
+<p>The arrangement area is Yeban's main workspace: tracks as rows, clips laid out on the timeline to their right. This chapter covers creating tracks, placing clips and turning a piece of material into the arrangement you want.</p>
+<h2>Track Types and the Track Header</h2>
+<h3>Three track types</h3>
+<p>The Track menu offers three creation entries:</p>
+<ul>
+<li><strong>New MIDI Synth Track (Cmd/Ctrl+N)</strong>: sounds via a built-in synthesizer or plugin instrument, holding MIDI clips.</li>
+<li><strong>New Audio Track</strong>: holds recorded or imported audio clips.</li>
+<li><strong>New Aux Bus Track</strong>: receives sends from other tracks for summing and group processing.</li>
+</ul>
+<p>Delete Selected Track removes the selected track from the menu.</p>
+<h3>The track header</h3>
+<p>Each track's left side is the header: name, mute/solo switches, volume, and the Track Menu button at the very front (collecting that track's operations). Mute silences the track; solo listens only to it; both can also be operated in the mixer console (Chapter 7).</p>
+<figure class="fig-placeholder">[截图见 PDF 版：Close-up of a track header labelling the Track Menu button, name, mute/solo and volume]</figure>
+<h2>Create, Move, Copy and Split Clips</h2>
+<h3>Create a clip</h3>
+<p>Once a clip is created on a track it appears on the timeline. Its content depends on the track type: notes on a MIDI track (written in the piano roll, Chapter 4), audio material on an audio track. An empty MIDI clip defaults to four bars, its tick length derived from the project's time signature; if the time signature is invalid the app reports “invalid time signature, cannot compute clip length” instead of inventing a length.</p>
+<h3>Move, resize and cut/copy/paste</h3>
+<ul>
+<li><strong>Move</strong>: drag to reposition; drag either edge to resize.</li>
+<li><strong>Copy / Paste / Cut</strong>: Cmd/Ctrl+C, Cmd/Ctrl+V, Cmd/Ctrl+X, matching the Edit menu group.</li>
+<li><strong>Split</strong>: select a clip and press Cmd/Ctrl+T to cut it at the playhead.</li>
+</ul>
+<p>Dragging previews the destination before you release; you can cancel mid-drag without leaving a half-finished state.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Common clip flow: create $$ place $$ copy $$ split $$ write notes </p>
+<h2>Stretch, Merge and Multi-select Editing</h2>
+<p>Dragging a clip's edge changes only its time span, not the pitch or relative timing of its notes (for audio, it changes the playback range). To join adjacent clips into one continuous piece, align their boundaries first, then merge; the two clips become one and undo restores them.</p>
+<p>With several clips selected, copy, cut and delete apply to the whole group. If only part of a group is selected, the operation follows the selection and does not touch unselected clips.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：Three clips selected in the arrangement area with a group-drag preview]</figure>
+<h2>Clip Parameters and the Clip Launch Matrix</h2>
+<p>Selecting a clip shows its identity (name, owning track) and editable parameters in the inspector/clip parameter area. Press Tab to open the <strong>Clip Launch Matrix</strong> (Session view): the interface becomes a grid of clips; click a cell to fire that clip, which suits live launching and improvised arrangements. F5 also switches to Session view; F6 returns to the Arrangement view.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The Clip Launch Matrix with cells arranged by track, one cell firing]</figure>
+<h2>Cross-track Drag and Track Change</h2>
+<p>In the current version, dragging a clip changes only its horizontal position within the same track. Moving a clip from one track to another is still in evolution (work item T-FIX-209). So do not treat “drag onto another track” as available: to place material on another track, copy/paste it onto the target track and delete the original until the capability officially lands. Yeban does not disguise an unimplemented operation as a success.</p>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  Track types / track header & <code>tracks-types-header</code> \\ Create clips & <code>clips-create</code> \\ Move, resize, cut/copy/paste & <code>clips-move-resize</code> \\ Merge and multi-select editing & <code>clips-merge-multiselect</code> \\ Clip parameters / launch matrix & <code>clips-launch-matrix</code> \\ Cross-track drag and track change & <code>clips-cross-track</code> \\ </p>
+<p>What you will be able to do Create the three track types, lay out and cut clips, fire clips from the Launch Matrix, and know which cross-track operations are not yet available.</p>
+<p>Hands-on exercise Create a MIDI synth track and an audio track; create a four-bar MIDI clip, copy it into a two-bar loop and split it at the playhead with Cmd/Ctrl+T; press Tab for Session view and fire a cell; press F6 to return to Arrangement and verify the clips are still there.</p>
+<nav class="manual-pager"><a href="ch02-projects.html">← Projects</a><span></span><a href="ch04-piano-roll.html">The Piano Roll →</a></nav>
+</main></body></html>

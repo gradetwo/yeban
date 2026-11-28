@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>均衡（EQ） — 混音手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">混音手册</a></nav>
+<h1>均衡（EQ）</h1>
+<p></p>
+<blockquote class="classquote"><p>八音克谐，无相夺伦，神人以和。</p><cite>《尚书·舜典》</cite><p class="gloss">简注：八类声音各安其位、不互相抢次序，才能和谐；EQ 调的是频段的相对关系，不是把每一轨都提亮。</p></blockquote>
+<p>均衡不是“把声音调好听”的万能旋钮，而是<strong>改变不同频率的相对电平</strong>。同一段素材，削掉 300 Hz 的堆积和抬高 3 kHz 的亮度，听感会完全不同；但两者都不能代替正确的电平、声像和演奏。本章先建立频段地图，再讲夜半的三段塑形 EQ 能做什么、不能做什么。</p>
+<h2>频段地图与掩蔽</h2>
+<p>人耳可听范围约 20 Hz–20 kHz。混音里常把它分成几段看，但分段不是硬边界，相邻频段始终互相影响：</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>低频给重量与根基，低中频给 body，中频承载旋律与语言，中高区决定“ presence/清晰度”，高频决定空气感。两个音源在同一频段都很响时会发生<strong>掩蔽</strong>：人耳更注意较响的那个，另一个即使电平不低也会“消失”。EQ 的第一价值是减少这种争夺，不是给每轨加一个好看的曲线。</p>
+<h2>先减法，再加法</h2>
+<ol>
+<li><strong>先找多余的</strong>：扫频时先大幅提升一个窄段，找到“变浑/变刺”的位置，再反过来衰减。提升只是探针，最终曲线通常以衰减为主。</li>
+<li><strong>再补缺失的</strong>：只有在减法之后仍缺重量或空气感时，才小幅提升；提升会同时抬高该段所有声音，包括噪声与齿音。</li>
+<li><strong>每步都回听整体</strong>：单轨独奏好听不等于在整体里成立。每次改动后回到全混，检查其他元素是否被推远。</li>
+</ol>
+<p>扫频的常用做法：把中频增益临时推到 +9–12 dB，缓慢移动中心频率，听到“最难受”的点就停；然后把增益拉回 0 并向下衰减 2–4 dB。夜半当前没有独立 Q 旋钮，新装 EQ 的中频 Q 为默认 0.9；曲线拖动只改增益与中心频率，不改 Q。所以“窄扫”在本机架上做不到像专用均衡器那样收窄，探针会比理想状态宽一些，判断时要以整体听感为准，不要死盯一个频点。</p>
+<h2>夜半的三段塑形 EQ</h2>
+<p>在设备机架点“装 EQ”，会在当前轨的设备链上插入一台三段塑形 EQ。它由三级串联的 RBJ biquad 组成：低架、中频峰值、高架。某一段增益为 0 dB 时，该段在数学上是恒等变换；三段都为 0 dB 时，整台 EQ 是真正的旁通，不是“接近旁通”。</p>
+<p>   参数 & 作用 & 范围 & 默认 \\  <code>eq\_low\_gain</code> & 低架增益 & $-18$–$+18$ dB & 0 dB \\ <code>eq\_low\_freq</code> & 低架转折 & 20–1000 Hz & 200 Hz \\ <code>eq\_mid\_gain</code> & 中频峰值增益 & $-18$–$+18$ dB & 0 dB \\ <code>eq\_mid\_freq</code> & 中频中心 & 200–8000 Hz & 1000 Hz \\ <code>eq\_mid\_q</code> & 中频品质因数 & 0.3–6 & 0.9 \\ <code>eq\_high\_gain</code> & 高架增益 & $-18$–$+18$ dB & 0 dB \\ <code>eq\_high\_freq</code> & 高架转折 & 1000–16000 Hz & 4000 Hz \\  夜半三段塑形 EQ 的参数契约 </p>
+<p>设备机架中央的频响图是<strong>真实参数</strong>算出的响应，不是装饰曲线。横轴为 20 Hz–20 kHz 对数刻度，纵轴为 $18$ dB，中线是 0 dB。图上的无障碍标签仍写着“4 段 EQ 频响曲线”，但当前代码契约与实现都是三段：低架、一个中峰、高架；没有第四段，也没有可拖出的第四个点。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：当前轨已装 EQ，设备机架中央显示频响曲线，低架增益滑块可见，曲线不是平线。]</figure>
+<h2>在曲线上拖动</h2>
+<p>频响图不只是显示，它是一块可拖动区域。拖动位置会同时写两个参数：本段的增益和本段的频率。</p>
+<p>   横向位置 & 写入的增益 & 同时写入的频率 \\  左 1/3（$x<0.333$） & <code>eq\_low\_gain</code> & <code>eq\_low\_freq</code> \\ 中 1/3（$0.333 x<0.667$） & <code>eq\_mid\_gain</code> & <code>eq\_mid\_freq</code> \\ 右 1/3（$x0.667$） & <code>eq\_high\_gain</code> & <code>eq\_high\_freq</code> \\  频响图拖动落点 </p>
+<p>纵向以中线为 0 dB，向上向下各到 $18$ dB；增益按 0.1 dB 取整。横向按 $2010^{3x}$ Hz 求频率，再夹到该段的合法范围。也就是说，曲线最左端不会低于 20 Hz，低段拖到中段边界时频率最多 1000 Hz；中段最多 8000 Hz；高段最多 16000 Hz。曲线拖动<strong>不改</strong> <code>eq\_mid\_q</code>，Q 保持默认或文件里已有的值。</p>
+<p>低架增益还有一个独立的滑块（<code>eq\_low\_gain</code>），它只改增益、不改转折频率。日常修低频堆积时用滑块更直接；需要同时移动低架转折点时再用曲线左段。主总线也可以装 EQ，并提供同样的低架增益滑块；主总线的处理影响整个工程，动之前先把展示轨的 EQ 调好。</p>
+<h2>常见频段处理</h2>
+<p>   频段 & 常见问题 & 处理方向 \\  20–60 Hz & 次低频，太多会闷、吃余量 & 高通或低架衰减；先确认监听能听到 \\ 60–250 Hz &  bass 与 kick 的根基，堆积会“轰” & 低架小幅衰减，或让各轨错开 \\ 250–500 Hz & 低中频“纸箱感” & 窄衰减 2–3 dB，别把 body 削空 \\ 500 Hz–2 kHz & 旋律与语言的核心，过多会“电话音” & 先查编曲重叠，再小幅衰减 \\ 2–5 kHz &  presence，过多会刺、齿音重 & 中峰小幅衰减；提升要非常克制 \\ 5–10 kHz & 清晰度与齿音 & 高架微调，配合齿音处理 \\ 10 kHz+ & 空气感 & 高架小幅提升；噪声也会一起抬高 \\  常见频段问题与处理方向 </p>
+<p>这些数字是起点，不是处方。真正要听的是“这个音源在整体里是否还需要占这么多空间”。如果两轨在同一段互相掩蔽，优先用声像、电平、编曲错位解决；EQ 只是其中一件工具。</p>
+<h2>边界与常见错误</h2>
+<ul>
+<li><strong>不要用 EQ 修削波</strong>：EQ 提升会改变峰值，削波要在增益结构和动态处理里解决。</li>
+<li><strong>不要每轨都抬高频</strong>：叠加后整体会刺；高频提升要按整体预算分配。</li>
+<li><strong>不要只看曲线</strong>：曲线平不代表好听，曲线弯也不代表错；以全混回听为准。</li>
+<li><strong>多台 EQ 的曲线只画第一台</strong>：设备机架的频响图跟随链上第一台带 EQ 参数的设备；链上装第二台 EQ 时，第二台的参数仍在处理，但图上不一定显示。</li>
+<li><strong>主总线 EQ 影响全局</strong>：主总线上的低架增益会作用于整个工程，不要在单轨问题时先动主总线。</li>
+<li><strong>界面没有 Q 旋钮</strong>：中频 Q 在参数契约里存在，但当前机架没有独立 Q 控件；需要更窄/更宽的频带时，现有界面做不到，不要假装拖动曲线能改 Q。</li>
+</ul>
+<h2>练习</h2>
+<aside class="note">
+<ol>
+<li>选一条人声或贝斯，把中频探针临时推到 $+9$ dB，在 250--500 Hz 找最“浑浊”的点；拉回 0 后做 2--3 dB 衰减。</li>
+<li>再把探针移到 2--5 kHz 找最“刺耳”的点；做 1--2 dB 衰减，不叠加高频提升。</li>
+<li>回到全混比较“独奏好听”和“整体好听”；如果整体变薄，把衰减减半。记录最终曲线与听感。</li>
+</ol>
+</aside>
+<h2>帮助主题映射</h2>
+<p>   小节 & 应用内帮助锚点 \\  频段地图与掩蔽 & <code>eq-frequency-map</code> \\ 先减法，再加法 & <code>eq-subtract-first</code> \\ 夜半的三段塑形 EQ & <code>eq-three-band</code> \\ 在曲线上拖动 & <code>eq-curve-drag</code> \\ 常见频段处理 & <code>eq-common-bands</code> \\ 边界与常见错误 & <code>eq-boundaries</code> \\  第 3 章帮助主题映射</p>
+<h2>延伸阅读</h2>
+<ul>
+<li><a href="https://www.izotope.com/en/learn.html">https://www.izotope.com/en/learn.html</a>——iZotope 学习库：按频率图与实例补足 EQ 的判断，不把“提亮”当成万能解。</li>
+<li><a href="https://www.soundonsound.com/reviews">https://www.soundonsound.com/reviews</a>——Sound On Sound 评测库：读均衡器与监听设备的评测，训练频段与听感之间的对应。</li>
+</ul>
+<nav class="manual-pager"><a href="02-gain-structure.html">← 增益结构</a><span></span><a href="04-dynamics.html">动态处理 →</a></nav>
+</main></body></html>

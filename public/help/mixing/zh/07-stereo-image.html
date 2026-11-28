@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>声像与立体声 — 混音手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">混音手册</a></nav>
+<h1>声像与立体声</h1>
+<p></p>
+<blockquote class="classquote"><p>有无相生，难易相成，长短相形，高下相倾，音声相和，前后相随。</p><cite>《老子·第二章》</cite><p class="gloss">简注：有与无、长与短、高与下都互相定义；声像也是关系，左声道的意思要靠右声道来成立。</p></blockquote>
+<p>声像回答“这个声音放在左边还是右边”，立体声宽度回答“这个声音的两侧张得多开”，单声道兼容回答“左右相加以后还剩多少”。三件事经常被混成一个“声场”旋钮，但夜半里它们不在同一层：轨道声相在源侧，宽度在通道条的 M/S 级，低频收窄在通道条的 mono-maker，单声道检查在控制室监听段。本章按这四层写，并把没有提供的控件明确标出来。</p>
+<h2>先分清三层声像</h2>
+<p>夜半的声像不是一个全局旋钮，而是三套各自独立的参数：</p>
+<p>   层 & 参数/入口 & 作用范围与边界 \\  轨道 & <code>TrackV3.pan</code>，混音台每轨的声相格 & $-1$–$+1$；所有轨、总线与主总线各有一份；可写 <code>TrackPan</code> 自动化 \\ 通道条 & <code>strip\_width</code>、<code>mono\_below\_hz</code>、<code>ms\_mid\_*</code> & 只在这条轨挂了通道条器件时存在；不是推子旁的宽度旋钮 \\ SFZ 区域 & 区域里的 <code>pan</code>、<code>width</code>、<code>position</code> & 只对采样器区域生效；只写在 SFZ 文件里，界面不提供编辑 \\  夜半的三层声像参数 </p>
+<p>轨道声相是“把整条轨往左或往右推”；通道条宽度是“把这条轨的左右分量拉开或合拢”；SFZ 区域声像是“这件采样里的某一片区域本来摆在哪儿”。三者可以叠加，但不要指望其中一个去完成另一个的活。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：混音台选中一条轨，声相格显示 C 或 L50/R50；推子与声相值可见。]</figure>
+<h2>轨道声相与四种衰减律</h2>
+<p>轨道声相的有效域是 $-1$–$+1$，$-1$ 全左、$0$ 居中、$+1$ 全右。界面把千分位整数换成 <code>C</code>、<code>L50</code>、<code>R50</code> 这样的读数：居中显示 <code>C</code>，负值是 <code>L</code> 加整数百分比，正值是 <code>R</code> 加整数百分比。混音台推子旁的声相格、检查器与编排轨共用同一个值。</p>
+<p>声相不是简单地把左声道乘一个数、右声道乘另一个数；它按工程级 <code>audio\_config.pan\_law</code> 选一条衰减律。夜半有四种：</p>
+<p>   序列化名 & 曲线 & 曲线中心（未走恒等规则） & 中心电平 \\  <code>Linear</code> & $L=1-p$，$R=p$，$p=(pan+1)/2$ & $(0.5,0.5)$ & $-6.02$ dB \\ <code>ConstantPower Minus3dB</code> & $L=$，$R=$ & $(2/2,2/2)$ & $-3.01$ dB \\ <code>ConstantPower Minus4\_5dB</code> & $L=^{}$，$R=^{}$ & $(0.5957,0.5957)$ & $-4.50$ dB \\ <code>ConstantPower Minus6dB</code> & $L=^2$，$R=^2$ & $(0.5,0.5)$ & $-6.02$ dB \\  四种声相衰减律；$=(pan+1)/4$，$=0.45/_{1021.4948677$} </p>
+<p>默认是 <code>ConstantPower Minus3dB</code>。它保证左右能量的平方和恒为 1，扫声相时总能量不塌；线性律保证左右振幅和恒为 1，扫到中间会掉 6 dB；$-4.5$ dB 与 $-6$ dB 是另外两档等功率曲线。工程字段可以直接写上面四个序列化名，但当前界面没有“声相定律”选择器；要改只能直接改工程 JSON 的 <code>audio\_config.pan\_law</code>，当前 MCP 也没有这个写入入口。</p>
+<h3>中心恒等，以及 3 dB 台阶</h3>
+<p>夜半在“居中”这一点的落点不是曲线中心，而是恒等：</p>
+<p><code>centered\_pan\_gains(pan, law)</code>： $<code>pan</code>=0$ 或非有限 $ (1.0,1.0)$；否则走 <code>pan\_gains</code>。</p>
+<p>也就是说，轨道读数为 <code>C</code> 时，左右都不乘任何增益，监听与导出逐位一致；一旦离开中心，就落到所选律的曲线上。对默认的 $-3$ dB 律，$pan=$ 的左右各约 $0.7071$，比中心低 $3.01$ dB；线性律的这个台阶是 $6.02$ dB，$-4.5$ dB 律约 $4.50$ dB，$-6$ dB 律约 $6.02$ dB。这是夜半的既有口径，不是笔误：中心必须与离线导出的“未动过声相”逐位对齐，代价就是中心与极小非零值之间有一个听得出的台阶。</p>
+<p>界面读数按千分之一四舍五入，所以极小的非零声相可能显示成 <code>C</code>，处理却已经走了曲线。不要用“显示 C”反推“处理一定恒等”；要精确复位，把值真正写回 $0$。</p>
+<h3>轨道、总线与自动化</h3>
+<p>轨道、辅助总线与主总线各有一份 <code>pan</code>，都走同一条 <code>centered\_pan\_gains</code>。主总线声相不是“总输出的平衡”或“总增益”，它只是把整首混音在左右之间移动；不要用它去修某件乐器的位置。</p>
+<p>声相可以写 <code>TrackPan</code> 自动化泳道。存在自动化时，该轨的静态 <code>pan</code> 被自动化值取代，逐样本按 5 ms 时间常数平滑；没有自动化时才用静态值。声相自动化的读法与画法见自动化一章，本章不重复。</p>
+<h2>宽度：通道条的 M/S 缩放</h2>
+<p>夜半没有“每轨宽度”推子，也没有一个叫 <code>width</code> 的轨道参数。真正的宽度在通道条器件里，参数名是 <code>strip\_width</code>（别名 <code>channel\_width</code>），范围 $0.0$–$2.0$，默认 $1.0$：</p>
+<p>   参数 & 含义 & 范围 & 默认 \\  <code>strip\_width</code> & M/S 宽度缩放；$1$ 原样、$0$ 单声道、$2$ 加倍 & 0.0–2.0 & 1.0 \\ <code>mono\_below\_hz</code> & mono-maker 转折；$0$ 旁通 & 0–1000 Hz & 0 \\ <code>ms\_mid\_gain\_db</code> & 只加在 mid 上的峰值增益 & $-60$–$24$ dB & 0 \\ <code>ms\_mid\_freq\_hz</code> & M/S 中频峰值中心 & 100–12000 Hz & 2000 \\  通道条的宽度与 M/S 参数 </p>
+<p>宽度级的做法是：</p>
+<p><code>mid = 0.5(L+R)</code>； <code>side = 0.5(L-R) * strip\_width</code>； <code>(L,R) = (mid+side, mid-side)</code>。</p>
+<p>$1.0$ 时整级逐位跳过——不做 M/S 往返，因为 $f32$ 的 $(m+s)+(m-s)$ 不保证逐位等于 $2m$。$0.0$ 时 side 被乘成 0，两个声道都只剩 mid，整条轨变成单声道；$2.0$ 时 side 加倍，左右差异被夸大，听感更宽，但中心与低频的相位关系不变。宽度不改变 mid，所以人声/底鼓的中心不会跟着左右跑。</p>
+<p>宽度级在通道条里的位置是：输入增益 → 低切 → EQ → 动态 EQ → 滤波器 → 压缩器 → <strong>宽度</strong> → M/S 中频 → mono-maker → 输出增益。它只在这条轨挂了通道条时存在；没有通道条，就没有 <code>strip\_width</code>。界面没有宽度旋钮，设备卡只显示已识别参数与曲线；要改宽度，走 MCP 的 <code>setParam</code>，把 <code>lane</code> 设成 <code>DeviceParam</code>，按名写 <code>strip\_width</code>，或者直接改工程里的设备参数。当前版本<strong>尚未提供</strong>轨道级宽度旋钮、以“宽度”命名的独立自动化泳道与宽度计量表；要自动化宽度，走 <code>DeviceParam</code> 泳道。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：F9 设备机架选中带通道条的轨；设备卡显示已识别参数摘要与曲线，没有宽度旋钮。]</figure>
+<h2>低频收窄：mono-maker</h2>
+<p><code>mono\_below\_hz</code> 是通道条里专门收低频 side 的一级，范围 $0$–$1000$ Hz，默认 $0$（旁通）。它的语义是：</p>
+<p><code>mid</code> 不动； <code>side</code> 过一只二阶 Butterworth 高通； 再合成回左右。</p>
+<p>它不是砖墙分频：$120$ Hz 转折时，$60$ Hz 的 side 约 $-12$ dB，$30$ Hz 约 $-24$ dB，$240$ Hz 以上基本不动。所以它做的是“低频钉在中间”，不是“$120$ Hz 以下绝对单声道”。要全频段单声道，把 <code>strip\_width</code> 拉到 $0$，不要指望 mono-maker。</p>
+<p>mono-maker 在宽度之后：宽度先把整条 side（含低频）缩放，mono-maker 再把低频 side 切掉。顺序反过来会得到不同的残余低频，不要互换。它同样只存在于通道条里；没有通道条就没有这个参数。</p>
+<h2>M/S 中频：只动中心，不动两侧</h2>
+<p><code>ms\_mid\_gain\_db</code> 是一个只加在 mid 上的峰值均衡，范围 $-60$–$24$ dB，默认 $0$（旁通）；中心频率 <code>ms\_mid\_freq\_hz</code> 范围 $100$–$12000$ Hz，默认 $2000$ Hz，Q 固定 $0.9$。它和普通 EQ 的中频不是一回事：普通 <code>eq.mid\_*</code> 是全带宽的，抬 3 kHz 会同时抬 side 里的镲片与混响尾巴；M/S 中频只抬中心，让主唱/主旋律更靠前，两侧不跟着亮。$0$ dB 时连 M/S 往返都不做，逐位透明。</p>
+<p>它不是宽度，也不是单声道兼容工具；不要用“抬 mid”去代替 mono-maker，那只会让中心更响，不会让低频 side 消失。</p>
+<h2>SFZ 区域里的声像族</h2>
+<p>SFZ 区域可以写三个声像参数，单位都是百分比：</p>
+<p>   SFZ 参数 & 含义 & 范围 & 默认 \\  <code>pan</code> & 区域声相；单声道样本即定位，立体声样本是平衡 & $-100$–$100$ & 0 \\ <code>width</code> & 立体声宽度；$100$ 原样、$0$ 合单声道、负值左右互换 & $-100$–$100$ & 100 \\ <code>position</code> & 在宽度之后移动整个声像 & $-100$–$100$ & 0 \\  SFZ 区域的声像族参数 </p>
+<p>顺序是 <code>pan</code> → <code>width</code> → <code>position</code>。<code>width</code> 与 <code>position</code> 只对立体声样本生效；单声道样本的声部不进这条分声道通路，写了也不施加。缺省组合（<code>width=100</code>、<code>position=0</code>）逐位短路，不产生浮点运算。三个值都在装载期钳到 $-100$–$100$，越界记 <code>ClampedStaticValue</code> 告警。</p>
+<p>夜半能读单声道与双声道样本文件，但界面没有 SFZ 区域声像编辑器；这些值只写在 SFZ 文件里。当前版本<strong>尚未提供</strong>图形化的区域 <code>pan</code>/<code>width</code>/<code>position</code> 编辑。</p>
+<h2>单声道兼容检查</h2>
+<p>单声道兼容不是一条插件，而是控制室监听段的一组开关。按 F4 打开监听控制室与响度计，面板右侧有 <code>DIM</code>、<code>MONO</code>、<code>SIDE</code> 三个按钮；下坞主控条上也有一个 <code>MONO</code>，它和控制室是同一个布尔，不是两份状态。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：F4 监听控制室；DIM/MONO/SIDE 按钮可见，MONO 或 SIDE 处于点亮态。]</figure>
+<p>   开关 & 处理 & 用途 & 边界 \\  <code>MONO</code> & 两声道都写 $(L+R)/2$ & 检查左右相加是否互消、低频是否变薄 & 只改监听，不改导出 \\ <code>SIDE</code> & 两声道都写 $L-R$ & 只听差信号，检查混响/宽声源的侧面 & 只改监听，不改导出 \\ <code>DIM</code> & 两声道各乘 $0.1$（$-20$ dB） & 临时降监听电平 & 只改监听，不改导出 \\  控制室监听开关 </p>
+<p>三个开关的顺序是契约：<strong>先 SIDE、后 MONO、最后 DIM</strong>。所以 <code>SIDE</code> 与 <code>MONO</code> 同时开，听到的仍是差分信号，不是静音；如果先 MONO 再 SIDE，$(L+R)/2$ 的左右相减会得 0，那是错的，夜半没有这样做。三个都关时整段跳过，一个样本都不碰。</p>
+<p>检查步骤：</p>
+<ol>
+<li>正常监听，记下人声、底鼓、贝斯在中心的位置；</li>
+<li>按 <code>MONO</code>，听人声是否变薄、底鼓是否掉低频、混响是否突然变大；若某件乐器在单声道里明显消失，说明它的能量主要靠左右差异撑着；</li>
+<li>按 <code>SIDE</code>，确认差信号里没有你想留在中心的干声；<code>SIDE</code>+<code>MONO</code> 同时开仍是差信号，不会静音；</li>
+<li>关掉 <code>MONO</code>/<code>SIDE</code>，回到正常监听；需要降电平再点 <code>DIM</code>。</li>
+</ol>
+<p>夜半当前<strong>尚未提供</strong>自动单声道兼容扫描、左右相关性表、相位互消告警与“单声道折叠前后差分”计量。<code>MONO</code> 是手动监听开关，不是分析器；它不会告诉你“这条轨在单声道里少了 3 dB”，只能靠耳朵判断。导出文件也不经过这三个开关，所以不要在 <code>MONO</code> 打开时判断导出电平。</p>
+<h2>常见误区</h2>
+<p>   误区 & 实际口径 \\  “声相就是宽度” & 声相移动整条轨；宽度只缩放 side，mid 不动 \\ “推到中间就是 0 dB” & 中心恒等是 $0$ dB，离开中心立刻落到曲线，默认律有 $3.01$ dB 台阶 \\ “宽度 0 和 mono-maker 120 Hz 一样” & 宽度 0 是全频段单声道；mono-maker 只按二阶斜率压低频 side \\ “SFZ 里写了 width 就一定听得到” & 只对立体声样本生效；单声道样本不施加 \\ “MONO 打开后导出也是单声道” & 监听开关不进导出；导出走旁通 \\ “通道条宽度可以像推子一样拖” & 当前没有宽度旋钮；只能走设备参数/MCP 或工程文件 \\  声像与立体声的常见误区 </p>
+<h2>练习</h2>
+<aside class="note">
+<ol>
+<li>把一条轨的声相从 <code>C</code> 移到 <code>L50</code>，再移到 <code>R50</code>；在每次移动后回到全混，听中心与两侧的变化。</li>
+<li>把声相写回真正的 $0$，确认界面显示 <code>C</code>；不要用“显示 C”推断处理一定恒等。</li>
+<li>用控制室 MONO/SIDE 检查这条轨；记录单声道下损失了什么，不要用监听电平判断导出。</li>
+</ol>
+</aside>
+<h2>本章与帮助主题的映射</h2>
+<p>   本章小节 & 应用内帮助锚点 \\  三层声像 & <code>stereo-layers</code> \\ 轨道声相与四种衰减律 & <code>track-pan-laws</code> \\ 中心恒等与台阶 & <code>pan-center-identity</code> \\ 宽度与 M/S 参数 & <code>channel-strip-width</code> \\ mono-maker & <code>mono-maker</code> \\ SFZ 区域声像族 & <code>sfz-pan-family</code> \\ 单声道兼容检查 & <code>mono-compatibility</code> \\ 常见误区 & <code>stereo-mistakes</code> \\  第七章帮助主题映射 </p>
+<h2>延伸阅读</h2>
+<ul>
+<li><a href="https://www.izotope.com/en/learn.html">https://www.izotope.com/en/learn.html</a>——iZotope 学习库：看声像、宽度与单声道兼容的图示，补足左右关系的判断。</li>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a>——Sound On Sound 技术栏目：对照真实混音的声像布置，理解宽度不是越大越好。</li>
+</ul>
+<nav class="manual-pager"><a href="06-modulation-coloration.html">← 调制与染色效果</a><span></span><a href="08-automation.html">自动化混音 →</a></nav>
+</main></body></html>

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mixer Overview — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Mixer Overview</h1>
+<p></p>
+<blockquote class="classquote"><p>八音克谐，无相夺伦。</p><cite>Book of Documents, “Canon of Shun” (《尚书·舜典》)</cite><p class="gloss">Translation: “Let the eight sounds harmonize, without one usurping another’s place.” Mixing lets tracks coexist without masking each other; the whole matters more than any single sound.</p></blockquote>
+<p>This chapter follows a signal from a track to the master bus: what a channel strip holds, in what order inserts take effect, how sends and buses are wired, and where to watch master monitoring and loudness. Individual effect parameters are out of scope.</p>
+<h2>Channel Strips and Insert Chains</h2>
+<h3>Open the mixer console</h3>
+<p>Press X, or switch to the mixer console in the bottom dock (F8 is also a direct key). Each track has one channel strip: its volume fader at the top, pan, mute/solo, and the entry to that track's device chain. All tracks eventually sum into the master bus.</p>
+<p>Mix $$ Reset Master Fader to 0dB zeroes the master fader in one step — that is a shortcut for the master bus and does not touch any track fader. The left inspector (I) shows the same channel-strip details for the selected track; it is the same state as the mixer, so changes in either place agree.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The mixer console in full, labelling channel strips, faders, mute/solo and the master bus]</figure>
+<h3>Device chain: instruments first, effects after</h3>
+<p>Each track has a device chain: instruments first, effects after, and the order is the signal-flow order. The bottom Device Rack tab (F9) lets you add/remove devices and toggle bypass; bypass is per-device and is not the same as deleting a device.</p>
+<p>The Track menu can insert three common devices directly into the current track: Parametric EQ (frequency shaping), Spatial Reverb (a sense of space) and Dynamic Compressor (taming dynamics, bringing a sound forward). Device parameters can be automated: expand an automation lane in the arrangement area (A) and parameter-over- time changes are recorded with the project and applied on export (Chapter 6).</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Signal order: instrument $$ inserts (chain order) $$ fader/pan $$ master bus </p>
+<h2>Sends, Buses and the Control Room</h2>
+<h3>Sends and aux buses</h3>
+<p>A send routes a copy of one path's signal to another path; an aux bus track (Track $$ New Aux Bus Track) receives those sends for summing or group processing. Sends can be created and removed from the interface and their gain adjusted; when creation conditions are not met, the interface states the reason rather than failing silently.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The sends area on a channel strip showing destination buses, gain and create/remove entries]</figure>
+<h3>Control Room</h3>
+<p>Mix $$ Show/Hide Control Room (shortcut F4) opens a separate master-monitoring area: master-bus level and loudness readings, letting you set overall volume without touching any track fader. It is distinct from the bottom mixer console: the former governs "what you hear overall", the latter "how each track is balanced".</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The Control Room panel showing master-bus level and loudness readings]</figure>
+<h2>Division of Labour with the Mixing Manual</h2>
+<p>This chapter is an overview only: where to find controls, roughly how a signal flows, and how sends and buses are wired. Each effect's parameters, ranges and typical uses belong to the separate Mixing and Effects manual, which documents them against real parameter names in the code. The two agree in approach: this chapter says "where", that volume says "how to adjust".</p>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  Open mixer / channel strip & <code>mixer-channel-strip</code> \\ Insert chain order & <code>mixer-insert-chain</code> \\ Sends and aux buses & <code>mixer-sends-buses</code> \\ Control Room & <code>mixer-control-room</code> \\ Division with the mixing manual & <code>mixer-manual-division</code> \\ </p>
+<p>What you will be able to do Find channel strips and the device chain, explain a signal's order, create an aux bus with a send, and know where master monitoring lives.</p>
+<p>Hands-on exercise Press X to open the mixer, insert Parametric EQ on a track and bypass/restore it once from the device rack; create an aux bus track, add a send from the original track and lower its gain; press F4 for the Control Room and read the master-bus level; finally reset the master fader to 0dB and confirm the track faders did not move.</p>
+<nav class="manual-pager"><a href="ch06-automation-modulation.html">← Automation and Modulation</a><span></span><a href="ch08-export-sharing.html">Export and Sharing →</a></nav>
+</main></body></html>

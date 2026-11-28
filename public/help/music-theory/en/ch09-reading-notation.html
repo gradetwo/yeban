@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading and Writing Notation — \bookname\\[0.3em]\large Pitch, Rhythm, and Harmony from Scratch — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">\bookname\\[0.3em]\large Pitch, Rhythm, and Harmony from Scratch</a></nav>
+<p></p>
+<h1>Reading and Writing Notation</h1>
+<p>不积跬步，无以至千里；不积小流，无以成江海。\\ Without accumulating single steps, one cannot reach a thousand li; without accumulating small streams, one cannot form rivers and seas.{Xunzi · Encouraging Learning}{There is no shortcut to reading notation: learn one bar’s pitches and durations each day, and the page slowly turns into movement in your hands. Accuracy first, speed second; translate the page into the piano roll before you try to sight-read.}</p>
+<p></p>
+<h3>What you can do after this chapter</h3>
+<ul>
+<li>Read a staff's clef, time signature, and key signature, and name the pitch on a given line or space.</li>
+<li>Convert common notes, rests, dots, and ties into beats and durations instead of guessing from the shape.</li>
+<li>Recognise dynamics, tempo, and common expression marks and know roughly what they ask a performer to do.</li>
+<li>Translate a simple score into note names, MIDI numbers, and piano-roll rows, then enter it in Yeban by hand.</li>
+</ul>
+<h3>The staff: lines and spaces are not decoration</h3>
+<p>A staff has five parallel horizontal lines. The gaps between them are called spaces. From the bottom up, the five lines and four spaces each represent one diatonic step; neighbouring lines or spaces differ by a natural step, not by a fixed two semitones. The clef fixes which pitch that set of positions starts from, so the same line means a completely different note in treble and bass clefs.</p>
+<p>The treble clef is the most common. Its five lines, from bottom to top, are E4, G4, B4, D5, and F5; its four spaces are F4, A4, C5, and E5. A simple memory aid is “E G B D F” bottom to top, with spaces “F A C E.” Middle C (C4) is not inside the five lines; it sits on a short ledger line below the treble staff. D4 is in the space above middle C, and E4 returns to the first line.</p>
+<p>The bass clef's five lines, bottom to top, are G2, B2, D3, F3, and A3; its four spaces are A2, C3, E3, and G3. Middle C is on the first ledger line above the bass staff. A grand staff places treble and bass staves one above the other, with middle C between them; when reading a grand staff, first see which staff the note belongs to, then use that clef.</p>
+<p></p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Figure 9-1: treble-clef lines and spaces, with middle C on its ledger line. Adjacent lines/spaces are one diatonic step; E--F and B--C are only a semitone apart, while the other adjacent steps are two semitones.</p>
+<p>Do not read by counting every line from the first note. Find anchors first: middle C, first-line E4, and third-line B4 in treble clef; middle C, first-line G2, and third-line D3 in bass clef. Once the anchors are fixed, other notes are nearby lines and spaces, which is much faster.</p>
+<h3>Notes, rests, and durations</h3>
+<p>A note's shape shows duration, not pitch. A whole note is a hollow oval; a half note adds a stem; a quarter note is filled and has a stem; an eighth note adds one flag; a sixteenth adds two flags. More flags mean a shorter value; each extra flag halves the duration.</p>
+<p>In 4/4, a whole note lasts four beats, a half note two, a quarter note one, an eighth note half a beat, and a sixteenth a quarter of a beat. A dot lengthens a note by half its value: a dotted half is three beats, a dotted quarter is one and a half beats. A tie joins adjacent notes of the same pitch into one longer sound without re-attacking; ties across bar lines are the most common.</p>
+<p>A rest means “no sound here,” with durations matching the note names: whole rest, half rest, quarter rest, eighth rest, sixteenth rest. A rest is not a missing note; it is part of the rhythm. Music with no rests feels constantly pressed and lacks breathing room.</p>
+<p></p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Figure 9-2: proportional lengths of four common values in 4/4. Length follows beat count, not the visual size of the notehead.</p>
+<p>  Note & Beats in 4/4 & Rest & Remark \\  Whole & 4 & Whole rest & The basic unit of a bar \\ Half & 2 & Half rest & Two halves fill a bar \\ Quarter & 1 & Quarter rest & The most common beat unit \\ Eighth & 0.5 & Eighth rest & Two eighths equal one quarter \\ Sixteenth & 0.25 & Sixteenth rest & Four sixteenths equal one quarter \\ Dotted quarter & 1.5 & --- & Adds half; often paired with an eighth \\ </p>
+<p>Table 9-1: common notes, rests, and their values in 4/4. Dots and ties change the sounding length; count them separately when reading.</p>
+<p>A time signature sits at the start of the staff: the top number is beats per bar, the bottom number is the beat unit. 4/4 means four beats per bar with the quarter note as one beat; 6/8 means six beats per bar with the eighth note as one beat. The time signature is not tempo; tempo comes from BPM or a tempo mark. 120 BPM in 4/4 means 120 quarter notes per minute; 120 BPM in 6/8 means 120 eighth notes per minute.</p>
+<h3>Key signatures, dynamics, and expression</h3>
+<p>A key signature sits beside the time signature and uses sharps or flats to tell you which notes are raised or lowered. One sharp is usually F, corresponding to G major or E minor; one flat is usually B, corresponding to F major or D minor. The key signature only alters the marked scale degrees; it does not raise every note in the scale. The relation between signatures, scales, and modes is covered in Chapter 4.</p>
+<p>Dynamic marks sit below notes or between staves. $p$ (piano) is soft, $mp$ (mezzo-piano) medium-soft, $mf$ (mezzo-forte) medium-loud, $f$ (forte) loud; a $<$ shape is a crescendo and a $>$ shape is a diminuendo, both changing continuously over a passage. Dynamics are relative levels within the same piece, not absolute volume settings; the same $mf$ can sound quite different in a quiet passage and a fierce one.</p>
+<p>Expression and articulation marks decide how a note is played. A slur means a connected passage; staccato means short and detached; an accent means the note should stand out; a fermata means hold the note or rest. They do not have universal millisecond values; performers interpret them by style. When reading, first recognise the sign, then translate its intent into duration, velocity, and timbre.</p>
+<p>  Mark & Name & First thing to do when reading \\  $p$ / $mf$ / $f$ & soft / medium-loud / loud & Set the dynamic level for the passage; do not jump note by note \\ $<$ / $>$ & crescendo / diminuendo & Change continuously across the passage, not only on the last note \\ Dot on notehead & staccato & Shorten the note and leave a gap \\ Short line over note & tenuto & Hold the note full, perhaps slightly longer \\ Angled mark over note & accent & Strengthen the attack and weight of that note \\ Curve over several notes & slur & Play legato; do not re-attack between notes \\ Semicircle over note & fermata & Hold the note or rest; length is decided by the performer or conductor \\ </p>
+<p>表 9-2：常见力度与表情记号。先认符号，再决定时值、力度与音色，不要只记名字。</p>
+<h3>Why jianpu and TAB exist</h3>
+<p>Jianpu uses 1--7 for the seven natural scale degrees and 0 for a rest; a dot above or below the number raises or lowers the octave, and a line under the number halves the duration. It is good for singing instruction, folk music, and quick charts: the numbers map directly to solfège, and transposition is easy to see. Its weakness is that it lacks the staff's fixed pitch positions and voicing information; inversions, dense harmony, and multiple voices are harder to read than on a staff.</p>
+<p>TAB (guitar tablature) uses strings and frets: six lines for six strings, with a number on each line giving the fret. It is good for guitar and bass players because it says where to put a finger, but it does not directly give pitch names, register, or harmonic function, and instruments with different tunings cannot share one TAB. TAB is not a simpler staff; it is a different playing coordinate.</p>
+<p>None of the three replaces the others: the staff is best for fixed pitch and multiple voices, jianpu for solfège and teaching, TAB for specific instrumental fingering. When writing, you might sketch a melody in jianpu, check harmony on a staff, and give the guitarist a TAB; in Yeban, all of them eventually become pitch rows and durations.</p>
+<h3>Translating a score into the piano roll</h3>
+<p>Yeban currently has no built-in staff view and no usable MusicXML import entry; reading still happens on paper or in an external score, then you copy pitch, duration, and velocity into the piano roll by hand. The translation order is:</p>
+<ol>
+<li>Read the clef first to fix what each line means; then the key signature to remember which notes are raised or lowered; then the time signature to know beats per bar.</li>
+<li>Turn note positions into note names, then into MIDI numbers: C4 = 60, D4 = 62, E4 = 64, F4 = 65, G4 = 67, A4 = 69, B4 = 71, C5 = 72.</li>
+<li>Remember that adjacent staff lines/spaces are diatonic steps, not fixed semitones. E--F and B--C are one semitone, so they are one row apart in the roll; C--D, D--E, F--G, G--A, and A--B are two semitones, so they are two rows apart. Look up the MIDI number by note name; do not multiply the line count by two.</li>
+<li>Convert durations to beats, then to roll cells. At 4/4 and 120 BPM, a quarter note is one beat; if the roll grid is sixteenth-note based, a quarter note takes four cells. Dots, ties, and cross-bar sustains need extra length; do not judge only by the note's shape.</li>
+<li>Convert dynamics to velocity; write crescendo/diminuendo as a gradual change over a passage; shorten staccato notes and leave gaps; make slurred notes overlap or at least connect. The roll does not read notation marks, so all of this is manual.</li>
+</ol>
+<figure class="fig-placeholder">[截图见 PDF 版：Staff note names mapped to piano-roll rows]</figure>
+<p><strong>Scope note:</strong> Yeban has no staff, jianpu, or TAB display, no automatic score recognition, and no MusicXML import entry; the piano roll shows pitch rows, durations, and velocity only, not clefs, key signatures, dynamics, or slurs. You must do the translation yourself; the app will not decide whether a note should be raised by the key signature, and it will not turn staccato into short notes automatically.</p>
+<h3>Exercises</h3>
+<aside class="note">
+<ol>
+<li>In treble clef, what pitches are on the first line, the third line, and middle C? Give their MIDI numbers.</li>
+<p> Answer: first line E4 (64), third line B4 (71), middle C C4 (60, on the ledger line below the staff).</p>
+<li>In 4/4, how many beats are a dotted half note and a dotted quarter note? How many dotted quarters fit in one bar?</li>
+<p> Answer: dotted half 3 beats; dotted quarter 1.5 beats; two dotted quarters take 3 beats and one quarter takes the remaining beat, so three dotted quarters (4.5 beats) do not fit.</p>
+<li>A key signature with one sharp usually corresponds to which two keys, and which note is raised?</li>
+<p> Answer: G major or E minor; F is raised to F.</p>
+<li>Translate C4--D4--E4--F4--G4 into MIDI numbers and state how many rows separate each pair in the roll.</li>
+<p> Answer: 60, 62, 64, 65, 67; C--D two rows, D--E two rows, E--F one row, F--G two rows (counting semitone rows).</p>
+<li>In Yeban, copy a four-note example C4, E4, G4, C5 as quarter notes and make the last note softer. State your operation order.</li>
+<p> Answer: create a 4/4 project and open the piano roll; find rows by C4=60, E4=64, G4=67, C5=72; write each note as one beat; select the last note and lower its velocity; play back to check pitch and beats.</p>
+</ol>
+</aside>
+<h3>Help topic map</h3>
+<p>  Section & In-app help anchor & Note \\  Staff and clefs & <code>music-theory-staff</code> & Figure 9-1 \\ Notes and rests & <code>music-theory-staff-note-values</code> & Table 9-1 \\ Key, dynamics, expression & <code>music-theory-dynamics</code> & Table 9-2 \\ Jianpu and TAB & <code>music-theory-jianpu-tab</code> & concept \\ Score to piano roll & <code>music-theory-piano-roll-notation</code> & operation \\ Exercises & <code>music-theory-ch9-practice</code> & answers at chapter end \\ </p>
+<h3>Further reading</h3>
+<ul>
+<li><strong>Open Music Theory, “Basic notation.”</strong> <a href="https://openmusictheory.github.io/basicNotation.html">https://openmusictheory.github.io/basicNotation.html</a> — a systematic pass over staff, clefs, notes, and rests.</li>
+<li><strong>YouTube, “How to Read Sheet Music from Scratch.”</strong> <a href="https://www.youtube.com/watch?v=6aj-mI_J3ww">https://www.youtube.com/watch?v=6aj-mI_J3ww</a> — starts from the staff and clef and demonstrates reading a simple melody.</li>
+</ul>
+<nav class="manual-pager"><a href="ch08-form-basics.html">← Form Basics</a><span></span><a href="ch10-blues-pentatonic-modal.html">Blues, Pentatonic and Modal Writing →</a></nav>
+</main></body></html>

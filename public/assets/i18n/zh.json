@@ -164,5 +164,6 @@
   "ui.shot3_alt": "下坞混音控制台：六条轨道通道条加总线与主输出，各带推子与分贝读数",
   "ui.shot3_caption": "下坞混音控制台——通道条、总线与主输出",
   "ui.shot4_alt": "终端界面（yeban-tui）打开同一演示工程：轨道列表、片段网格与检查器",
-  "ui.shot4_caption": "终端界面 yeban-tui——同一演示工程"
+  "ui.shot4_caption": "终端界面 yeban-tui——同一演示工程",
+  "nav.help": "帮助"
 }

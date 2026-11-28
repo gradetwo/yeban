@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Introduction to Buses and Mastering — Mixing — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Mixing</a></nav>
+<h1>Introduction to Buses and Mastering</h1>
+<p></p>
+<blockquote class="classquote"><p>治大国若烹小鲜。</p><cite>《老子·第六十章》 / Laozi, Chapter 60</cite><p class="gloss">Translation: Ruling a large state is like cooking a small fish. Note: mastering is a light touch on the master bus; too much stirring breaks the mix.</p></blockquote>
+<p>A bus is where several tracks meet and get processed together; mastering is the final bus pass and delivery check before the song leaves the building. Yeban has no separate mastering suite. It has three real entry points: auxiliary return tracks (<code>AuxReturn</code>), the master bus (<code>Master</code>) with its fader and insert chain, and the export dialog with its bus limiter, format settings and post-export measurement line. Loudness targets, true-peak ceilings and loudness normalization exist only on the CLI/MCP path; the GUI has no fields for them, and this chapter does not pretend otherwise.</p>
+<h2>Signal flow from tracks to file</h2>
+<p>The bus path can be reduced to one sentence: track device chain $$ track fader/pan $$ send edge $$ auxiliary return $$ master sum $$ master fader $$ master insert chain $$ export limiter (optional) $$ quantization/dither $$ WAV.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>The master fader sits <strong>before</strong> the insert chain, not after it. Push the fader up and the level entering EQ, compression and reverb rises with it; the export limiter is the last stage after the inserts. Do not use the master fader to compensate a limiter, and do not treat it as mastering gain: the fader changes the drive into the insert chain, while the limiter changes the final ceiling.</p>
+<h2>Auxiliary returns and sends</h2>
+<p>An auxiliary return track has kind <code>AuxReturn</code>; it exists for summing and shared processing, not for hosting an instrument. There are two creation entries:</p>
+<ul>
+<li>the track menu item “+ New auxiliary bus track”;</li>
+<li>the device rack's “+ Aux return” button in the send area.</li>
+</ul>
+<p>Once it exists, open a display track's device rack, click “New send”, and choose that auxiliary return as the destination. A send edge carries one gain field, <code>gain\_db</code>; there is no pre/post switch. The UI has no “send point before/after fader” choice, so do not assume another DAW's pre/post convention.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：Device rack send area showing a send edge to an auxiliary return, with the aux effect chain and send gain visible]</figure>
+<p>Auxiliary returns are for processing shared by several tracks:</p>
+<p>   Use & Where & Reason \\  Shared reverb & Reverb on the aux return; level via the send-edge gain & Several tracks feed one reverb and share one tail; do not insert an identical reverb on every track \\ Shared delay & Delay on the aux return & One delay time/feedback for alignment \\ Group compression & Several tracks into one aux return, then to master & Compress only that group, not the whole song; the aux fader still rides the group \\  Common uses of auxiliary returns </p>
+<p>For a shared reverb, set the reverb device to mostly wet and little dry; the dry signal still travels directly from the source track to the master. Otherwise the same dry signal appears again in the aux return and becomes double dry. The send-edge gain is absolute dB, not a percentage; lowering it lowers the level into the reverb but does not change the source track's direct path.</p>
+<h2>The master bus chain</h2>
+<p>The master bus track has kind <code>Master</code>. Select it and press <code>F9</code> to open the device rack and see its insert chain; press <code>X</code> or <code>F8</code> to open the mixer console and see the master fader, meters and channel strip.</p>
+<p>What the master bus can do:</p>
+<p>   Stage & Entry point & Do not use it for \\  Summing & the routing graph feeds every track/aux return into <code>Master</code> & fixing one track's frequency response or dynamics \\ Fader & master fader in the mixer console (F8/X) & replacing a limiter or loudness normalization \\ Insert chain & EQ, Compressor, Reverb, Delay, Limiter, etc.\ on the master device rack & stacking a long “mastering preset”; every device needs a stated reason \\ Export limiter & the bus limiter switch in the export dialog & an adjustable mastering limiter; it is fixed and per-export \\  What each master-bus stage is for, and what it is not for </p>
+<figure class="fig-placeholder">[截图见 PDF 版：Mixer console with the master bus selected, showing the master fader, meters and the master insert chain in the device rack]</figure>
+<p>Bus processing starts with “fix the source first, then fix the bus”. A single track that is too bright, too loud or too bass-heavy should be fixed on that track's EQ/compressor/fader; the master should only handle problems shared by every track: overall dynamics, overall tonal balance, overall space. Pulling 3 dB of low end on the master is often paying for excess low end on several tracks, and the fix will not transfer to the next arrangement.</p>
+<h3>Three common bus stages</h3>
+<ol>
+<li><strong>Master EQ</strong>: small corrections only. Use the channel-strip low cut to remove inaudible/DC-adjacent energy below 20--30 Hz; move the mid/high region by 1--2 dB only when the whole mix is too bright or too dark. Do not use the master to sweep for a single track's problem.</li>
+<li><strong>Master compression</strong>: use Compressor as glue, usually only 1--3 dB of gain reduction; start around 2:1, with an attack that does not grab transients and a release that does not pump. The compressor is in the insert chain and the fader is before it, so pushing the fader changes the compressor input; set the fader first, then the threshold.</li>
+<li><strong>Master limiting</strong>: the Limiter device has threshold, ceiling, release, lookahead and a true-peak switch; the export dialog's bus limiter is a different fixed switch. Do not leave both on without knowing it, or you get two limiting stages and the second one is not adjustable.</li>
+</ol>
+<h3>Two limiters are not the same limiter</h3>
+<p>   & Device-chain Limiter & Export-dialog limiter & Loudness normalization \\  Position & inside the master insert chain & after the master fader/ automation, before quantization & after rendering, before quantization \\ Parameters & threshold/ ceiling/ release/ lookahead/ true peak & fixed 0.9 threshold, 0.95 ceiling, 33-frame lookahead, true-peak detection off & target LUFS + true-peak ceiling (CLI/MCP) \\ Default & exists only when inserted & off & no target, no action \\ Adjustable & device parameters & on/off only & target and ceiling \\ Stored in project & yes (device chain) & no (per-export modifier) & no (per-export modifier) \\  Device-chain limiter, export limiter and loudness normalization are different things </p>
+<p>The export-dialog limiter has a 33-frame lookahead; the export path compensates those 33 frames, so output length and timeline do not change. Its ceiling of linear 0.95 is about $-0.45$ dBFS and its threshold of 0.9 is about $-0.92$ dBFS. It does not do true-peak oversampling, so it cannot guarantee “true peak below $-1$ dBTP”; for that guarantee, read the post-export measurement or use the CLI/MCP loudness normalization/true-peak ceiling.</p>
+<h2>Loudness readings: UI and export are not the same</h2>
+<p>Yeban's UI shows the letters “LUFS”, but the live readings and the export readings must be kept apart:</p>
+<p>   Reading & Source & Can it be a delivery reference? \\  Mixer master LUFS & master smoothed RMS minus 0.691 dB & only a rough level guide; not BS.1770 gated integrated loudness, so do not report “the song is $-14$ LUFS” from it \\ Control-room short-term LUFS & same master reading & same; it has no 3 s short-term window and no gating \\ Control-room integrated LUFS & no runtime update in the current build; only the UI default string & not a reading; do not screenshot it as evidence \\ Control-room dBTP & no runtime update; only the UI default string & not a reading; true peak exists only in the post-export measurement \\ Post-export measurement & 16$$ true peak, gated integrated LUFS, LRA & the only usable delivery reading; unmeasurable values are printed as “not measured” \\  LUFS in the UI versus the post-export measurement </p>
+<p>This is not nitpicking about names. The master reading is “smoothed RMS minus 0.691 dB”, without BS.1770 K-weighting, gating, or the 400 ms/3 s windows. It can tell you roughly how loud the program is, but it cannot prove “this song reaches $-14$ LUFS”. The control room's integrated LUFS and dBTP fields have no runtime writer in the current build; their default strings are placeholders. To get a delivery reading, export once and read the measurement line.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：WAV export dialog: sample rate, bit depth, duration, bus limiter switch, and the post-export measurement line]</figure>
+<p>The three numbers in the post-export line are:</p>
+<ul>
+<li><strong>True peak</strong>: a dBFS reading from 16$$ oversampling; 0 is full scale, positive values are over.</li>
+<li><strong>Integrated loudness</strong>: BS.1770-4 gated integrated LUFS; programs shorter than 400 ms, or entirely below the absolute gate, show “not measured”.</li>
+<li><strong>LRA</strong>: P95$-$P10 of the 3 s short-term histogram with a $-20$ LU relative gate; shorter than 3 s, or no short-term value above the gate, shows “not measured”.</li>
+</ul>
+<h2>Export options and loudness targets</h2>
+<p>The WAV export dialog has five real controls:</p>
+<p>   Control & Default & Semantics \\  Output path & none & browse or type; filling the path does not export \\ Sample rate & <code>auto</code> & follows the project; it does not display the project rate, so do not read <code>auto</code> as a fixed 48 kHz \\ Bit depth & <code>24</code> & 16/24-bit integers use TPDF dither; 32f floats pass through without dither \\ Seconds & audible project end & seeded when the dialog opens; clearing it falls back to the 8 s default, not the whole song. Check long tails and silent tails yourself \\ Bus limiter & off & a per-export boolean; fixed parameters; not stored in the project, not undoable \\  The real controls in the WAV export dialog </p>
+<p>The GUI has <strong>no</strong> controls for: loudness target (LUFS), true-peak ceiling, peak normalization, dither mode, noise shaping or mastering clipper. They are not in the export dialog; do not write a GUI procedure that claims “set $-14$ LUFS here”.</p>
+<p>Only the CLI/MCP path has loudness normalization:</p>
+<p>   Preset & Target LUFS & True-peak ceiling & Entry \\  Streaming & $-14$ & $-1$ dBTP & CLI/MCP; not the GUI \\ EBU R128 & $-23$ & $-1$ dBTP & CLI/MCP; not the GUI \\  Built-in loudness presets; the numbers are product choices, not a normative mandate </p>
+<p>MCP rendering's <code>targetLufs</code> accepts $[-70,0]$; when supplied, it applies gain to reach the target, with a true-peak ceiling of $-1.0$ dBTP as the binding limit. It re-measures with a $0.5$ LU tolerance and fails loudly with <code>RENDER\_FAILED</code> if the target is missed; it never silently ships an off-target file. The CLI also has <code>--true-peak-ceiling</code> for setting the ceiling independently. Loudness normalization is available only at 44.1/48/88.2/96 kHz; other sample rates fail instead of silently falling back to 48 kHz coefficients.</p>
+<p>For a range export the target is measured on the <strong>exported slice</strong>, not the whole song. A stem target and a full-song target are not the same thing; do not apply the full song's $-14$ to an eight-second stem and ask why the reading differs.</p>
+<h2>Pre-export checklist</h2>
+<ol>
+<li><strong>Check the sources</strong>: is any single track too bright, too loud or too bass-heavy? Fix it on the track, not on the master.</li>
+<li><strong>Master fader</strong>: make sure it is not pushed far past 0 dB just to “sound louder”; it sits before the insert chain, so it changes the compressor/limiter input.</li>
+<li><strong>Insert chain</strong>: confirm bypass states and parameters one device at a time; do not leave both the device-chain Limiter and the export limiter on without knowing it.</li>
+<li><strong>Export once with the limiter off</strong>: read the post-export true peak, integrated LUFS and LRA as the unrestricted baseline.</li>
+<li><strong>Clipping warning</strong>: if “master clipped N samples, reduce by X dB” appears, follow the suggestion on the master or the loudest source; do not ignore it and ship anyway.</li>
+<li><strong>Targets</strong>: when a target is required, use the CLI/MCP <code>targetLufs</code>/<code>--loudness-target</code>, not the GUI; confirm the sample rate is supported.</li>
+<li><strong>Format</strong>: 24-bit integer (TPDF) is the common delivery choice; use 32f when downstream processing continues; use 16-bit only when the downstream explicitly asks. Keep the project sample rate unless there is a delivery reason to change it.</li>
+<li><strong>Duration</strong>: confirm the seconds field is not the 8 s default; include the outro, silent tail and fade.</li>
+<li><strong>Final listen</strong>: use the F4 control room for MONO/SIDE checks; these switches do not affect export, so do not judge export level with MONO on.</li>
+</ol>
+<p>   Check & Pass condition \\  Master clipping & post-export true peak is within the target ceiling; if a clipping warning appears, reduce the source or the master first \\ Loudness & within $0.5$ LU when a target is set; without a target, record the measurement and do not claim compliance \\ Format & sample rate matches delivery; bit depth matches downstream; integer depths are dithered \\ Duration & covers the whole song, including the outro, not the 8 s fallback \\ Monitoring & no must-keep part disappears in MONO; no centred dry signal dominates SIDE \\  Pre-export checklist </p>
+<h2>Not yet provided, and boundaries</h2>
+<p>   Request & Current state in Yeban \\  A separate mastering suite & none; only the master insert chain and export options \\ Multiband compression/dynamic-EQ mastering chain & no separate mastering multiband compressor; the channel strip has EQ/compression stages, but that is not a mastering suite \\ GUI loudness target/true-peak ceiling & none; CLI/MCP only \\ Live integrated LUFS/true peak/LRA in the UI & none; control-room integrated and dBTP fields have no runtime writer, and the master LUFS is RMS$-$0.691 \\ Automatic loudness matching/reference level alignment & none; the reference track is for A/B only, with no automatic level match \\ Send pre/post switch & none; a routing edge has gain only \\ Dither mode/noise shaping & none; integer depths use fixed TPDF, 32f passes through \\ An absolute “never clips” true-peak guarantee & none; 16$$ still has inherent under-read, so the reading is not a mathematical guarantee \\ Storing export-limiter settings in the project & none; it is a per-export boolean \\  Current boundaries of buses and mastering </p>
+<h2>Exercise</h2>
+<aside class="note">
+<ol>
+<li>Import a reference track to its own audio track and bypass its effects; use it only for A/B, not in the export.</li>
+<li>Export once with the bus limiter off and read the measured true peak, integrated LUFS, and LRA; export again with the limiter on and compare.</li>
+<li>Tick the pre-export checklist; at least confirm the duration is not the 8-second default, mute/solo are reset, and a must-keep part does not disappear in MONO.</li>
+</ol>
+</aside>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  Signal flow from tracks to file & <code>master-signal-flow</code> \\ Auxiliary returns and sends & <code>aux-return-sends</code> \\ The master bus chain & <code>master-bus-chain</code> \\ Two limiters are not the same & <code>master-limiters</code> \\ Loudness readings: UI and export & <code>loudness-readings</code> \\ Export options and loudness targets & <code>export-options-loudness</code> \\ Pre-export checklist & <code>export-checklist</code> \\ Current boundaries & <code>mastering-gaps</code> \\  Chapter 9 help-topic mapping </p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.izotope.com/en/learn.html">https://www.izotope.com/en/learn.html</a> — iZotope Learn: read introductory material on bus processing, limiters, and loudness, and fill in the mastering check order.</li>
+<li><a href="https://www.soundonsound.com/reviews">https://www.soundonsound.com/reviews</a> — Sound On Sound reviews: read mastering-tool and monitoring reviews, and understand why a light touch is harder than stacking plugins.</li>
+</ul>
+<nav class="manual-pager"><a href="08-automation.html">← Automation Mixing</a><span></span><a href="10-from-rough-mix-to-finished.html">From Rough Mix to Finished: A Full Song Walkthrough →</a></nav>
+</main></body></html>

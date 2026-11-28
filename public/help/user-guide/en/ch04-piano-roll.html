@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Piano Roll — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>The Piano Roll</h1>
+<p></p>
+<blockquote class="classquote"><p>凡音之起，由人心生也。</p><cite>Book of Rites, “Record of Music” (《礼记·乐记》)</cite><p class="gloss">Translation: “All music begins in the human heart.” Before a note lands on the roll there is an emotion to express; technique and rules serve what is heard.</p></blockquote>
+<p>The piano roll is where MIDI notes are written: time runs horizontally, pitch vertically. This chapter covers opening it, drawing notes, editing velocity and quantizing, plus the current limits of note dragging.</p>
+<h2>Open and Navigate the View</h2>
+<h3>Open the roll</h3>
+<p>Press P, or switch to the piano roll — the first bottom-console tab; F7 is the direct key for that tab. Select a clip on a MIDI synth track and the roll shows the notes in that clip.</p>
+<h3>Read the two dimensions</h3>
+<p>The horizontal axis is time (in ticks, converted to bars/beats from the project's time signature); the vertical axis is pitch, arranged as pitch lanes from high to low, with key labels on the left (e.g.\ C4, Eb5) as references. A readout at the top shows the currently visible pitch range. At the bottom is the velocity lane, where each note's velocity appears as a vertical bar.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The piano roll in full, labelling the time ruler, pitch lanes with key labels and the velocity lane]</figure>
+<h3>Zoom and framing</h3>
+<p>Cmd/Ctrl+Up/Down zooms tracks vertically; Cmd/Ctrl+=/-- zooms the timeline horizontally. The roll has a "framing" notion: you can frame the current clip, the current track or all content. Pitches outside the visible window are not drawn — change the framing to see them.</p>
+<h2>Note Entry, Selection and Movement</h2>
+<h3>Draw notes</h3>
+<p>The onboarding tour puts it plainly: <strong>number key 2 is the draw tool</strong>; click on the roll and a note lands there. The drop position comes from the click: horizontal for time, vertical resolved from the y coordinate into a pitch lane. Once drawn, drag the note to change time or pitch, or drag its right edge to change length.</p>
+<h3>Select and drag</h3>
+<p>Clicking a note selects it. In the current version pointer dragging acts only on the note under the pointer — even if several are selected, dragging one leaves the others where they are. So "group drag" and "group duration change" do not work yet; move notes one at a time, or wait until the capability officially lands. Yeban does not disguise an unimplemented operation as a success.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Common roll flow: select clip $$ draw $$ edit pitch/length $$ quantize $$ audition </p>
+<h2>Velocity, Quantize and Scale Tools</h2>
+<h3>Velocity</h3>
+<p>In the bottom velocity lane each note has a vertical bar whose height is its velocity. You can edit a note's velocity directly there; the roll previews the value while dragging.</p>
+<h3>Quantize and humanize</h3>
+<p>Edit $$ Note Quantize (Quantize 1/16)... snaps selected notes to a 1/16 grid; Edit $$ Note Humanize... opens a dialog with time jitter, velocity jitter, strength and seed settings to make mechanical results feel more natural. Both affect only the current selection.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The Humanize dialog showing time jitter, velocity jitter and strength inputs]</figure>
+<h3>Scale and chord tools</h3>
+<p>The current version offers key labels on the pitch lanes as pitch references; whether standalone scale/chord generation tools exist depends on the build you use — do not assume an entry that is not present. Edit $$ Drum Generation (Drums)... does exist and can generate a drum clip from style, complexity and seed.</p>
+<h2>Step Editing and Chord Assistance</h2>
+<p>"Step editing" here means writing notes one fixed step at a time: place a note in each target cell with the draw tool, then use quantize to tidy timing. It is not a one-click melody generator.</p>
+<p>For chords, the available approach is to draw several pitches stacked at the same moment and verify by ear; automatic chord-progression generation is outside this chapter's scope and is not described as available.</p>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  Open roll / two dimensions & <code>roll-open-view</code> \\ Zoom and framing & <code>roll-zoom-framing</code> \\ Draw notes and selection & <code>roll-note-entry</code> \\ Select and drag (single-note limit) & <code>roll-note-drag</code> \\ Velocity lane & <code>roll-velocity-lane</code> \\ Quantize and humanize & <code>roll-quantize-humanize</code> \\ Scale tools / step editing & <code>roll-scale-step</code> \\ </p>
+<p>What you will be able to do Draw a melody, edit velocity, quantize to 1/16, and explain that dragging currently affects a single note.</p>
+<p>Hands-on exercise Open the roll on a MIDI track clip, draw a one-bar C-major scale with number key 2, make the first note stronger in the velocity lane, quantize with Note Quantize to 1/16, then press Space to audition; finally drag one note and confirm the others stay put.</p>
+<nav class="manual-pager"><a href="ch03-tracks-clips.html">← Tracks and Clips</a><span></span><a href="ch05-recording-audio.html">Recording and Audio Editing →</a></nav>
+</main></body></html>

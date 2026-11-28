@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>声音设计练习 — 乐器与合成器手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">乐器与合成器手册</a></nav>
+<h1>声音设计练习</h1>
+<p></p>
+<blockquote class="classquote"><p>不积跬步，无以至千里；不积小流，无以成江海。</p><cite>《荀子·劝学》</cite><p class="gloss">声音设计靠一次次小练习积累；每次只改一个参数、听一次结果，比堆满效果器更快建立判断。</p></blockquote>
+<p>这一章把前两章的九个参数变成三个有情绪场景的练习：铺底、主音、贝斯。每个场景先问“谁在听、离得多近、有没有危险”，再把这种判断翻译成九个参数；每个练习都从默认合成器开始，只改九个参数，不碰 EQ、混响、压缩，也不假设有 ADSR、LFO、滤波包络、滑音或副振荡器。情绪不是加效果器，而是先决定声音要站在什么位置。</p>
+<p>这三组练习各有一个听感坐标：Juno 的合唱让铺底学会“薄而宽”，Minimoog 的梯形滤波让主音学会“少而重”，TR-808 的长尾让贝斯学会“沉而不轰”。它们不是要你复刻硬件，而是给参数一个听觉参照：当你在 1600 Hz 与 2200 Hz 之间犹豫时，先想“这个房间需要多宽”，再拧。所有包络仍是固定的 5 ms 起振、80 ms 衰减、sustain 0.7、50 ms 释放；所谓“铺底”是音色与和弦，不是慢渐入。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<h2>练习前：九个参数与固定包络</h2>
+<p>九个参数分三组：滤波器 <code>cutoff\_hz</code>、<code>resonance</code>、<code>drive</code>；两条振荡器支路的波形 <code>osc1\_wave</code>、<code>osc2\_wave</code>；两条支路的电平与失谐 <code>osc1\_level</code>、<code>osc1\_detune\_cents</code>、<code>osc2\_level</code>、<code>osc2\_detune\_cents</code>。波表下标固定：0 = hollow，1 = organ，2 = vocal，3 = metallic，4 = glass。</p>
+<p>   参数 & 作用 & 有效域 & 默认（不写时） \\  <code>cutoff\_hz</code> & 四极梯形低通截止 & 20 Hz–0.45×采样率 & 滤波旁通 \\ <code>resonance</code> & 截止点附近的共振 & 0–1 & 0 \\ <code>drive</code> & 滤波前驱动/饱和 & 0–1 & 0 \\ <code>osc1\_wave</code> & 第一条支路波表 & 0–4 & 0（hollow） \\ <code>osc2\_wave</code> & 第二条支路波表 & 0–4 & 0（hollow） \\ <code>osc1\_level</code> & 第一条支路电平 & 0–1 & 1.0 \\ <code>osc1\_detune\_cents</code> & 第一条支路失谐 & ±4800 音分 & 0 \\ <code>osc2\_level</code> & 第二条支路电平 & 0–1 & 0（关） \\ <code>osc2\_detune\_cents</code> & 第二条支路失谐 & ±4800 音分 & 0 \\  练习只用这九个参数；没有 ADSR、LFO、滤波包络、滑音、副振荡器 </p>
+<p>每轨最多 16 个在响声部。四音和弦最多同时叠四个；超过 16 个声部会触发窃取，不是“自动加厚”。两个支路的电平为 0 时该支路逐位旁通；<code>osc2\_level</code> 不写就是 0，写 0 也是关。</p>
+<h3>怎么把参数写进去</h3>
+<p>本章给的是参数配方，不是“九个旋钮”的界面教程。当前界面只暴露部分快捷读数；九个参数要按设备参数通路逐项写入（工程数据或 MCP 的 <code>setParam</code>，<code>lane</code> 用 <code>DeviceParam</code>、按名寻址）。如果界面上找不到某个旋钮，不要假设它藏在别处——它可能根本没有界面。参数名大小写不敏感，波表下标会四舍五入后取整，截止频率由器件钳到 20 Hz–0.45×采样率。</p>
+<h2>练习 1：凌晨四点的房间（铺底）</h2>
+<aside class="note">
+<p>目标：为“凌晨四点、房间只剩窗外的雨”做一个能托住主音、但不抢中频的宽铺底。这个场景不需要明亮，需要“有人还在房间里”的厚度。起点：新建 MIDI 合成器轨，默认合成器；先不要挂 EQ/混响。</p>
+<p>   参数 & 值 & 说明 \\  <code>osc1\_wave</code> & 2（vocal） & 主色，带人声元音感 \\ <code>osc1\_level</code> & 0.82 & 主支路，不要满到 1.0 \\ <code>osc1\_detune\_cents</code> & $-9$ & 与第二条支路错开 \\ <code>osc2\_wave</code> & 0（hollow） & 补身体，不抢元音 \\ <code>osc2\_level</code> & 0.58 & 副支路，约主支路七成 \\ <code>osc2\_detune\_cents</code> & $+9$ & 与第一条反向错开 \\ <code>cutoff\_hz</code> & 1600 & 压掉齿音与空气，留中低频 \\ <code>resonance</code> & 0.22 & 轻微强调截止点 \\ <code>drive</code> & 0.00 & 先保持干净 \\  铺底练习的参数配方 </p>
+<p>步骤：</p>
+<ol>
+<li>建一条 MIDI 合成器轨，命名为“Pad”，把上表九项写入；先只弹一个 C3 听音色。</li>
+<li>弹一个三音或四音闭合和弦（例如 C3–E3–G3），保持两小节；听两条支路是否融在一起。若听到“两条笛子各吹各的”，把 <code>osc2\_level</code> 降到 0.50，或把两条失谐收窄到 $6$。</li>
+<li>把 <code>cutoff\_hz</code> 从 1600 拉到 2200，再拉回 1200；每次只改这一个，记下“打开空气”和“变闷”的边界。铺底通常停在 1400–2000。</li>
+<li>把 <code>osc2\_level</code> 从 0.58 加到 0.70，再减到 0.45；听厚度与清晰度的交换。超过 0.70 后中频开始糊，不要再加。</li>
+<li>最后弹四个和弦，每个四音；确认没有超过 16 个声部。超过时减和弦音数，不要靠加轨解决。</li>
+</ol>
+<p>边界：固定起振只有 5 ms，做不出慢渐入；要“慢慢进来”，只能在编排里让音符晚点开始，或后续用音量自动化。vocal 是合成波表，不是采样合唱，没有歌词、元音或 formant 控件。</p>
+<p>情绪检查：闭眼听十秒，问自己“这个房间是空的，还是有人在隔壁？”如果答案是“空的”，先把 <code>osc2\_level</code> 降一点，不要把音量推大。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：铺底练习的九参数配方]</figure>
+</aside>
+<h2>练习 2：雨夜电话里的独白（主音）</h2>
+<p>目标：为“雨夜电话里的一句独白”做一个能切穿铺底的单音主奏，带一点玻璃边缘，但不变成 Bell。这个场景要“近”，不要“亮到刺耳”。起点：另一条 MIDI 合成器轨，默认合成器。</p>
+<p>   参数 & 值 & 说明 \\  <code>osc1\_wave</code> & 0（hollow） & 主体，稳定 \\ <code>osc1\_level</code> & 0.88 & 接近满电平 \\ <code>osc1\_detune\_cents</code> & $-3$ & 轻微错开 \\ <code>osc2\_wave</code> & 4（glass） & 只加边缘，不抢主体 \\ <code>osc2\_level</code> & 0.32 & 约主支路三分之一 \\ <code>osc2\_detune\_cents</code> & $+7$ & 让玻璃支路偏右 \\ <code>cutoff\_hz</code> & 3000 & 保留咬字与亮度 \\ <code>resonance</code> & 0.18 & 少量强调 \\ <code>drive</code> & 0.10 & 加一点谐波，不压动态 \\  主音练习的参数配方 </p>
+<p>步骤：</p>
+<ol>
+<li>建“Lead”轨，写入上表；先在 C4–C6 弹一条单音旋律，不要叠和弦。</li>
+<li>把 <code>osc2\_level</code> 从 0.32 降到 0.20，再升到 0.45；0.20 更接近纯 hollow，0.45 开始像玻璃铃。主音通常停在 0.28–0.38。</li>
+<li>把 <code>drive</code> 从 0.10 升到 0.20，再回到 0；听谐波增加但整体音量不应大幅跳变。若已经刺耳，先降 <code>cutoff\_hz</code>，不要继续加 drive。</li>
+<li>把 <code>cutoff\_hz</code> 从 3000 降到 2000，再升到 4200；记下“暗”“亮”两端。主音在 2600–3400 最容易和铺底分开。</li>
+<li>与铺底同时播放：如果主音被埋，先降铺底的推子，或把主音的 <code>osc1\_level</code> 保持在 0.88；不要靠把主音 cutoff 拉到 6000 解决。</li>
+</ol>
+<p>边界：没有滑音/portamento，也没有可调 ADSR；连奏不会自动滑到下一个音。要滑音只能在 MIDI 里写音高曲线（后续章节），不是这台合成器的旋钮。</p>
+<p>情绪检查：把主音与铺底同时播放，闭眼听十秒；如果先听见“亮”，再听见“人”，就把 <code>cutoff\_hz</code> 降 200–400 Hz，别用推子把独白变成广播。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：主音练习的九参数配方]</figure>
+<h2>练习 3：地下室停下鼓机之后（贝斯）</h2>
+<p>目标：为“地下室鼓机刚停下、空气还在震”做一个低频结实、能在小音箱上仍听得见的贝斯，不用副振荡器。这个场景要“沉”，不要“轰”。起点：第三条 MIDI 合成器轨，默认合成器。</p>
+<p>   参数 & 值 & 说明 \\  <code>osc1\_wave</code> & 0（hollow） & 低频主体 \\ <code>osc1\_level</code> & 0.95 & 接近满 \\ <code>osc1\_detune\_cents</code> & $0$ & 低频不要乱错开 \\ <code>osc2\_wave</code> & 1（organ） & 补低中频的实体 \\ <code>osc2\_level</code> & 0.30 & 少量，不要盖过基音 \\ <code>osc2\_detune\_cents</code> & $-5$ & 轻微厚度 \\ <code>cutoff\_hz</code> & 360 & 去掉高次谐波 \\ <code>resonance</code> & 0.40 & 强调基音附近 \\ <code>drive</code> & 0.28 & 加饱和，不是失真踏板 \\  贝斯练习的参数配方 </p>
+<p>步骤：</p>
+<ol>
+<li>建“Bass”轨，写入上表；在 C1–C3 弹单音，一次只弹一个。</li>
+<li>把 <code>cutoff\_hz</code> 从 360 升到 500，再降到 250；500 会多出低中频、更容易在小音箱上听见，250 更纯 sub 但可能只剩 rumble。常用区间 300–450。</li>
+<li>把 <code>resonance</code> 从 0.40 升到 0.55，再降到 0.25；共振会强调截止点，旋律越高越明显；不要用它当音量。</li>
+<li>把 <code>drive</code> 从 0.28 升到 0.40，再回 0.15；听谐波与低频紧度的变化。若低频变糊，先降 <code>osc2\_level</code>，不要继续加 drive。</li>
+<li>与铺底、主音合听：贝斯只占低频，不要把推子推到和主音一样响；具体电平靠耳朵，本章不给固定 dB。</li>
+</ol>
+<p>边界：没有副振荡器、八度开关、滑音或独立包络；低频来自 360 Hz 低通与两条支路的电平。要更复杂的贝斯，靠 MIDI 编排与后续效果，不要指望这一个配方覆盖全部。</p>
+<p>情绪检查：关掉主音与铺底，只留贝斯十秒；如果它像“机器在脚底”，先降 <code>drive</code>，再考虑降 <code>osc2\_level</code>。这个场景要的是“空气还在震”，不是“墙在震”。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：贝斯练习的九参数配方]</figure>
+<h2>三轨合听与检查</h2>
+<p>把三个场景放在同一个八小节里：铺底弹长和弦，主音弹两小节一句，贝斯弹根音。先问“这三个场景会不会互相抢戏”，再按下面的顺序检查：</p>
+<p>   现象 & 先动哪里 \\  主音被铺底埋 & 先降铺底推子；再考虑降铺底 <code>osc2\_level</code> 或 <code>cutoff\_hz</code> \\ 低频糊 & 降贝斯 <code>osc2\_level</code> 或 <code>drive</code>；不要把贝斯 cutoff 拉高到 800 \\ 铺底像两条笛子 & 收窄两条失谐，或降副支路电平；不要加第三条支路（没有） \\ 主音太刺 & 降 <code>cutoff\_hz</code> 或 <code>drive</code>；不要找不存在的 EQ \\ 和弦吞音 & 检查同时发声是否超过 16 个声部；减和弦音数 \\  三轨合听的排查顺序 </p>
+<p>本章不涉及 EQ、混响、压缩、声相与总线；这些在混音手册里。也不要把“铺底/主音/贝斯”当成三台不同的合成器：它们是同一台复音合成器的三组参数，换的只是波形、电平、失谐与滤波。</p>
+<h2>本章与帮助主题的映射</h2>
+<p>   本章小节 & 应用内帮助锚点 \\  练习前的九个参数 & <code>exercise-common-base</code> \\ 铺底练习 & <code>exercise-pad</code> \\ 主音练习 & <code>exercise-lead</code> \\ 贝斯练习 & <code>exercise-bass</code> \\ 三轨合听与检查 & <code>exercise-three-tracks</code> \\ 排查顺序 & <code>exercise-troubleshooting</code> \\  第八章帮助主题映射 </p>
+<h2>延伸阅读</h2>
+<ul>
+<li><a href="https://www.ableton.com/en/blog/">https://www.ableton.com/en/blog/</a>——Ableton 博客：找可跟着做的声音设计练习，把“只改一个参数”的方法延续下去。</li>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a>——Sound On Sound 技术栏目：补足包络、滤波与动态处理在真实制作里的听感判断。</li>
+</ul>
+<nav class="manual-pager"><a href="07-plugin-instruments.html">← 插件乐器</a><span></span><a href="09-iconic-instruments.html">传奇乐器听感图鉴 →</a></nav>
+</main></body></html>

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>合成器基础 — 乐器与合成器手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">乐器与合成器手册</a></nav>
+<h1>合成器基础</h1>
+<p></p>
+<blockquote class="classquote"><p>不徐不疾，得之于手而应于心。</p><cite>《庄子·天道》</cite><p class="gloss">不快不慢，手上做得顺、心里也对得上；合成器的参数没有唯一正确值，要在听感与手感之间找平衡。</p></blockquote>
+<p>本章说明内置复音合成器的信号链、九个可投影参数，以及六个工厂预设的具体取值。 参数名、范围和默认值取自引擎的设备投影代码；数值不做四舍五入以外的加工。</p>
+<h2>信号链</h2>
+<p>内置合成器每轨使用一个定长声部池，最多同时容纳 16 个在响声部。每个声部有两条 振荡器支路、一个四极梯形低通和一个振幅包络。两条支路的波形来自同一张五张波表： <code>hollow</code>、<code>organ</code>、<code>vocal</code>、<code>metallic</code>、<code>glass</code>。 两条支路各自有电平与失谐，混合后进入低通与包络。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>滤波器是四极梯形低通。截止频率的有效域由器件钳在 20 Hz 到采样率的 0.45 倍之间； 共振与驱动都是 0 到 1 的旋钮值。驱动为 0 时失真级逐位旁通，为 1 时是 +36 dB 预增益，中间按等 dB 分布；输出侧有自补偿，拧驱动主要换谐波，不换整体音量。</p>
+<p>振幅包络是固定的 ADSR：起振 5 ms、衰减 80 ms、 sustain 0.7、释放 50 ms。 当前界面没有提供可调的 ADSR 旋钮，也没有 LFO、调制矩阵或独立包络段控件； 写手册时不应把其他合成器的控件名套到这里。后续若接线，应先在代码里找到对应的 参数投影，再补写本章。</p>
+<h2>九个可投影参数</h2>
+<p>内置合成器从设备链读取的参数名大小写不敏感。下表列出九个参数、有效域与默认值。 “不写”与“写 0”是两件事：不写 <code>osc2\_level</code> 表示第二条支路关，写 0 也是关； 不写 <code>cutoff\_hz</code> 则整个滤波器旁通，写 0 会被器件钳到 20 Hz。</p>
+<p>   参数名 & 含义 & 有效域 & 默认（不写时） \\  <code>cutoff\_hz</code>（别名 <code>cutoff</code>） & 低通截止频率 & 20 Hz–0.45×采样率 & 滤波器旁通 \\ <code>resonance</code>（别名 <code>res</code>） & 低通共振 & 0–1 & 0.0 \\ <code>drive</code> & 滤波器驱动/失真 & 0–1 & 0.0 \\ <code>osc1\_wave</code> & 第一条支路波表 & 0–4（四舍五入后取整） & 0（hollow） \\ <code>osc2\_wave</code> & 第二条支路波表 & 0–4（四舍五入后取整） & 0（hollow） \\ <code>osc1\_level</code> & 第一条支路电平 & 0–1 & 1.0（满） \\ <code>osc1\_detune\_cents</code> & 第一条支路失谐 & ±4800 音分 & 0.0 \\ <code>osc2\_level</code> & 第二条支路电平 & 0–1 & 0.0（关） \\ <code>osc2\_detune\_cents</code> & 第二条支路失谐 & ±4800 音分 & 0.0 \\  内置复音合成器的九个参数 </p>
+<figure class="fig-placeholder">[截图见 PDF 版：合成器九参数与设备卡读数]</figure>
+<p>波表下标与名字的对应是固定的：0 = <code>hollow</code>，1 = <code>organ</code>， 2 = <code>vocal</code>，3 = <code>metallic</code>，4 = <code>glass</code>。非有限值或负值按 0 处理；大于 4 的整数由器件钳到最后一张表，不会变成静音。两条支路的电平为 0 时， 该支路一帧也不执行；这是逐位旁通，不是把电平乘成 0。</p>
+<h2>六个工厂预设的参数</h2>
+<p>同一组参数在六个预设里的取值如下。两表合起来就是每个预设的全部九个参数； 表中没有“包络”或“LFO”列，因为当前预设不包含这些参数。</p>
+<p>   预设 & <code>cutoff\_hz</code> & <code>resonance</code> & <code>drive</code> \\  Hollow Lead & 2400 & 0.20 & 0.00 \\ Warm Organ & 1800 & 0.15 & 0.10 \\ Choir Pad & 2200 & 0.25 & 0.00 \\ FM Bell & 4200 & 0.30 & 0.15 \\ Glass Pluck & 3600 & 0.20 & 0.00 \\ Sub Bass & 420 & 0.35 & 0.25 \\  工厂预设的滤波器参数 </p>
+<p>   预设 & <code>osc1\_wave</code> & <code>osc2\_wave</code> & <code>osc1\_level</code> & <code>osc1\_detune</code> & <code>osc2\_level</code> & <code>osc2\_detune</code> \\  Hollow Lead & 0 & 0 & 0.90 & $-4$ & 0.35 & $+5$ \\ Warm Organ & 1 & 1 & 0.80 & $-5$ & 0.60 & $+6$ \\ Choir Pad & 2 & 0 & 0.85 & $-8$ & 0.55 & $+8$ \\ FM Bell & 3 & 4 & 0.85 & $-3$ & 0.50 & $+11$ \\ Glass Pluck & 4 & 4 & 0.85 & $-4$ & 0.45 & $+4$ \\ Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\  工厂预设的振荡器参数；失谐单位为音分 </p>
+<p>从表 tab:preset-filter 与表 tab:preset-osc 可以直接读出每个预设的 性格：Hollow Lead 是一条九成电平的 hollow 加一条低电平同波表，适合柔和主音； Warm Organ 让两条 organ 支路同时开，靠失谐做出风琴的厚度；Choir Pad 用 vocal 作主支路、hollow 作辅支路；它的铺底听感来自 vocal 波表与较低截止的组合； FM Bell 与 Glass Pluck 都用 metallic/glass 波表的高截止，前者更亮、后者更短促； Sub Bass 把截止压到 420 Hz，只留低频。</p>
+<h3>三台标志合成器：减法合成的三种性格</h3>
+<p>参数表能告诉你“现在是什么”，却不能告诉你“为什么这样弹”。减法合成的历史里有三台琴，正好对应本章的三组动作：Minimoog 把“少”做成重量，Juno 把“薄”做成宽度，TB-303 把“一条线”做成律动。</p>
+<p><strong>Minimoog（1970）</strong>把原本模块化、占房间的 Moog 合成器塞进一台可携带的琴：三个振荡器、梯形低通、没有记忆预设。它留下的不是“参数越多越好”，而是“每条支路都要有角色”。本章只有两条支路，正好练这件事：先让 <code>osc1</code> 站住，再用 <code>osc2</code> 的电平与失谐补厚度；第三层留给编曲，不要硬塞进一个音色。夜半的 Sub Bass 用 420 Hz 低通加一条 organ 支路，就是“少”的另一种写法。</p>
+<p><strong>Juno-60/Juno-106（1982/1984）</strong>用 DCO 与合唱，把“薄”做成“宽”。它的合唱不是真的加一条第三振荡器，而是用调制把时间与左右错开；本章没有合唱效果，只能在两条同波表支路上做小失谐，例如 $5$ 到 $9$ 音分，再把宽度留给后续效果。不要声称这等于 Juno 的合唱，它是“用现有参数做近似”，不是复刻。</p>
+<p><strong>TB-303（1981）</strong>本来是为贝斯手做的单振荡器加滤波器，却在舞池里被当成 acid 的主音。它提醒我们：共振与截止不是音色装饰，它们会改变音高感与律动。把 <code>resonance</code> 从 0.2 推到 0.5 时，截止附近的谐波被强调，旋律的重心会跟着移动；这不是音量，别用 <code>drive</code> 去补。夜半没有 303 的滑音与 accent 控件，能练的是“一条线＋一个滤波器”的判断。</p>
+<p>三台琴的共通点：先把一条线做清楚，再加第二条；先听相位与失谐，再谈加厚。参数是手，听感才是耳朵；不要让预设名替你听。</p>
+<h2>本章与帮助主题的映射</h2>
+<p>   本章小节 & 应用内帮助锚点 \\  信号链 & <code>synth-signal-chain</code> \\ 九个可投影参数 & <code>synth-parameters</code> \\ 六个工厂预设的参数 & <code>synth-factory-presets</code> \\  第二章帮助主题映射</p>
+<h2>延伸阅读</h2>
+<ul>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a>——Sound On Sound 技术栏目：用行业教程对照振荡器、滤波器与包络的实际听感。</li>
+<li><a href="https://www.ableton.com/en/blog/">https://www.ableton.com/en/blog/</a>——Ableton 博客：查看合成器音色拆解与制作人工作流，补足参数背后的音乐判断。</li>
+</ul>
+<nav class="manual-pager"><a href="01-overview.html">← 乐器与音轨</a><span></span><a href="03-factory-voices.html">内置合成音色 →</a></nav>
+</main></body></html>

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shortcuts and Command Reference — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Shortcuts and Command Reference</h1>
+<p></p>
+<blockquote class="classquote"><p>以无厚入有间，恢恢乎其于游刃必有余地矣。</p><cite>Zhuangzi, “The Secret of Caring for Life” (《庄子·养生主》)</cite><p class="gloss">Translation: “Where there is no thickness to enter what has gaps, there is ample room for the blade to move.” Shortcuts make frequent actions effortless; once the hands know the way, the mind can stay with the music.</p></blockquote>
+<p>Yeban has a single authoritative shortcut policy table: the one shown under Help $$ Shortcuts, which is the same table printed by <code>yeban-app --print-shortcuts</code>. This chapter groups common keys by workflow as a memory aid; it is not a second authoritative table — for the full list and implementation status, use the in-app reference.</p>
+<h2>The Policy Table Shared with In-app Help</h2>
+<h3>Why this chapter does not copy the full table</h3>
+<p>The policy table evolves: it marks row by row which keys are implemented and which are "bound but not yet implemented" in the host. A hand-copied table goes stale quickly and can turn "not implemented" into "available". So this chapter does only two things: explain the canonical key notation, and pick out high-frequency operations by workflow.</p>
+<h3>Canonical notation and platform folding</h3>
+<p>The table keeps the cross-platform canonical form <code>Cmd/Ctrl+</code>: on macOS it renders as <code>Cmd+</code>, elsewhere as <code>Ctrl+</code>. So <code>Ctrl+S</code> on Windows and <code>Cmd+S</code> on macOS are the same canonical binding. A key marked "(not implemented)" is bound and resolves to an action, but the host has no implementation yet and rejects the press — the key is not broken.</p>
+<h2>Common Keys by Workflow</h2>
+<p>The keys below all come from the policy table, grouped in the order you tend to work.</p>
+<h3>Projects and editing</h3>
+<li>[Cmd/Ctrl+N] New MIDI synth track.</li>
+<li>[Cmd/Ctrl+O] Open project.</li>
+<li>[Cmd/Ctrl+S] Save project; Cmd/Ctrl+Shift+S save as.</li>
+<li>[Cmd/Ctrl+Z] Undo; Cmd/Ctrl+Shift+Z redo.</li>
+<li>[Tab] View switch (canvas focus only); F5 Session view, F6 Arrangement view.</li>
+<h3>Arranging and editing clips</h3>
+<li>[Space] Play/pause; Shift+Space resume from cursor.</li>
+<li>[Enter] Return to start; C cycle playback toggle.</li>
+<li>[Cmd/Ctrl+T] Split selected clip at the playhead.</li>
+<li>[Cmd/Ctrl+C / V / X] Copy / paste / cut clips.</li>
+<li>[Cmd/Ctrl+= / -] Zoom the timeline horizontally in/out.</li>
+<li>[Cmd/Ctrl+Up/Down] Zoom tracks vertically out/in.</li>
+<h3>Bottom console and panels</h3>
+<li>[P / F7] Piano roll; X / F8 mixer console; F9 device rack; F3 console device stack.</li>
+<li>[I] Toggle the left inspector.</li>
+<li>[Cmd/Ctrl+Shift+A] Show automation lanes.</li>
+<li>[Cmd/Ctrl+Shift+B] Open the unified browser (sounds/samples/presets/effects).</li>
+<li>[E] Toggle editor view.</li>
+<h3>Recording and other</h3>
+<li>[R] Recording on/off.</li>
+<li>[Cmd/Ctrl+Shift+H] Time Machine.</li>
+<li>[Esc] Close the command palette / hotspot overlay.</li>
+<h3>The IME exception</h3>
+<p>In text input and IME composition mode, every key except F5/F6 is swallowed by the input method and does not trigger the actions above — deliberately, so typing does not fire shortcuts. The policy table has separate columns explaining "canvas focus" versus "text input + IME composition".</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The Help $$ Shortcuts panel showing canonical form, keys, actions and implementation status columns]</figure>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>The authoritative source is the one policy table behind the in-app reference and <code>--print-shortcuts</code>; this chapter is only a guide </p>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  Shared policy table / notation & <code>shortcuts-policy-table</code> \\ Projects and editing & <code>shortcuts-project-edit</code> \\ Arranging and clips & <code>shortcuts-arrange</code> \\ Console and panels & <code>shortcuts-panels</code> \\ Recording and other & <code>shortcuts-record-misc</code> \\ IME exception & <code>shortcuts-ime-exception</code> \\ </p>
+<p>What you will be able to do Find high-frequency keys by workflow, understand the <code>Cmd/Ctrl+</code> platform folding, and know that the full list lives in the in-app reference, not this chapter.</p>
+<p>Hands-on exercise Open Help $$ Shortcuts and pick three keys from this chapter that you use often but know less well; run <code>yeban-app --print-shortcuts</code> and confirm it shows the same bindings; finally, using only the keyboard, do "open project $$ split a clip $$ save".</p>
+<nav class="manual-pager"><a href="ch08-export-sharing.html">← Export and Sharing</a><span></span><a href="ch10-entry-points.html">Terminal and Automation Entry Points →</a></nav>
+</main></body></html>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dynamics Processing — Mixing — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Mixing</a></nav>
+<h1>Dynamics Processing</h1>
+<p></p>
+<blockquote class="classquote"><p>其进锐者其退速。</p><cite>《孟子·尽心上》 / Mencius, "Jin Xin I"</cite><p class="gloss">Translation: What advances sharply also retreats quickly. Note: compression and transient shaping control fast peaks without flattening the whole performance.</p></blockquote>
+<p>Dynamics processing changes not frequency but <strong>how level behaves over time</strong>. It makes loud peaks step back, brings quiet detail closer, or keeps unwanted sound out. Compression, limiting, gating, and expansion are four different goals; treating "loud" as the only goal usually flattens a mix.</p>
+<h2>Four devices, four goals</h2>
+<p>   Device & What it does & Typical use \\  Compressor & Reduces the part above threshold by a ratio; below threshold stays untouched & Control vocal/bass dynamics; make a track sit steadily in the mix \\ Limiter & Pins peaks below a ceiling with a very high ratio and very fast attack & Prevent overs before export, or protect downstream devices \\ Gate & Attenuates or mutes the part below threshold & Remove noise floor, bleed, unwanted tails \\ Expander & Pushes the part below threshold further down; upward expansion lifts it & Restore contrast, make quieter sections quieter; upward expansion is rarer \\  The different goals of four dynamics devices </p>
+<p>The line between compression and limiting is not the name but <strong>whether the attack lets transients through</strong>. A compressor can use a slow attack so the first transient stays intact and only the sustained part is compressed; a limiter's attack must be fast enough that the peak does not cross the ceiling. A gate is not a "reverse compressor": it acts below threshold to remove content. An expander also acts below threshold, but its goal is to widen the level difference, not to mute.</p>
+<h2>Compressor parameters</h2>
+<p>Yeban's built-in device is a feed-forward soft-knee compressor. The chain is: stereo-linked RMS detection → soft-knee static curve → independent gain attack/release → multiply back into the input, then makeup. It has no lookahead delay and does not look at the output, so there is no feedback loop.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>   Parameter & Meaning & Range & Default \\  <code>threshold\_db</code> & Where compression starts & $-120$–$24$ dBFS & $-12$ dBFS \\ <code>ratio</code> & Compression ratio & 1–1000 & 4:1 \\ <code>knee\_db</code> & Soft-knee width & 0–24 dB & 6 dB \\ <code>detector\_s</code> & RMS detector window time constant & 0.0001–10 s & 0.005 s \\ <code>attack\_s</code> & Time constant when gain moves down & 0.0001–10 s & 0.01 s \\ <code>release\_s</code> & Time constant for gain returning to 1.0 & 0.0001–10 s & 0.1 s \\ <code>makeup\_db</code> & Post-compression makeup gain & $-24$–$24$ dB & 0 dB \\  Yeban's dynamics parameter contract </p>
+<p>All three time values are <strong>time constants $$</strong>, not "10%–90% rise time": 63.2% of the way to steady state is $$, and 1 dB from steady state is about $1.585$. The detector window answers "how fast do we see the current RMS"; attack/release answer "how fast does gain follow". Merging them into one attack knob makes the readings impossible to reconcile.</p>
+<p>The soft-knee formula interpolates quadratically within $W/2$ above and below threshold: transparent below the knee, smooth inside, ratio compression above. $W=0$ degenerates to a hard knee with a corner at threshold. The point of a soft knee is to avoid abruptly crushing material that just crosses threshold, not to make it louder.</p>
+<h2>Where the compressor actually lives in Yeban</h2>
+<p>Click "Insert Compressor" in the device rack to add the built-in soft-knee compressor to the current track. The rack's compressor readout shows threshold, ratio, and GR; the button beside it cycles the ratio: <strong>2:1 → 4:1 → 8:1 → 20:1</strong>. If the current ratio is not in that list, the next click starts at 2:1.</p>
+<p>   UI element & Actual behavior & Boundary \\  "Insert Compressor" & Inserts the dynamics group with contract defaults & Multiple units can be inserted on one track \\ Compressor readout & Shows threshold/ratio of the first device with <code>ratio</code> & Falls back to placeholder values when none is found \\ Ratio cycle button & Changes only that device's <code>ratio</code> & Only the four values 2/4/8/20 \\ GR readout & Always shows 0.0 dB & Not a live gain-reduction meter \\ Compressor curve & Draws a hard-knee transfer curve from threshold + ratio & Ignores knee/ detector/ attack/ release; not a soft-knee measurement \\ Threshold/ knee/ detector/ attack/ release/ makeup knobs & The contract has the parameters & The current rack has no separate controls; they cannot be dragged \\  What the compressor UI elements actually do </p>
+<p>The two easiest misreads are "GR 0.0 dB" and the "measured curve". The GR string is fixed by the projection and does not mean there is no reduction; the curve uses the hard-knee formula $y=T+(x-T)/R$, while the device runs the three-part soft-knee formula. Judge whether compression happens by ear, meters, and the overall dynamics; do not treat the curve as a live meter.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The current track has a Compressor inserted; the device rack shows the compressor readout and Ratio cycle button, with the compressor curve visible.]</figure>
+<h2>Status of limiter, gate, and expander</h2>
+<p>Yeban's effect contract has a separate limiter group: threshold $-30$–$0$ dB (default $-1$), ceiling $-6$–$0$ dB (default $-0.3$), release 10–1000 ms (default 80), lookahead 1–192 frames. But the one-click built-in effects are only EQ, Reverb, and Compressor; there is no "Insert Limiter" entry. The UI line "Limiter: threshold -0.1 dBTP · status normal (no overs)" is fixed text, not a state read from a real limiter device.</p>
+<p>Gate and expander have no corresponding built-in effect group and no rack entry. They can be explained as concepts, but they cannot be operated as existing features on this rack. If these processes are needed, use a path outside the current built-in contracts or wait for a later version; the manual does not write "should exist" as "exists now".</p>
+<h2>Setup order and common mistakes</h2>
+<ol>
+<li><strong>Fix level before compression</strong>: if a track jumps because of performance, flatten the sections with fader/automation first; compression handles the remaining peaks and dips.</li>
+<li><strong>Set threshold against the loudest section</strong>: it should sit below the peaks that need control without compressing every phrase; a common start is 3–6 dB reduction on the loudest part.</li>
+<li><strong>Choose ratio by goal</strong>: 2:1–4:1 suits vocal/bass dynamics; 8:1 and above feels closer to limiting and can sound squashed.</li>
+<li><strong>Do not always use the fastest attack</strong>: too fast shaves drum/plucked transients; too slow lets peaks through. 10 ms is a common start.</li>
+<li><strong>Do not always use the shortest release</strong>: too short pumps; too long makes the next phrase slow to recover. 100 ms is a common start, adjusted to the song.</li>
+<li><strong>Makeup is not a loudness button</strong>: it raises everything and can clip the bus; check post-compression peaks before adding gain.</li>
+</ol>
+<p>Common mistakes: using a compressor as a limiter (slow attack leaks peaks), using a limiter as a loudness tool (more limiting means flatter), using a gate to "fix" performance (it cuts tails and breaths too), trusting the fixed GR 0.0 as "no compression", and reading the hard-knee schematic as a soft-knee measurement. Yeban currently has no separate knobs for these parameters; when fine control is needed, solve it in project data or wait for later controls, and do not pretend curve dragging changes knee or attack.</p>
+<h2>Exercise</h2>
+<aside class="note">
+<ol>
+<li>Put a compressor on a track with wide dynamics. With the threshold fixed, compare 2:1 and 8:1; note transients and sustained parts.</li>
+<li>Treat the GR reading as a placeholder, not proof of “no compression”; judge by ear, meters, and overall movement.</li>
+<li>Do a “fix level first, then compress” A/B: flatten sections with fader/automation, then compress; compare pumping and detail.</li>
+</ol>
+</aside>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  Four devices, four goals & <code>dyn-four-kinds</code> \\ Compressor parameters & <code>dyn-compressor-params</code> \\ Where the compressor actually lives in Yeban & <code>dyn-compressor-ui</code> \\ Status of limiter, gate, and expander & <code>dyn-limiter-gate-status</code> \\ Setup order and common mistakes & <code>dyn-workflow-mistakes</code> \\  Help-topic mapping for Chapter 4</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.izotope.com/en/learn.html">https://www.izotope.com/en/learn.html</a> — iZotope Learn: see visual explanations of compression, limiting, and transient shaping, and fill in the time relationships behind the controls.</li>
+<li><a href="https://www.soundonsound.com/techniques">https://www.soundonsound.com/techniques</a> — Sound On Sound techniques: use production cases to separate "controlling peaks" from "flattening the performance".</li>
+</ul>
+<nav class="manual-pager"><a href="03-eq.html">← Equalization (EQ)</a><span></span><a href="05-space-effects.html">Space Effects →</a></nav>
+</main></body></html>

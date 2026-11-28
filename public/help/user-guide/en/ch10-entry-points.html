@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal and Automation Entry Points — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Terminal and Automation Entry Points</h1>
+<p></p>
+<blockquote class="classquote"><p>天下同归而殊涂，一致而百虑。</p><cite>Book of Changes, “Appended Judgments II” (《周易·系辞下》)</cite><p class="gloss">Translation: “All beneath heaven returns to one end though the roads differ; all reaches one goal though thoughts are many.” The GUI, the terminal, and MCP are different entries into the same project.</p></blockquote>
+<p>The same project can be operated through three entry points: the desktop GUI, a terminal TUI and the command line CLI, plus an MCP tool surface for AI agents. They share one project model and backend, so they do the same work with different interaction styles. This chapter gives one section each and says when to use which.</p>
+<h2>TUI</h2>
+<p>Yeban provides a terminal user interface (TUI) entry point, with source in <code>crates/yeban-tui</code>. It serves setups without a graphical desktop, or users who prefer working in a terminal, without opening a window; the panels and keys it actually offers are documented by that entry point's own help, not hand-copied here where they could go stale.</p>
+<p> What each entry point suits   Entry & Best for \\  Desktop GUI & Everyday arranging, notes, mixing, visual feedback \\ TUI & Terminal environments, no graphical desktop, remote shells \\ CLI & Batch work, scripts, export, CI \\ MCP & AI agents editing and querying through tool calls \\ </p>
+<h2>CLI</h2>
+<h3>Read the help first</h3>
+<p>The complete switch list and exit codes come from <code>yeban-app --help</code>; this chapter is a guide, not a replacement. Common entries:</p>
+<li>[<code>--open <path></code>] Open a given project directly (GUI or batch).</li>
+<li>[<code>--export-wav</code>] Export the full mix; pair with <code>--loudness-target</code> and <code>--true-peak-ceiling</code> for mastering. An unreachable target fails loudly rather than silently degrading.</li>
+<li>[<code>--export-stems <dir></code>] Export stems with the same backend as the MCP tool; track-selection switches can limit it to named tracks.</li>
+<li>[<code>--apply-ops</code>] Commit a file of edit operations as one batch.</li>
+<li>[<code>--export-song-overview</code>] Export the whole-song overview (energy/frequency/density/emotion with an anomaly summary).</li>
+<li>[<code>--print-shortcuts</code>] Print the shortcut policy table (the same source as the GUI's Help $$ Shortcuts).</li>
+<li>[<code>--headless</code>] Run on a machine without a display.</li>
+<h3>Know the feature gates</h3>
+<p>Some switches are gated by build features. In a default build the MCP-related <code>in-process-mcp</code> is on — but "compiled in" is not "listening": at runtime you still need <code>--enable-mcp-http</code> or the environment variable <code>YEBAN\_MCP\_HTTP=1</code>. With <code>--no-default-features</code>, calling a gated switch yields a usage error naming the feature (exit code 2), never a silent ignore. Experimental exports such as <code>--export-als</code> and <code>--export-logic</code> are off by default and only compile when requested.</p>
+<h2>MCP</h2>
+<h3>Two forms, one registry</h3>
+<p>MCP has two forms sharing a single <code>TOOLS</code> registry and the same domain implementation:</p>
+<li>[Form A (library form)] Hosted in-process by <code>yeban-app</code>, for an AI agent working on a running DAW; transport is loopback HTTP (<strong>only</strong> <code>127.0.0.1</code>) or direct in-process calls.</li>
+<li>[Form B (binary form)] A standalone <code>yeban-mcp</code> binary over stdio for batch work without a GUI.</li>
+<p>Network listening binds only the loopback address, never <code>0.0.0.0</code> — a safety red line. <code>yeban-mcp</code>'s own <code>mcp-http</code> is never in its default features; only the host can forward-enable it.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The two MCP forms: in-app mount over loopback HTTP, standalone binary over stdio]</figure>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Both MCP forms share one registry; network listening binds only loopback </p>
+<h3>Don't trust hand-copied tool counts</h3>
+<p>The tool count must be read live from the three constants in <code>crates/yeban-mcp/src/tools.rs</code> and the enum in <code>schemas/mcp-tools.schema.json</code>: numbers in documentation have gone stale repeatedly and old manuals disagree with each other. This chapter deliberately gives no concrete number.</p>
+<p>Some tools depend on a provider injected by the host (e.g.\ an external SVS singing service). Form B has no injector, so calling such a tool returns the <code>providerUnavailable</code> contract rather than pretending success.</p>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  TUI & <code>entry-tui</code> \\ CLI: help / common switches & <code>entry-cli-switches</code> \\ CLI: feature gates & <code>entry-cli-features</code> \\ MCP: two forms & <code>entry-mcp-forms</code> \\ MCP: tool counts and providers & <code>entry-mcp-tools</code> \\ </p>
+<p>What you will be able to do Pick the right entry for the situation, know common CLI switches and feature gates, and explain that both MCP forms share one registry while network listening binds only loopback.</p>
+<p>Hands-on exercise Use <code>yeban-app --help</code> to find the exact stem-export switch, export stems from both the GUI and CLI for the same project and compare receipts; run <code>yeban-app --print-shortcuts</code> against the GUI panel; finally confirm that without <code>--enable-mcp-http</code> the MCP HTTP port is not listening.</p>
+<nav class="manual-pager"><a href="ch09-shortcuts.html">← Shortcuts and Command Reference</a><span></span><a href="ch11-troubleshooting.html">Troubleshooting →</a></nav>
+</main></body></html>

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting — Yeban User Guide — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Yeban User Guide</a></nav>
+<h1>Troubleshooting</h1>
+<p></p>
+<blockquote class="classquote"><p>人谁无过？过而能改，善莫大焉。</p><cite>Zuo Zhuan, 2nd year of Duke Xuan (《左传·宣公二年》)</cite><p class="gloss">Translation: “Who among us has no faults? To err and be able to change is the greatest good.” Mistakes are not the end: follow the clues, correct the cause, and the project moves on.</p></blockquote>
+<p>This chapter is organised by symptom: what you see, then what to rule out. Each section moves from the most likely and easiest-to-check cause towards project and device levels; change one thing at a time and audition after each. One guiding rule throughout: Yeban records key facts in receipts and the status bar — do not conclude from "it looks fine".</p>
+<h2>No Sound</h2>
+<p>Work through these in order, changing only one thing per step and listening after each:</p>
+<ol>
+<li><strong>Transport and playhead</strong>: is playback actually running? Press Space and watch the playhead advance; Shift+Space resumes from the cursor.</li>
+<li><strong>Mute / solo</strong>: are Mute or Solo engaged on the track header or in the mixer? If another track is soloed, the current one is silent by design.</li>
+<li><strong>Fader and pan</strong>: is the track fader or master fader all the way down? Mix $$ Reset Master Fader to 0dB restores the master in one step.</li>
+<li><strong>Device chain</strong>: did the instrument load? Is an effect bypassed? Bypassed devices are not the same as deleted ones.</li>
+<li><strong>Clip and fades</strong>: is there actually a clip under the playhead? Was it trimmed down to silence, or are its fade-in/fade-out swallowing the whole thing?</li>
+<li><strong>Materials present?</strong>: a missing embedded sample is recorded as MissingSample and the track is skipped (saving still succeeds). Check the asset pool for the audio it uses; relative SFZ paths depend on the project directory — a project opened from file uses the real directory, while an unsaved new project uses a placeholder under the output directory, which breaks samples kept only next to the project file.</li>
+<li><strong>Control Room</strong>: does the master-bus meter show a level? Level present but nothing heard points to the output device; no level points to the project side.</li>
+</ol>
+<figure class="fig-placeholder">[截图见 PDF 版：The silence checklist as presented in the help panel]</figure>
+<h2>Devices and Drivers</h2>
+<h3>Input device and level</h3>
+<p>The recording panel has input-device selection and an input test, so you can confirm a signal arrives before actually recording. The recording path uses the project's sample rate (48 kHz by default); after changing devices, the next recording uses the new one.</p>
+<h3>Output and latency</h3>
+<p>If the project-side meter shows level but you hear nothing, check the system output device and the Control Room's master-bus reading. Yeban targets low-latency determinism and handles internal plug-in delay compensation; for latency-sensitive work, check the device buffer settings first rather than hunting for interface switches.</p>
+<h3>Safe defaults</h3>
+<p>Network-listening services (MCP HTTP) bind only the loopback address <code>127.0.0.1</code>, never <code>0.0.0.0</code>; a default build does not listen at all unless you explicitly pass <code>--enable-mcp-http</code> or set <code>YEBAN\_MCP\_HTTP=1</code>. If MCP "won't connect" and you are tempted to open up listening, check that runtime switch first — do not change the bind address.</p>
+<h2>A Project Will Not Open</h2>
+<ol>
+<li><strong>Check the file</strong>: <code>.yeban</code> is the only project format. Saving is atomic, so a power cut mid-write usually leaves the previous complete version rather than half a file; try a backup if you have one.</li>
+<li><strong>Use the right entry</strong>: File $$ Open / Restore Project..., or <code>yeban-app --open <path></code>; the startup chooser's Recent Projects tab also returns you to prior work.</li>
+<li><strong>Are the assets alongside it?</strong>: the project references asset-pool materials by content hash. If you copied only the <code>.yeban</code> file and lost referenced materials, the project opens but those tracks are silent — that is not "won't open".</li>
+<li><strong>Export a diagnostic bundle</strong>: Diagnostics $$ Export Project Diagnostic Bundle produces a troubleshooting bundle (not artwork audio). Attaching it is far more useful than a vague description when asking for help.</li>
+<li><strong>Record errors verbatim</strong>: if the app reports an error code or a missing list, note the original text; do not substitute "it looks like the same problem as last time" for a measurement.</li>
+</ol>
+<h2>Performance and Memory Thresholds</h2>
+<h3>Know the threshold</h3>
+<p>The app test target is heavy: measured on a 4 GB machine, <code>cargo test -p yeban-app</code> is killed by the kernel (rustc SIGKILL) at roughly 35 minutes, yielding no results; moving the same kind of assertions into a lighter crate (<code>yeban-model</code>) compiled in about 1m39s and ran in about 1s. The practical threshold for app-side verification is at least 8 GB; below it, app-side work can only be static changes — do not claim tests were run.</p>
+<h3>A minimum verification set when resources are tight</h3>
+<p>When memory is insufficient, use the smallest set you can actually complete: <code>cargo fmt --check</code>, <code>cargo check --all-targets</code> and clippy for the target crate. Record what could not run honestly as <code>not\_run</code> with the reason, and let CI rerun it on a larger machine. For building, use <code>cargo build --profile release-small -p yeban-app</code>; on a headless machine add <code>--headless</code>.</p>
+<h3>Only the CI verdict counts</h3>
+<p>A local green is only a reference; the final verdict belongs to CI. An unread verdict counts as pending, never as "passed". Also avoid treating an overall "success" as proof that the target assertions actually ran — confirm the job executed (non-zero duration) and its log contains test-result lines.</p>
+<h2>Help Topic Mapping</h2>
+<p> Sections of this chapter $$ in-app help anchors   Section & Help topic \\  No sound & <code>troubleshoot-silence</code> \\ Devices and drivers & <code>troubleshoot-devices</code> \\ A project will not open & <code>troubleshoot-project-open</code> \\ Performance and memory thresholds & <code>troubleshoot-performance</code> \\ Minimum verification and CI verdict & <code>troubleshoot-verification</code> \\ </p>
+<p>What you will be able to do Work through silence, device and project-open failures symptom by symptom, know the 8 GB threshold and the minimum verification set, and understand that the CI verdict is final.</p>
+<p>Hands-on exercise Reproduce "no sound": mute a track then unmute it, bypass then restore an effect, auditioning after each step and naming which step restored sound; then export a diagnostic bundle and confirm it is a diagnostic file, not the piece; finally run the minimum verification set in a low-memory environment and record the unrunnable items honestly as <code>not\_run</code>.</p>
+<nav class="manual-pager"><a href="ch10-entry-points.html">← Terminal and Automation Entry Points</a><span></span></nav>
+</main></body></html>

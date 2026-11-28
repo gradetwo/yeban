@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Advanced Mixing Lab — Mixing — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Mixing</a></nav>
+<h1>Advanced Mixing Lab</h1>
+<p></p>
+<blockquote class="classquote"><p>井蛙不可以语于海者，拘于虚也；夏虫不可以语于冰者，笃于时也。</p><cite>《庄子·秋水》 / Zhuangzi, "Autumn Floods" (Qiu Shui)</cite><p class="gloss">Translation: A well frog cannot discuss the sea, limited by its hollow; a summer insect cannot discuss ice, bound by its season. Note: advanced experiments deliberately leave the familiar range of parameters and listening habits.</p></blockquote>
+<p>Chapters 1--10 cover Yeban's signal path, parameter contracts, and basic judgments. This chapter does not repeat them. It turns common advanced techniques into experiments you can run in Yeban: each section says what listening problem it solves, what this build can and cannot do, and a repeatable ear-training/operation step. Techniques that have no entry point here are marked as boundaries; we do not borrow buttons from a generic DAW and pretend they exist in Yeban.</p>
+<h2>Level budget and platform loudness</h2>
+<p>A level budget is a pre-planned allocation of peak level through the whole chain: source, device chain, bus, and export each get some headroom. It is not the same as “pushing the fader until it sounds loud.” A safe starting point is: keep single-track peaks below $-6$ dBFS, and leave about 6 dB of headroom on the master before a limiter; when you need more loudness, inspect arrangement density and dynamics before pinning every stage at full scale.</p>
+<p>Platform loudness normalization is how streaming services bring different works to a similar playback loudness. It does not mean every song must be made at one LUFS value: the platform adjusts to its own target, and an over-compressed mix can lose dynamics after normalization. You may choose a delivery target, but “the platform will normalize it” does not mean “the master can exceed every limit.”</p>
+<p>   Reference & Typical value & Note \\  Streaming stereo & around $-14$ LUFS & common platform range; not identical everywhere \\ Podcast/dialogue & around $-16$ LUFS & intelligibility first; not a music default \\ EBU R128 & $-23$ LUFS & broadcast delivery, not streaming default \\ True-peak ceiling & $-1$ dBTP & room for encoding and resampling \\ Unlimited headroom & about 6 dB & room for limiter and later processing \\  Common loudness references; target numbers are engineering choices, not mandatory specs </p>
+<p>Yeban's boundary matters: the mixer's “LUFS” is smoothed RMS minus 0.691 dB, not BS.1770 gated integrated loudness; the control room's integrated LUFS and dBTP cells have no runtime writer in this build; the only deliverable reading is the post-export measured line. To target $-14$ LUFS or a $-1$ dBTP ceiling on export, use the CLI/MCP loudness normalization/true-peak ceiling; the GUI export dialog has no such inputs. Do not write “watch the control room until it reads $-14$” as an operation.</p>
+<h3>Experiment 1: measure before deciding</h3>
+<ol>
+<li>Choose an 8--12 second chorus. Leave every fader alone and export a WAV with the bus limiter off.</li>
+<li>Read the post-export true peak, integrated LUFS, and LRA. Write the three numbers down; do not guess “about -14” by ear.</li>
+<li>Export again with the bus limiter on, and compare true peak and LRA. If LRA shrinks clearly while integrated LUFS rises only slightly, the limiter is reducing dynamics, not adding loudness.</li>
+<li>Back in the project, lower the three loudest tracks by 1--2 dB and repeat. Note whether true peak falls and whether the mix feels looser. Record the difference between “lower the source” and “push the master”.</li>
+</ol>
+<h2>Sweeping, dynamic EQ, and multiband thinking</h2>
+<p>A frequency sweep temporarily boosts a narrow band to an exaggerated amount, then moves the center frequency slowly so you can find “where it hurts most.” It is only a probe: after locating the problem, return the boost to zero and use a small cut. Yeban's three-band EQ has no separate Q knob; curve dragging changes only gain and center frequency, so the probe is wider than a dedicated EQ. Judge by the full mix, not by a single frequency number.</p>
+<p>Dynamic EQ changes a band's gain only when that band exceeds a threshold. The difference from a static EQ is not the curve shape but the trigger: a static EQ cuts all the time; a dynamic EQ cuts only when needed. Yeban's channel strip does contain a dynamic EQ stage (<code>deq\_freq</code>, <code>deq\_threshold\_db</code>, <code>deq\_cut\_db</code>, <code>deq\_q</code>, <code>deq\_ratio</code>), placed after EQ and before the filter; the device card currently has no separate knobs for these five fields, so they are written through the MCP <code>DeviceParam</code> lane, not by dragging the three-band curve. The three-band shaping EQ is a static biquad; the dynamic EQ is another stage. Do not mix them up.</p>
+<p>Multiband compression splits the spectrum into bands, compresses each independently, and sums them. It can reduce low-frequency peaks without touching highs, but it adds crossover phase and band interaction. Yeban currently has no multiband compressor device; the rack has a single-band compressor. To test “low-end only,” first use a static EQ to make the low end acceptable, then use the single-band compressor for overall control, or route the low end to a separate aux track if the project allows splitting; do not call a single-band compressor “multiband.”</p>
+<h3>Experiment 2: sweep for mud and harshness</h3>
+<ol>
+<li>Choose a vocal or bass, solo it, and insert the three-band EQ. Push the mid gain temporarily to $+9$ dB.</li>
+<li>Move from 200 Hz slowly toward 2 kHz and stop at the most “boxy/muddy” point. Return the gain to zero, then cut 2--3 dB.</li>
+<li>Move the probe to 2--6 kHz and find the harshest/sibilant point. Return to zero and cut 1--2 dB. Do not boost highs at the same time to “restore brightness.”</li>
+<li>Return to the full mix and compare “good in solo” with “good in context.” If the mix becomes thin, halve the cut.</li>
+</ol>
+<h2>Sidechain, gate, and parallel compression</h2>
+<p>Sidechain compression uses the level of one track to trigger compression on another. A classic use is kick triggering bass so the low end ducks briefly at each kick, or vocal triggering the music bus so the accompaniment makes room. Yeban's device rack has a “Dynamics, sidechain and transient control” panel. Its first row, “sidechain key source,” cycles through none and the other tracks when clicked; choosing a source creates a <code>Sidechain</code> edge, and the channel-strip compressor detector can read the key when one is present. The panel has no separate sidechain threshold/depth knob; apart from key-source selection, parameters follow the compressor contract. Do not say “there is no sidechain,” and do not call an ordinary threshold knob “sidechain depth.”</p>
+<p>Gate closes or deeply attenuates a signal below threshold to remove noise, bleed, and unwanted tails; an expander lowers the signal further below threshold to increase level contrast, not to mute it. Both act below threshold, the opposite of a compressor. Yeban's DSP contains a separate <code>gate.rs</code> with Gate / Expander / Ducker modes, but it is not wired into the device chain and has no rack or panel entry in this build. You cannot replace it by raising the compressor ratio: a compressor does not close the signal during silence.</p>
+<p>Parallel compression combines a dry signal with a heavily compressed copy so transients and detail survive while sustained parts become denser. Yeban can approximate this: create an aux return track, insert a compressor on the return, send the source into it, and let the return feed the master while the dry path stays on the original track. Sends and returns are covered in Chapter 5; compressor parameters in Chapter 4. This is not a plug-in “parallel” switch but a summing of two signal paths; the return compressor processes every track sent to it.</p>
+<h3>Experiment 3: parallel compression through a send</h3>
+<ol>
+<li>Choose a drum or vocal track and create an aux return track. Insert a compressor on the return.</li>
+<li>Lower the return compressor threshold and set the ratio to 4:1--8:1 so the return sounds clearly denser. Leave the return fader alone for now.</li>
+<li>Start the source send at $-20$ dB and raise it until you hear density without covering the dry signal; usually only a small amount is needed.</li>
+<li>Bypass the return compressor and compare the dry and parallel results. If the only difference is “louder,” lower the return fader and decide whether the texture really improved.</li>
+</ol>
+<h2>Delay, Haas, and width</h2>
+<p>Pre-delay pushes the wet signal later relative to the dry, letting the direct sound establish itself before the space begins. Too short and the dry and tail fuse; too long and the source seems detached from the room. Yeban's Freeverb has a <code>reverb\_predelay</code> parameter, but the device card currently has no knob for it; it is written through the project/MCP, not dragged in the UI.</p>
+<p>Haas delay copies a sound to the other side with a 1--35 ms delay, making the earlier copy the perceived source. It is often mistaken for “widening,” but in mono it becomes comb filtering; real width checking must return to MONO. Yeban currently has no separate Haas delay device and no “copy to the other side and delay” UI action; do not call track pan or reverb “Haas.”</p>
+<p>Width in Yeban is not a knob beside the fader. It is the channel strip's <code>strip\_width</code> (M/S scaling); <code>mono\_below\_hz</code> narrows the low-frequency side. Both exist only when a channel strip is present, and the current device card has no width/mono-maker knob: write <code>strip\_width</code> / <code>mono\_below\_hz</code> through the MCP <code>DeviceParam</code> lane, or edit the device parameters in the project. Check mono compatibility in the control room's MONO/SIDE monitoring: a must-keep part that disappears in MONO indicates left/right cancellation; a centered dry part that disappears in SIDE indicates the mid is being eaten by the difference signal. Monitoring switches do not enter the export.</p>
+<h3>Experiment 4: wider is not always better</h3>
+<ol>
+<li>Choose a track with stereo width (pad, harmony, or drums). First use MONO/SIDE to hear whether its current width collapses in mono; write down the result.</li>
+<li>If MCP is available, write the channel-strip <code>strip\_width</code> from 1.0 to 1.4 and then to 0.6; return to the full mix after each change and repeat the MONO check. If MCP is not available, do not pretend there is a width knob on the device card; do step 3 instead.</li>
+<li>Open the control room MONO and compare the mono results of different existing material; record which loses the least.</li>
+<li>Open SIDE and listen to what remains in the difference signal. If the centered vocal/bass is still loud in SIDE, its center component is excessive; return to MONO and confirm.</li>
+<li>Do not use the MONO monitoring level as the export level; MONO/SIDE are check switches only.</li>
+</ol>
+<h2>Coloration, parallel saturation, and monitoring environment</h2>
+<p>Harmonic distortion is the integer-multiple frequencies produced by a nonlinear process; saturation is a nonlinearity that compresses naturally near full scale, producing harmonics without fully clipping. Yeban's tape saturation is a chain-level device: it is built only when <code>tape\_drive</code> and <code>tape\_mix</code> are both greater than zero; it sits in series, not as a wet-only parallel effect.</p>
+<p>Yeban currently has no separate parallel-saturation routing: you cannot send a “wet-only tape” copy through an aux return, and you cannot split the tape stage into independent dry/wet signal paths in the device card. To approximate parallel saturation, put the same material on another track (if the project supports duplicating a track), color the copy differently, and balance the two; this adds a real track and must not break the original arrangement or export. Do not read <code>tape\_mix</code> as “parallel saturation”: it is the dry/wet ratio inside the chain, and the output is still one chain.</p>
+<p>Reference monitoring is not “put on a nice song in the background.” It is a fixed reference track, fixed monitoring level, and fixed check order, so you can hear your own mix's deviations under the same conditions. In Yeban, put the reference on its own audio track, bypass that track's effects, and use it only for A/B; it does not enter the export. Check at least three conditions: normal level, DIM-attenuated level, and MONO/SIDE for mono and difference signals.</p>
+<h3>Experiment 5: coloration A/B and reference monitoring</h3>
+<ol>
+<li>Choose drums or bass. Move tape drive <code>tape\_drive</code> from 0 to 0.25, then <code>tape\_mix</code> from 0 to 0.5; use <code>tape\_trim\_db</code> to bring the overall level back to the pre-A/B level.</li>
+<li>A/B at the same monitoring level: first listen for transient softening, then low-end thickness, then return to the full mix and decide whether it is only louder.</li>
+<li>Import a reference track to its own audio track and bypass its effects. Compare at the same monitoring level and in the same MONO/SIDE order; do not judge your level by the reference's loudness.</li>
+<li>Write three notes: transients, low end, noise/sibilance. If a category did not change, write “no change”; do not invent a sensation to fill the page.</li>
+</ol>
+<h2>Troubleshooting: mud, harshness, phase, and low-end fight</h2>
+<p>Advanced technique ultimately answers “what is wrong, and which layer do I change first?” These four problems have a check order you can verify in Yeban; do not start by adding EQ or compression.</p>
+<p>   Symptom & Check first & Common fix \\  Mud & 250--500 Hz buildup across tracks; excess low end; long reverb tail & narrow cuts first; offset bass/kick; shorten <code>reverb\_decay\_s</code> or lower wet \\ Harsh & sibilance/cymbal stacking at 2--5 kHz; overall high-shelf boost & cut 1--3 dB in the mid first; check whether every track is boosting highs; use channel-strip dynamic EQ only through <code>deq\_*</code> (MCP) \\ Phase cancellation & a part disappears in MONO; SIDE unusually strong; delay/polarity inversion & check <code>sample\_delay\_invert</code> and parallel paths; revisit MONO/SIDE; do not mask with width \\ Low-end fight & kick and bass fundamental/envelope overlap; mono-maker setting & adjust arrangement and pan first; small low-shelf cut; make kick and bass yield in frequency or time \\  Check order for four common problems </p>
+<p>Phase cancellation is two copies of the same signal adding up to a smaller result at some frequency because of polarity or delay. It does not always sound “broken”: sometimes one instrument simply becomes thin. Do not check only the waveform; use MONO/SIDE, polarity inversion, and delay parameters, and determine whether the problem is in a parallel path or inside one track.</p>
+<p>Low-frequency masking means that when low-frequency energy is strong, the ear has more trouble hearing simultaneous mid/high detail. A low-end “fight” is often not solved by EQ alone: check kick/bass timing, whether their attacks collide, whether both are panned to the center, and only then choose a cut or a yield.</p>
+<h3>Experiment 6: locate problems with MONO/SIDE</h3>
+<ol>
+<li>Choose an 8-bar section with drums, bass, and vocal. Listen in normal stereo first and note the exact place where mud, harshness, or a disappearing part occurs.</li>
+<li>Open MONO, solo drums, bass, and vocal one at a time, and identify which parts lose the most in mono. Do not judge width while in MONO.</li>
+<li>Open SIDE and check whether center dry parts that should stay are unusually strong in the difference signal. If so, return to MONO and inspect that track's pan and width.</li>
+<li>Make one 1--2 dB low-shelf cut or one 1--2 dB mid cut on the suspect track, then return to the full mix; change only one variable at a time.</li>
+</ol>
+<h2>Exercises</h2>
+<aside class="note">
+<p>Every experiment changes one variable and returns to the full mix. Write the result into a project note; do not rely on memory.</p>
+<ol>
+<li>Record true peak, integrated LUFS, and LRA from an unlimited WAV export; record a limited export too, and explain the difference.</li>
+<li>Use the three-band EQ sweep to find one 250--500 Hz buildup and one 2--5 kHz harshness, cut each by 1--3 dB, and explain why not boost.</li>
+<li>Use an aux return and compressor for one parallel-compression pass; compare dry, parallel, and “just louder”; record the send gain.</li>
+<li>Choose a track with width and compare <code>strip\_width</code>=0.6/1.0/1.4 under MONO (via MCP if available); never use the MONO monitoring level as the export level.</li>
+<li>Do a tape-saturation A/B, using <code>tape\_trim\_db</code> to restore level; note transients, low end, and noise.</li>
+<li>Check the same mix under reference track, normal level, DIM, and MONO/SIDE; list at least two deviations.</li>
+<li>Write one check order for each of mud, harshness, phase cancellation, and low-end fight; change only one variable per step.</li>
+<li>Turn the seven items above into an 8-bar remix report: for each decision write “sensation--evidence--change--relisten,” not just “it sounds better.”</li>
+</ol>
+</aside>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  Level budget and platform loudness & <code>mixing-level-budget</code> \\ Sweeping, dynamic EQ, and multiband thinking & <code>mixing-eq-advanced</code> \\ Sidechain, gate, and parallel compression & <code>mixing-dynamics-advanced</code> \\ Delay, Haas, and width & <code>mixing-space-advanced</code> \\ Coloration, parallel saturation, and monitoring & <code>mixing-coloration-advanced</code> \\ Troubleshooting: mud, harshness, phase, and low-end fight & <code>mixing-troubleshooting</code> \\  Chapter 11 help-topic mapping</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.soundonsound.com/reviews">https://www.soundonsound.com/reviews</a> — Sound On Sound reviews: read reviews of advanced tools and experimental workflows, and decide whether a experiment is worth trying.</li>
+<li><a href="https://www.freesound.org/">https://www.freesound.org/</a> — Freesound: find material you can legally audition for experiments, and practice hearing the same problem through a different sound.</li>
+</ul>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>Advanced-lab signal chain: source, device, bus and master output</p>
+<nav class="manual-pager"><a href="10-from-rough-mix-to-finished.html">← From Rough Mix to Finished: A Full Song Walkthrough</a><span></span></nav>
+</main></body></html>

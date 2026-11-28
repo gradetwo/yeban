@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>快速上手 — 夜半用户手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">夜半用户手册</a></nav>
+<h1>快速上手</h1>
+<p></p>
+<blockquote class="classquote"><p>不积跬步，无以至千里。</p><cite>《荀子·劝学》</cite><p class="gloss">本章从安装走到第一次导出，正是一步一步跑通最短路径，先做出声，再谈细节。</p></blockquote>
+<p>夜半（Yeban）是一款开源数字音频工作站：纯 Rust 实时音频引擎之上是一套 Slint 原生图形界面，并对外提供完整的 MCP 工具面。人和 AI 可以在同一个工程里并肩工作。 本章带你从安装走到第一次导出，全程只用它真实存在的功能。</p>
+<h2>安装与首次启动</h2>
+<h3>选择安装方式</h3>
+<p>最省事的是仓库 <code>README.md</code> 的 Download 表所列的 nightly 安装包（跟随 <code>main</code> 分支，未签名）：Windows x86\_64 用 MSI，macOS 用 DMG（Apple Silicon 与 Intel 各一份），Linux 用 DEB（x86\_64 与 arm64 各一份）。便携版 <code>.tar.gz</code> 与 <code>SHA256SUMS</code> 在 nightly 发布页。</p>
+<p>从源码构建 需要 Rust 1.99.0（由 <code>rust-toolchain.toml</code> 固定， <code>rustup</code> 会自动安装）、C++ 编译器与 <code>libclang</code> （<code>yeban-dsp</code> 用 bindgen 生成绑定）。Ubuntu/Debian 上的依赖与构建命令：</p>
+<pre><code>
+sudo apt-get install -y clang libclang-dev pkg-config libfontconfig1-dev \
+  libfreetype-dev libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev \
+  libx11-dev libgl1-mesa-dev libasound2-dev
+cargo build --release -p yeban-app
+</code></pre>
+<p>运行用 <code>cargo run --release -p yeban-app</code>；没有显示器的机器加 <code>-- --headless</code>。内存紧张时用 <code>cargo build --profile release-small -p yeban-app</code>。</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>第一章的动手路线：安装 $$ 启动 $$ 引导 $$ 编排 $$ 试听 $$ 导出 </p>
+<h3>首次启动与新手引导</h3>
+<p>第一次启动时，应用会自动打开新手引导（落盘状态判定为「该弹」才弹；点过「不再 显示」或已走完一遍就不会再自动出现）。引导带你认界面：欢迎页、走带栏、轨道区、 钢琴卷帘、混音控制台，最后是检查器与音色库。每一步都会把界面切到正在讲的那一区。 之后想再看，从「帮助 $$ 新手引导」重开。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：首次启动自动弹出的新手引导卡片，停留在「走带栏」一步]</figure>
+<h2>界面总览</h2>
+<h3>菜单栏与走带栏</h3>
+<p>顶部菜单栏共八组：文件、编辑、轨道、走带、混音、视图、诊断、帮助。走带栏在 窗口最上方：播放 / 暂停（空格）、停止、归零到 <code>001.01.000</code>、循环开关 （C）、节拍器与预备拍，以及速度（BPM）显示与敲入。走带栏右侧是工作区切换： 全景、现场激发、线性编曲、混音控制台，数字键 1--4 对应。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：内置演示工程打开后的主窗口，标出菜单栏、走带栏、编曲区、检查器、底部控制台]</figure>
+<h3>中部：编曲区</h3>
+<p>一条轨道一行：左边是轨道头（名称、静音 / 独奏、音量），右边时间轴上摆着片段。 片段可以拖动、拉边缘改长度、复制（Cmd/Ctrl+C / Cmd/Ctrl+V）、剪切 （Cmd/Ctrl+X）与删除。上方是小节标尺与段落标记；下方可展开和弦轨与自动化泳道。 按 Tab 打开 Clip 激发矩阵（Session 视图），按格子触发片段。</p>
+<h3>左侧：检查器与音色库</h3>
+<p>左栏上半是通道检查器，显示当前选中轨的通道条与设备参数，按 I 显隐；下半是 音色库，浏览预置音色与 SFZ 音色库。轨道头工具行最前面是「轨道菜单」按钮， 汇集本轨的操作。</p>
+<h3>底部控制台与边缘</h3>
+<p>底部三个页签：钢琴卷帘（P / F7）、混音控制台（X / F8）、设备机架（F9）； F3 把控制台最大化 / 还原。右侧可打开监听控制室（F4 显隐），显示主控监听与 响度读数。最下方状态栏给出选区信息、实时和弦识别、快捷键提示与音频设备状态； 再往下是全曲总览面板，用一张图看全曲能量与结构。把鼠标停在控件上会出现悬浮 提示，按 T 整体开关。</p>
+<p> 第一章涉及的键位（规范写法；macOS 为 Cmd+，其余为 Ctrl+）   键位 & 作用 \\  Space & 播放 / 暂停 \\ Shift+Space & 从光标处续播 \\ C & 循环播放开关 \\ Enter & 回到起点 \\ Tab / F5 & 视图切换 / Session 视图 \\ F6 & Arrangement 视图 \\ P / F7 & 钢琴卷帘 \\ X / F8 & 混音控制台 \\ F9 & 设备机架 \\ I & 显隐左侧检查器 \\ Cmd/Ctrl+S & 保存工程 \\ Cmd/Ctrl+Shift+S & 另存为 \\ Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z & 撤销 / 重做 \\ Cmd/Ctrl+T & 在播放头处切分选中的剪辑 \\ </p>
+<h2>第一个工程</h2>
+<h3>新建，或先用演示工程逛一圈</h3>
+<p>工程文件的扩展名是 <code>.yeban</code>，它是唯一的工程格式：一个容器里装着轨道、 片段、音符、设备链与所用素材。</p>
+<p>「文件 $$ 新建空白工程」得到一个只有主总线的空工程。如果启动时不指定工程， 应用会打开一个演示工程（鼓、贝斯、铺底、主音、弦乐、打击乐），方便先逛界面； 它不是你的作品文件，随便改不会弄丢任何东西。</p>
+<h3>建轨、放片段、播放</h3>
+<p>在空工程里，用轨道菜单新建一条音轨；打开音色库挑一个预置音色或 SFZ 音色， 把音频片段放到时间轴上。按空格播放，走带栏显示当前位置与速度；需要反复听一段 时按 C 打开循环并框选区间。片段放歪了就拖动改位置、拖边缘改长度；要在播放头 处切开，选中片段按 Cmd/Ctrl+T。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：空工程里第一条轨道上放好一个片段，播放头停在片段中部]</figure>
+<h3>保存与导出</h3>
+<p>「文件 $$ 保存工程（Cmd/Ctrl+S）」把当前工程写回原文件； 「文件 $$ 另存为（Cmd/Ctrl+Shift+S）」换名字或位置。保存是原子写入， 写一半断电也不会留下半个文件。</p>
+<p>导出整轨 WAV 用「文件」菜单里的导出入口；分轨导出（Stems）会把每条源节点轨 弹成一个 32-bit Float WAV，写进固定输出目录，并给出一份 <code>stems-manifest.json</code> 索引与一行导出回执。主总线不出文件，但会在跳过清单里点名——这不是丢轨。</p>
+<figure class="fig-placeholder">[截图见 PDF 版：导出对话框与导出后的回执/toast 提示]</figure>
+<aside class="note">
+<p>打开夜半后，从启动选择器新建一个空白工程，添加一个 MIDI 乐器轨并写入 4 小节和弦片段，按下空格键试听，再通过「文件 → 保存」保存为测试工程。</p>
+</aside>
+<h2>帮助主题映射</h2>
+<p> 本章小节 $$ 应用内帮助锚点   本章小节 & 帮助主题 \\  安装与首次启动 & <code>getting-started-install</code> \\ 首次启动与新手引导 & <code>getting-started-onboarding</code> \\ 菜单栏与走带栏 & <code>interface-transport</code> \\ 中部：编曲区 & <code>interface-arrangement</code> \\ 左侧：检查器与音色库 & <code>interface-inspector-library</code> \\ 底部控制台与边缘 & <code>interface-console</code> \\ 新建，或先用演示工程 & <code>project-new-demo</code> \\ 建轨、放片段、播放 & <code>project-first-arrange</code> \\ 保存与导出 & <code>project-save-export</code> \\ </p>
+<p>本章学完能做什么 独立走通「安装 $$ 启动 $$ 建轨 $$ 放片段 $$ 播放 $$ 导出」全流程，并能说出界面五个主要区域各管什么。</p>
+<p>动手练习 新建一个空工程，在轨道 1 放一段演示音频片段；按空格播放并用 C 循环两小节；用 Cmd/Ctrl+S 保存；导出整轨 WAV 与分轨各一次；最后用「文件 $$ 打开 / 恢复工程」重新打开，核对片段还在。</p>
+<nav class="manual-pager"><span></span><a href="ch02-projects.html">工程 →</a></nav>
+</main></body></html>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drum Machine — Instruments and Synthesizers — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">Instruments and Synthesizers</a></nav>
+<h1>Drum Machine</h1>
+<p></p>
+<blockquote class="classquote"><p>鼓无当于五声，五声弗得不和。</p><cite>《礼记·学记》 / The Book of Rites, "Xue Ji" (On Learning)</cite><p class="gloss">Translation: The drum has no place among the five tones, yet without it the five tones cannot be in harmony. Note: a drum machine carries no melody, but it decides whether the groove stands.</p></blockquote>
+<p>Yeban's "drum machine" is currently a <strong>generation path</strong>, not a hardware-style drum machine with a 16-step editor: you choose a style, set complexity/intensity/swing/bars/seed, and it generates an editable MIDI drum pattern, installing the kit and effect chain along the way. There are two timbre routes: the acoustic family binds an SFZ sampled kit, and the electronic family installs a built-in synth drum machine. This chapter first explains drum timbre and step sequencing, then what Yeban can actually do and what it cannot.</p>
+<h2>Two timbre routes</h2>
+<p>   Family & Source & Keys & Styles \\  Acoustic & Virtuosity Drums basic kit (SFZ, GM mapping) & Per the bound SFZ program's key map & boombap / funk / jazz / pop / rnb / rock \\ Electronic & Built-in synth drum machine <code>Yeban Drum Kit (Synth)</code> & 5 core keys + 9 optional keys & drill / edm / hiphop / house / lofi / phonk / techno / trap \\  The two drum-kit routes </p>
+<p>One track can host only one source, so acoustic and electronic cannot run in parallel on the same track. To use both a sampled kit and the synth drum machine, use two tracks. The electronic key map is GM percussion: core 36 kick, 38 snare, 39 clap, 42 closed hat, 46 open hat; optional 37 rim, 43/45/48 low/mid/high tom, 49 crash, 51 ride, 56 cowbell, 82 shaker, 35 independent 808 bass.</p>
+<p>The acoustic key map follows the bound SFZ program; do not apply the electronic 46 open-hat rule blindly. Some acoustic programs fold the open hat into 42 and control it with CC4 pedal; which map Yeban's default basic kit uses depends on the actual SFZ file, not on this chapter's electronic table.</p>
+<h2>How the drum timbres are synthesized</h2>
+<p>The electronic drum machine has 13 voices, all <strong>synthesis recipes</strong>, not circuit-level 808/909 models. There are no transistors, op-amps, node impedances, or component tolerances; the same parameters always produce the same result. This must be stated: sounding "808-like" is not the same as "modeling an 808".</p>
+<p>   Voice & Synthesis structure & Key parameters \\  Kick & A sine sweeping exponentially from <code>glide\_hz</code> to <code>tune\_hz</code> + exponential amplitude envelope & Tune, glide start, glide time, decay, level, pan \\ Snare & Two fixed-frequency sines summed + a noise band, with separate envelopes & Tone frequency/ratio/decay, noise band edges, noise decay, level \\ Hi-hat & Six inharmonic square waves summed → band-pass approximation → very fast decay; closed and open share the recipe & Base frequency, edges, closed/open decay, level \\ Clap & Band-passed white noise × multiple short onsets; the last onset carries a long tail & Edges, burst count, burst spacing/decay, tail decay \\  Synthesis structures of the four core voices </p>
+<p>The "band-pass" here is an approximation built from low-pass stages: <code>hihat\_highpass\_hz</code> is the corner of that low-pass stage, not a band-pass lower edge; the effective passband is narrower than the name suggests. The snare's <code>tone\_level</code> and <code>noise\_level</code> are levels of two components, not an RMS ratio. Treating these names as hardware physical quantities will turn the controls the wrong way.</p>
+<p>The other nine voices are three toms (low/mid/high, sharing one tom parameter set), rim, shaker, cowbell, crash, ride, and independent 808 bass. Each has its own frequency, decay, level, and pan, but the structure is still "waveform/noise + envelope + filter", a recipe rather than a circuit model. Kick, snare, and 808 are strictly centered in every factory style; the other voices' panning is style-specific, not global.</p>
+<p>The drum machine has 16 slots. A 17th simultaneous trigger steals a sounding slot; a closed-hat trigger fades out all sounding open hats (the reverse is not true: open hat does not choke closed hat). There are no other choke groups, no per-voice independent outputs, and no per-voice sends.</p>
+<h2>Step sequencing</h2>
+<p>A factory style bar is 16 sixteenth-note steps (PPQ 960, 4 beats/bar $$ 240 ticks per step). Each step stores three things: velocity, ratchet, and tier.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<p>The C/S/E marks merely indicate tier 0/1/2; they are not the actual pattern of any style. Tier is the "skeleton / standard / fill" layer: complexity below 34 takes only tier 0; 34–66 takes tiers 0+1; 67 and above takes all three and lets the snare add low-velocity ghost notes in empty steps next to a primary hit, using a seed hash. Higher complexity means denser, not a different style.</p>
+<p>Intensity does not change tiers, only velocity: the factor is $0.55 + 0.45 $ intensity/100. Intensity 100 equals the preset's original velocity; intensity 0 compresses it to 55%. Swing is in per-mille: 500 is straight, and larger values delay every odd sixteenth step more. The UI accepts 500–700; the generation core itself accepts 500–1000. Ratchet divides one step into up to 8 sub-hits, with sub-hit velocity scaled by $0.85 + 0.15  k/n$; it is not "retrigger the same step", but multiple onsets inside one step.</p>
+<p>Fill only takes effect when "fill requested, preset has fill, and total bars $$ 2": the last bar is replaced entirely by the fill lane table, and lanes absent from fill rest in that bar. Melodic lanes may carry an optional fourth element, pitch, but only for cowbell and 808 lanes; generation writes it as a constant pitch-bend curve, not per-sub-hit transposition.</p>
+<p>Determinism is a hard contract: same style, same parameters, same seed $$ byte-identical clip. The only random source is ghost-note decision, a pure hash of seed, GM key, and global step; it reads no clock and no global state.</p>
+<h2>Drum presets and what generation produces</h2>
+<p>There are 14 factory style presets compiled into the program and listed by the UI in fixed order; there is no "import style file" or "save custom style" entry. A style is not "a loop"; it is a recipe containing drum lanes, tiers, ratchets, layers, fill, per-lane chains, effects, and bus.</p>
+<p>When generating a new drum track, Yeban does the following:</p>
+<ol>
+<li>Create a track named "<preset> Drums" at −6 dB, routed to the master bus. If the preset has a drum bus, first create an <code>AuxReturn</code> drum bus with glue compression and Soft Clipper; the drum track feeds the bus, and the bus feeds the master.</li>
+<li>If the target track has no source yet, install the default kit by family: acoustic binds the Virtuosity basic SFZ; electronic inserts a synth drum machine. An existing source is left alone; the user's kit wins.</li>
+<li>Append the preset's <code>fx</code> layer: channel strip and reverb are the base; some styles also carry tape, delay, transient shaping, bit crushing, or noise. Do not duplicate an existing non-bypassed effect of the same family; user effects win.</li>
+<li>Write the preset's <code>lane\_chains</code>; existing user lane chains are not overwritten.</li>
+<li>Write the preset's <code>automation</code>; an existing user lane for the same target is skipped.</li>
+<li>Add a MIDI clip and placement: from tick 0, length = bars × ticks per bar.</li>
+</ol>
+<p>If the current selection is a MIDI track (and not the master bus), generation lands on it; if the selection is an audio track, aux track, master bus, or nothing, a new drum track is created. Only the new-track path creates a drum bus; an existing track keeps its routing and gets no new bus.</p>
+<figure class="fig-placeholder">[图见 PDF 版]</figure>
+<h2>Using the dialog</h2>
+<p>The entry is "Edit → Drum Generation (Drums)...". The dialog's left column lists the 14 styles; the right column has five text fields, a last-bar fill toggle, a target-track line, and a "Generate" button.</p>
+<p>   Control & Meaning & Range & Default \\  Style & Factory preset, choose one & 14 items & first item \\ Complexity & Density/layers & 0–100 & 50 \\ Intensity & Velocity scaling & 0–100 & 80 \\ Swing & Odd-sixteenth delay (per-mille) & UI 500–700 & preset value \\ Bars & Generated length & 1–16 & 4 \\ Base seed & Salt for ghost-note hash & u64 & project seed \\ Last-bar fill & Replace last bar with fill & on/off & on \\  Controls in the drum generation dialog </p>
+<p>Picking a style seeds the swing field with that style's fixed value; blank complexity, intensity, and bars seed as 50, 80, and 4; a blank seed uses the project seed. Parse failure leaves the dialog open, writes the reason in the error line, and submits nothing. Generating twice with the same style and parameters produces byte-identical clip content.</p>
+<figure class="fig-placeholder">[截图见 PDF 版：The "Drum Generation" dialog is open: style list on the left, complexity/intensity/swing/bars/seed/fill on the right, target-track line and "Generate" button at the bottom.]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：The generated electronic drum track in the device rack shows the synth drum machine, channel strip, reverb, and optional delay; parameters are read-only.]</figure>
+<figure class="fig-placeholder">[截图见 PDF 版：The generated drum clip appears as a column of MIDI notes in the piano roll, editable by key and velocity.]</figure>
+<h2>What Yeban does not have</h2>
+<ul>
+<li><strong>No 16-step editor.</strong> Drum generation is "template + rule transformation", not a grid you light step by step; the generated MIDI clip can be edited in the arrangement and piano roll, but there is no dedicated drum-step grid.</li>
+<li><strong>No save entry for custom kits/styles.</strong> The 14 styles are factory read-only; the device card shows drum parameters but cannot turn kick tune or snare decay.</li>
+<li><strong>No 808/909 circuit modeling.</strong> The 13 voices are synthesis recipes; "808/909" is a parameter-level recipe, not transistor-level analog modeling, and there is no component spread.</li>
+<li><strong>No per-voice independent outputs, per-voice sends, or parallel compression.</strong> The drum machine is a summed output (with per-voice pan), not a box with separate outputs.</li>
+<li><strong>No second choke group.</strong> Only closed hat chokes open hat; crash, toms, and others have no choke.</li>
+<li><strong>No second synth drum machine on the same track.</strong> One track, one source; to layer acoustic and electronic, use two tracks.</li>
+</ul>
+<h2>Help-topic mapping</h2>
+<p>   Section & In-app help anchor \\  Two timbre routes & <code>drum-families</code> \\ How the drum timbres are synthesized & <code>drum-voice-synthesis</code> \\ Step sequencing & <code>drum-step-sequencing</code> \\ Drum presets and what generation produces & <code>drum-presets-generation</code> \\ Using the dialog & <code>drum-dialog</code> \\ What Yeban does not have & <code>drum-current-limits</code> \\  Help-topic mapping for Chapter 6</p>
+<h2>Further Reading</h2>
+<ul>
+<li><a href="https://www.soundonsound.com/reviews">https://www.soundonsound.com/reviews</a> — Sound On Sound reviews: read drum-machine and rhythm-tool reviews, and fill in step sequencing, timbre, and groove trade-offs.</li>
+<li><a href="https://www.yamaha.com/en/musical_instrument_guide/">https://www.yamaha.com/en/musical_instrument_guide/</a> — Yamaha instrument guide: understand drum-kit roles through the sound production and playing of acoustic percussion.</li>
+</ul>
+<nav class="manual-pager"><a href="05-physical-modeling.html">← Physical-Modeling Instruments</a><span></span><a href="07-plugin-instruments.html">Plugin Instruments →</a></nav>
+</main></body></html>

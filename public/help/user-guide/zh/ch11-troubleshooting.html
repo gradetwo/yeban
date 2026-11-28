@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>故障排查 — 夜半用户手册 — 夜半 Yeban</title>
+<link rel="stylesheet" href="/assets/css/site.css"><link rel="stylesheet" href="/help/manual.css"></head>
+<body><main class="manual-page">
+<nav class="manual-nav"><a href="/help/">帮助与手册</a> · <a href="index.html">夜半用户手册</a></nav>
+<h1>故障排查</h1>
+<p></p>
+<blockquote class="classquote"><p>人谁无过？过而能改，善莫大焉。</p><cite>《左传·宣公二年》</cite><p class="gloss">出错并不可怕；按线索定位、改正，工程就能继续往前。</p></blockquote>
+<p>这一章按症状组织：先看到什么现象，再逐项排除。每节都按「最可能、最容易验证」 的顺序排，先动一两个开关试试，再看工程与设备层面。排查时请记住一个总原则： 夜半会把关键事实记进回执与状态栏，不要凭界面上「看起来正常」下结论。</p>
+<h2>无声</h2>
+<p>按下面的顺序逐项检查，每步只改一处，改完试听：</p>
+<ol>
+<li><strong>走带与播放头</strong>：是否真的在播放？按空格看播放头是否推进；Shift+Space 可从光标处续播。</li>
+<li><strong>静音 / 独奏</strong>：轨道头和混音台上的 Mute / Solo 是否被按下？如果别的轨在独奏，当前轨自然不出声。</li>
+<li><strong>推子与声像</strong>：该轨音量与主总线推子是否被拉到底？「混音 $$ 主控总线推子归 0dB」可一键复位主控。</li>
+<li><strong>设备链</strong>：乐器是否加载成功？效果器是否被旁通（Bypass）？旁通的台数不等于删掉的台数。</li>
+<li><strong>片段与淡化</strong>：播放头下是否真有片段？片段是否被裁到只剩静音区？首尾淡入淡出是否把整段压没了？</li>
+<li><strong>素材是否到位</strong>：内嵌样本缺失时会登记 MissingSample 并跳过该轨（保存仍成功）。检查资产池里有没有用到的音频；相对 SFZ 路径依赖工程目录，工程从文件打开时用真实目录，新建未保存时用输出目录下的占位路径——后者会让「只放在工程旁」的样本解析失败。</li>
+<li><strong>监听控制室</strong>：主控监听的读数有没有电平？有电平但耳朵没听到，问题在输出设备；没电平，问题在工程侧。</li>
+</ol>
+<figure class="fig-placeholder">[截图见 PDF 版：无声排查清单在帮助面板中的呈现]</figure>
+<h2>设备与驱动</h2>
+<h3>输入设备与电平</h3>
+<p>录音面板里有输入设备选择与输入测试，可以在真正录音前看电平是否进来。录音 路径与工程采样率一致（缺省 48 kHz）；换设备后，下一次录音即生效。</p>
+<h3>输出与延迟</h3>
+<p>听不到声音而工程侧读数正常时，去看系统输出设备与监听控制室的主总线读数。 夜半追求低延迟确定性，并处理内部插件的延迟补偿；对延迟敏感的场景，优先确认 设备缓冲设置，而不是在界面里到处找开关。</p>
+<h3>安全默认</h3>
+<p>网络监听类服务（MCP HTTP）只绑环回地址 <code>127.0.0.1</code>，不会绑 <code>0.0.0.0</code>；默认构建不会监听 HTTP，除非显式给 <code>--enable-mcp-http</code> 或设 <code>YEBAN\_MCP\_HTTP=1</code>。如果你以为「MCP 没连上」而想开放监听，先确认 这层运行时开关，不要改绑定地址。</p>
+<h2>工程打不开</h2>
+<ol>
+<li><strong>确认文件本身</strong>：<code>.yeban</code> 是唯一工程格式。保存是原子写入，写一半断电通常留下的是上一个完整版本，而不是半个文件；如果有备份，先试备份。</li>
+<li><strong>用正确入口</strong>：「文件 $$ 打开 / 恢复工程...」或命令行 <code>yeban-app --open <路径></code>；启动工程选择器的「最近工程」也能回到上次的工作。</li>
+<li><strong>资产是否同行</strong>：工程按内容哈希引用资产池里的素材；只拷了 <code>.yeban</code> 而丢了引用素材时，工程能开但相关轨会无声，不是整个工程打不开。</li>
+<li><strong>导出诊断包</strong>：「诊断 $$ 导出工程诊断报告包」产出的是排障用的诊断包（不是作品音频）。找人帮忙时附上它，比只描述现象有用得多。</li>
+<li><strong>如实记录错误</strong>：如果应用给出错误码或缺失清单，把原文记下来；不要用「看起来像上次那个问题」替代实测读数。</li>
+</ol>
+<h2>性能与内存门槛</h2>
+<h3>先知道门槛</h3>
+<p>夜半的 app test 目标很重：实测在 4 GB 内存的机器上，<code>cargo test -p yeban-app</code> 会在约 35 分钟处被内核以 OOM（rustc SIGKILL）终止，拿不到任何测试结果；同类 判据挪到轻 crate（如 <code>yeban-model</code>）后编译约 1 分 39 秒、执行约 1 秒。 因此 app 侧验证的硬门槛是至少 8 GB 内存；低于这个值时，app 侧票只能做静态改动， 不要假装跑过测试。</p>
+<h3>资源不足时的最小验证集</h3>
+<p>内存不足时，采用可完成的最小验证集：<code>cargo fmt --check</code>、 <code>cargo check --all-targets</code>、目标 crate 的 clippy；把无法运行的部分在回执里 如实写成 <code>not\_run</code> 并说明原因，由 CI 在大机上补跑。构建可用 <code>cargo build --profile release-small -p yeban-app</code> 减重；无显示器机器加 <code>--headless</code>。</p>
+<h3>只有 CI 的判决算数</h3>
+<p>本地绿灯只是参考，最终判决以 CI 为准；未读回的判决一律记为 pending，不得写成 「通过」。也不要把「整体 success」当成目标判据真的跑过——要确认目标作业执行过、 耗时非 0、日志里有测试结果行。</p>
+<h2>帮助主题映射</h2>
+<p> 本章小节 $$ 应用内帮助锚点   本章小节 & 帮助主题 \\  无声 & <code>troubleshoot-silence</code> \\ 设备与驱动 & <code>troubleshoot-devices</code> \\ 工程打不开 & <code>troubleshoot-project-open</code> \\ 性能与内存门槛 & <code>troubleshoot-performance</code> \\ 最小验证集与 CI 判决 & <code>troubleshoot-verification</code> \\ </p>
+<p>本章学完能做什么 按症状逐项排除无声、设备与工程打不开的问题，知道 8 GB 的内存门槛与资源不足时的最小验证集，并理解 CI 判决才是最终结论。</p>
+<p>动手练习 复现一次「无声」：把某轨静音后再取消静音、旁通再恢复一个效果器，每步都试听并说出是哪一步恢复了声音；然后导出一次诊断报告包，确认它是诊断文件而不是作品音频；最后在低内存环境下跑一遍最小验证集，把无法运行的项如实记为 not\_run。</p>
+<nav class="manual-pager"><a href="ch10-entry-points.html">← 终端与自动化入口</a><span></span></nav>
+</main></body></html>
