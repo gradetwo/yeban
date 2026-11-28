@@ -66,6 +66,41 @@ fn strip_noise(src: &str) -> String {
             }
             continue;
         }
+        // 原始字符串 r"..." / r#"..."#：无转义，终止符是引号 + 同数 #。
+        // 按普通字符串抹会把末尾的 \" 当转义、吞掉后面整段代码 ⇒ 假违规。
+        if ch == 'r' {
+            let mut hashes = 0usize;
+            while bytes.get(index + 1 + hashes) == Some(&'#') {
+                hashes += 1;
+            }
+            if bytes.get(index + 1 + hashes) == Some(&'"') {
+                out.push('r');
+                index += 1;
+                for _ in 0..hashes {
+                    out.push('#');
+                    index += 1;
+                }
+                out.push('"');
+                index += 1;
+                while index < bytes.len() {
+                    let inner = bytes[index];
+                    if inner == '"'
+                        && (0..hashes).all(|off| bytes.get(index + 1 + off) == Some(&'#'))
+                    {
+                        out.push('"');
+                        index += 1;
+                        for _ in 0..hashes {
+                            out.push('#');
+                            index += 1;
+                        }
+                        break;
+                    }
+                    out.push(if inner == '\n' { '\n' } else { ' ' });
+                    index += 1;
+                }
+                continue;
+            }
+        }
         // 字符串 / 字符字面量
         if ch == '"' || ch == '\'' {
             // ⚠ 单引号有两种含义：字符字面量 `'q'` / `'\n'`，以及**生命周期** `'a`。

@@ -11558,7 +11558,8 @@ impl PortOpenProject {
         // `reload` 第 1.3 步调的 `asset_bytes` 借的是端口的**资产池**那只 `RefCell`
         // （与 `session` 是两只）⇒ 不会 `RefCell already borrowed`。
         // ⛔ `after` ⛔ 不能进这个闭包：它体内调 `port.display()`，借的正是 `session`。
-        let reload_error = match self.port.with_project(|project| {
+        // 先结算再 match：判据表达式里不留 `borrow_mut`（闭包体内的借用也算）。
+        let reload_outcome = self.port.with_project(|project| {
             let mut reload_error = None;
             if let Some(production) = self.production.as_ref() {
                 let engine = production.borrow().engine_handle();
@@ -11656,7 +11657,8 @@ impl PortOpenProject {
                 }
             }
             reload_error
-        }) {
+        });
+        let reload_error = match reload_outcome {
             Some(error) => error,
             // 换会话刚成功、端口里必有活工程；`None` 只可能是后端形态漂移 ⇒ 响亮报错，
             // ⛔ 不静默跳过引擎换代。
