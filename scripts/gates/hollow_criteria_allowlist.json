@@ -1,7 +1,7 @@
 {
   "baseline_sha": "e56d6b3",
   "policy": "只减不增棘轮：恢复为真实行为判据后守卫会报陈旧条目要求删除；新增空心测试不得直接加入本表。",
-  "count": 121,
+  "count": 119,
   "entries": [
     {
       "path": "crates/yeban-app/tests/ai_drawer_key_ui.rs",
@@ -9,16 +9,6 @@
         "migration_hollow_marker(2/2)",
         "isomorphic_grep_clone(2/2)",
         "name_body_mismatch(1/2)"
-      ],
-      "tracking": "未编号",
-      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
-    },
-    {
-      "path": "crates/yeban-app/tests/arrangement_ruler_seek.rs",
-      "reasons": [
-        "migration_hollow_marker(15/15)",
-        "isomorphic_grep_clone(15/15)",
-        "name_body_mismatch(4/15)"
       ],
       "tracking": "未编号",
       "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
@@ -65,16 +55,6 @@
         "migration_hollow_marker(4/4)",
         "isomorphic_grep_clone(4/4)",
         "name_body_mismatch(1/4)"
-      ],
-      "tracking": "未编号",
-      "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
-    },
-    {
-      "path": "crates/yeban-app/tests/clip_duration.rs",
-      "reasons": [
-        "migration_hollow_marker(10/10)",
-        "isomorphic_grep_clone(10/10)",
-        "name_body_mismatch(2/10)"
       ],
       "tracking": "未编号",
       "note": "历史空心克隆/只grep源码测试（基线 e56d6b3 登记），已从真实行为判据读数中剥离，恢复后须从本表删除。"
