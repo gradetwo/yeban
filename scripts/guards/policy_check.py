@@ -87,6 +87,9 @@ NON_ENGINE_CRATES = (
 #: 官方默认 release 构建禁止默认开启的 feature [AGENTS.md 红线 6]
 FORBIDDEN_DEFAULT_FEATURES = (
     "mcp-http",
+    # T-FIX-1026: 实际控制 UI-MCP HTTP 监听的特性名是 `ui-mcp-http`（见 yeban-ui-mcp / yeban-app
+    # Cargo.toml）；保留历史/潜在别名 `ui-mcp` 一并拦截，防止两者任意一个滑入 default。
+    "ui-mcp-http",
     "ui-mcp",
     "asio",
     "experimental-vst3",
@@ -359,6 +362,22 @@ def g04_no_zero_zero_zero_zero_bind() -> list[Violation]:
     return bad
 
 
+def g05_check_manifest(manifest: dict, location: str) -> list[Violation]:
+    """检查单个 Cargo.toml 解析结果是否把禁止特性放进了 default。"""
+    bad: list[Violation] = []
+    default = manifest.get("features", {}).get("default", []) or []
+    for feature in default:
+        if feature in FORBIDDEN_DEFAULT_FEATURES:
+            bad.append(
+                (
+                    "G05",
+                    location,
+                    f"default feature 中禁止出现 `{feature}` (仅限显式启用)",
+                )
+            )
+    return bad
+
+
 def g05_forbidden_default_features() -> list[Violation]:
     """[AGENTS.md 红线 6] 危险 feature 不得默认开启。"""
     bad: list[Violation] = []
@@ -366,17 +385,7 @@ def g05_forbidden_default_features() -> list[Violation]:
         manifest_path = crate / "Cargo.toml"
         if not manifest_path.is_file():
             continue
-        manifest = read_manifest(crate)
-        default = manifest.get("features", {}).get("default", []) or []
-        for feature in default:
-            if feature in FORBIDDEN_DEFAULT_FEATURES:
-                bad.append(
-                    (
-                        "G05",
-                        rel(manifest_path),
-                        f"default feature 中禁止出现 `{feature}` (仅限显式启用)",
-                    )
-                )
+        bad.extend(g05_check_manifest(read_manifest(crate), rel(manifest_path)))
     return bad
 
 
@@ -1154,6 +1163,19 @@ def self_test() -> int:
             fails.append(f"`{crate}` 必须留在 ENGINE_CRATES_NO_GUI（G02/G11 才覆盖它）")
         if crate not in SAFE_BY_DEFAULT_CRATES:
             fails.append(f"`{crate}` 必须留在 SAFE_BY_DEFAULT_CRATES（G03 才覆盖它）")
+
+    # T-FIX-1026 pin & red/green teeth check for G05 (`ui-mcp-http`):
+    if "ui-mcp-http" not in FORBIDDEN_DEFAULT_FEATURES:
+        fails.append("G05 FORBIDDEN_DEFAULT_FEATURES 必须包含真实特性名 `ui-mcp-http`")
+    probe_bad = g05_check_manifest(
+        {"features": {"default": ["ui-mcp-http"]}},
+        "probe/Cargo.toml",
+    )
+    if not probe_bad:
+        fails.append("G05 红对照失败：default 含 `ui-mcp-http` 时未报违规")
+    real_g05 = g05_forbidden_default_features()
+    if real_g05:
+        fails.append(f"G05 绿对照失败：当前仓库默认特性触发 {len(real_g05)} 处违规")
 
     if fails:
         for f in fails:

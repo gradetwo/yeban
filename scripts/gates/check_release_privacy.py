@@ -30,8 +30,11 @@
   5. bearer-token: Bearer 令牌。
 """
 
+import io
 import json
 import re
+import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -194,6 +197,141 @@ _ATTR_RUN = "".join(
 )
 
 
+OPAQUE_COMPRESSED_EXTS = {".dmg", ".msi"}
+
+
+def _iter_ar_members(data: bytes, source_label: str) -> list[tuple[str, bytes]]:
+    """纯标准库解析 Unix ar 归档（.deb 容器），返回 [(member_name, payload), ...]。"""
+    if not data.startswith(b"!<arch>\n"):
+        raise ValueError(f"{source_label} 不是合法的 ar/.deb 归档")
+    pos = 8
+    members: list[tuple[str, bytes]] = []
+    n = len(data)
+    while pos < n:
+        if pos + 60 > n:
+            raise ValueError(f"{source_label} ar 成员头截断 (offset={pos})")
+        hdr = data[pos : pos + 60]
+        if hdr[58:60] != b"`\n":
+            raise ValueError(f"{source_label} ar 成员魔数非法 (offset={pos})")
+        raw_name = hdr[0:16].decode("ascii", errors="replace").strip()
+        size_str = hdr[48:58].decode("ascii", errors="replace").strip()
+        try:
+            size = int(size_str)
+        except ValueError as exc:
+            raise ValueError(f"{source_label} ar 成员大小非法: {size_str!r}") from exc
+        pos += 60
+        if size < 0 or pos + size > n:
+            raise ValueError(f"{source_label} ar 成员载荷越界: {raw_name}")
+        payload = data[pos : pos + size]
+        pos += size
+        if pos % 2 == 1 and pos < n:
+            pos += 1
+        name = raw_name.rstrip("/")
+        members.append((name, payload))
+    return members
+
+
+def _open_tar_bytes(payload: bytes, member_name: str, deb_path: Path) -> tarfile.TarFile:
+    """打开 .deb 内的 control.tar.* / data.tar.*；.zst 尝试用系统 zstd/dpkg-deb 解压，不可用时显式抛错。"""
+    if member_name.endswith(".zst"):
+        zstd_bin = shutil.which("zstd")
+        if zstd_bin:
+            proc = subprocess.run(
+                [zstd_bin, "-dc"],
+                input=payload,
+                capture_output=True,
+                timeout=60,
+            )
+            if proc.returncode == 0:
+                return tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:")
+            raise RuntimeError(f"zstd 解压 {member_name} 失败: {proc.stderr.decode(errors='replace').strip()}")
+        if member_name.startswith("data.tar") and shutil.which("dpkg-deb"):
+            proc = subprocess.run(
+                ["dpkg-deb", "--fsys-tarfile", str(deb_path)],
+                capture_output=True,
+                timeout=60,
+            )
+            if proc.returncode == 0:
+                return tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:")
+            raise RuntimeError(f"dpkg-deb 解包失败: {proc.stderr.decode(errors='replace').strip()}")
+        raise RuntimeError(f"{deb_path.name}!{member_name} 使用 zstd 压缩但本机缺少 zstd/dpkg-deb，无法穿透扫描")
+    return tarfile.open(fileobj=io.BytesIO(payload), mode="r:*")
+
+
+def _scan_tar_stream(
+    tf: tarfile.TarFile,
+    prefix: str,
+    failures: list[dict[str, str]],
+) -> int:
+    scanned = 0
+    for member in tf.getmembers():
+        if not member.isfile():
+            continue
+        f = tf.extractfile(member)
+        if f is None:
+            raise RuntimeError(f"归档成员读不出: {prefix}!{member.name}")
+        scanned += 1
+        for rule in scan_bytes(member.name, f.read()):
+            failures.append({"file": f"{prefix}!{member.name}", "rule": rule})
+    return scanned
+
+
+def _scan_deb(deb_path: Path, display_name: str, failures: list[dict[str, str]]) -> int:
+    """穿透扫描 .deb：解开 ar 容器并逐文件扫描 control.tar.* 与 data.tar.*。"""
+    raw = deb_path.read_bytes()
+    ar_members = _iter_ar_members(raw, display_name)
+    tar_members = [
+        (mname, payload)
+        for mname, payload in ar_members
+        if mname.startswith("data.tar") or mname.startswith("control.tar")
+    ]
+    if not any(mname.startswith("data.tar") for mname, _ in tar_members):
+        raise ValueError(f"{display_name} 缺少 data.tar.* 成员，无法完成穿透扫描")
+    scanned = 0
+    for mname, payload in tar_members:
+        with _open_tar_bytes(payload, mname, deb_path) as tf:
+            scanned += _scan_tar_stream(tf, f"{display_name}!{mname}", failures)
+    return scanned
+
+
+def _make_ar_entry(name: str, payload: bytes) -> bytes:
+    """构造最小合法 Unix ar 成员（仅供 --self-test 构造真实 .deb 样本）。"""
+    header = (
+        f"{name:<16}"
+        f"{'0':<12}"
+        f"{'0':<6}"
+        f"{'0':<6}"
+        f"{'100644':<8}"
+        f"{len(payload):<10}"
+        "`\n"
+    ).encode("ascii")
+    assert len(header) == 60
+    pad = b"\n" if len(payload) % 2 == 1 else b""
+    return header + payload + pad
+
+
+def _build_test_deb(data_files: dict[str, bytes]) -> bytes:
+    """构造可供 main() 穿透扫描的真实 .deb (ar + control.tar.gz + data.tar.gz)。"""
+    ctrl_buf = io.BytesIO()
+    with tarfile.open(fileobj=ctrl_buf, mode="w:gz") as tf:
+        ctrl = b"Package: yeban\nVersion: 0.0.1\nArchitecture: amd64\n"
+        info = tarfile.TarInfo("./control")
+        info.size = len(ctrl)
+        tf.addfile(info, io.BytesIO(ctrl))
+    data_buf = io.BytesIO()
+    with tarfile.open(fileobj=data_buf, mode="w:gz") as tf:
+        for rel_name, content in data_files.items():
+            info = tarfile.TarInfo(rel_name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+    return (
+        b"!<arch>\n"
+        + _make_ar_entry("debian-binary", b"2.0\n")
+        + _make_ar_entry("control.tar.gz", ctrl_buf.getvalue())
+        + _make_ar_entry("data.tar.gz", data_buf.getvalue())
+    )
+
+
 def _self_test() -> int:
     import io
     import tempfile
@@ -242,59 +380,134 @@ def _self_test() -> int:
             return main(["check_release_privacy.py", str(dist)])
 
     if dist_rc(b"\x00" + _FAKE_GHP.encode() + b"\x00") != 1:
-        failures.append("端到端注入: 含 ghp_ 形态 token 的归档应退出 1")
+        failures.append("端到端注入: 含 ghp_ 形态 token 的 .tar.gz 应退出 1")
     if dist_rc(b"\x00" + _ATTR_RUN.encode() + b"\x00") != 0:
-        failures.append("端到端放行: 属性名拼接的归档应退出 0")
+        failures.append("端到端放行: 属性名拼接的 .tar.gz 应退出 0")
+
+    # 端到端 .deb 穿透扫描（红 + 绿）
+    with tempfile.TemporaryDirectory() as td:
+        dist = Path(td)
+        (dist / "yeban-dirty.deb").write_bytes(
+            _build_test_deb({"./usr/bin/yeban-app": b"\x00" + _FAKE_GHP.encode() + b"\x00"})
+        )
+        if main(["check_release_privacy.py", str(dist)]) != 1:
+            failures.append("端到端注入(.deb): data.tar.gz 含敏感串应退出 1")
+
+    with tempfile.TemporaryDirectory() as td:
+        dist = Path(td)
+        (dist / "yeban-clean.deb").write_bytes(
+            _build_test_deb({"./usr/bin/yeban-app": b"\x00" + _ATTR_RUN.encode() + b"\x00"})
+        )
+        if main(["check_release_privacy.py", str(dist)]) != 0:
+            failures.append("端到端放行(.deb): 干净 .deb 应退出 0")
+
+    # 端到端 stage 目录直接扫描（红 + 绿）
+    with tempfile.TemporaryDirectory() as td:
+        stage = Path(td)
+        (stage / "usr" / "share" / "yeban").mkdir(parents=True)
+        (stage / "usr" / "share" / "yeban" / "note.txt").write_text(
+            "leaked: /Users/alice/work/yeban/src/main.rs\n", encoding="utf-8"
+        )
+        if main(["check_release_privacy.py", str(stage)]) != 1:
+            failures.append("端到端注入(stage): stage 目录含家目录路径应退出 1")
+
+    with tempfile.TemporaryDirectory() as td:
+        stage = Path(td)
+        (stage / "usr" / "bin").mkdir(parents=True)
+        (stage / "usr" / "bin" / "yeban-app").write_bytes(b"\x00" + _ATTR_RUN.encode() + b"\x00")
+        if main(["check_release_privacy.py", str(stage)]) != 0:
+            failures.append("端到端放行(stage): 干净 stage 目录应退出 0")
+
+    # 端到端 .dmg / .msi 不可穿透压缩格式必须响亮报 unknown(2)，不得假绿
+    for ext in (".dmg", ".msi"):
+        with tempfile.TemporaryDirectory() as td:
+            dist = Path(td)
+            (dist / f"yeban-test{ext}").write_bytes(b"compressed-opaque-payload")
+            if main(["check_release_privacy.py", str(dist)]) != 2:
+                failures.append(f"端到端未覆盖格式({ext}): 不可穿透压缩包应响亮退出 2，不得冒充已扫")
 
     if failures:
         for failure in failures:
             print(f"[FAIL] --self-test: {failure}", file=sys.stderr)
         return 1
-    print("[ok] check_release_privacy --self-test: 注入 9 组 + 放行 2 组 + 附带 2 组 + 端到端 2 组全过")
+    print("[ok] check_release_privacy --self-test: 注入 9 组 + 放行 2 组 + 附带 2 组 + 端到端 8 组(.tar.gz/.deb/stage/.dmg/.msi)全过")
     return 0
 
 
 def main(argv: list[str]) -> int:
-    dist = Path(argv[1] if len(argv) > 1 else "dist")
+    raw_args = argv[1:]
+    if raw_args and raw_args[0] == "--stage":
+        raw_args = raw_args[1:]
+    dist = Path(raw_args[0] if raw_args else "dist")
     if not dist.is_dir():
-        print(f"[unknown] dist 目录缺失: {dist}", file=sys.stderr)
+        print(f"[unknown] 扫描目录缺失: {dist}", file=sys.stderr)
         return 2
-    archives = sorted(dist.glob("*.tar.gz"))
-    loose = sorted(p for p in dist.iterdir() if p.is_file() and p.suffix != ".gz")
-    if not archives and not loose:
-        print(f"[unknown] dist/ 里没有任何归档或文件可扫: {dist}", file=sys.stderr)
+
+    all_files = sorted(p for p in dist.rglob("*") if p.is_file())
+    if not all_files:
+        print(f"[unknown] 扫描目录里没有任何归档或文件可扫: {dist}", file=sys.stderr)
         return 2
+
+    tar_gzs: list[Path] = []
+    debs: list[Path] = []
+    opaque: list[Path] = []
+    loose: list[Path] = []
+    for p in all_files:
+        lname = p.name.lower()
+        if lname.endswith(".tar.gz") or lname.endswith(".tgz"):
+            tar_gzs.append(p)
+        elif lname.endswith(".deb"):
+            debs.append(p)
+        elif p.suffix.lower() in OPAQUE_COMPRESSED_EXTS:
+            opaque.append(p)
+        else:
+            loose.append(p)
 
     failures: list[dict[str, str]] = []
     scanned = 0
-    for archive in archives:
+
+    for archive in tar_gzs:
+        rel_name = archive.relative_to(dist).as_posix()
         try:
-            tf = tarfile.open(archive, "r:gz")
-        except (tarfile.TarError, OSError) as exc:
+            with tarfile.open(archive, "r:gz") as tf:
+                scanned += _scan_tar_stream(tf, rel_name, failures)
+        except (tarfile.TarError, OSError, RuntimeError) as exc:
             print(f"[unknown] 归档打不开: {archive}: {exc}", file=sys.stderr)
             return 2
-        with tf:
-            for member in tf.getmembers():
-                if not member.isfile():
-                    continue
-                f = tf.extractfile(member)
-                if f is None:
-                    print(f"[unknown] 归档成员读不出: {archive}!{member.name}", file=sys.stderr)
-                    return 2
-                scanned += 1
-                for rule in scan_bytes(member.name, f.read()):
-                    failures.append({"file": f"{archive.name}!{member.name}", "rule": rule})
+
+    for deb in debs:
+        rel_name = deb.relative_to(dist).as_posix()
+        try:
+            scanned += _scan_deb(deb, rel_name, failures)
+        except (tarfile.TarError, OSError, ValueError, RuntimeError) as exc:
+            print(f"[unknown] .deb 穿透扫描失败: {deb}: {exc}", file=sys.stderr)
+            return 2
+
     for path in loose:
+        rel_name = path.relative_to(dist).as_posix()
         scanned += 1
-        for rule in scan_bytes(path.name, path.read_bytes()):
-            failures.append({"file": path.name, "rule": rule})
+        for rule in scan_bytes(rel_name, path.read_bytes()):
+            failures.append({"file": rel_name, "rule": rule})
 
     if failures:
         # 只报规则名 + 文件名,绝不报命中值。
         print(json.dumps({"passed": False, "failures": failures}, indent=2))
         return 1
-    print(f"[ok] check_release_privacy: 通过 ({len(archives)} 个归档 + {len(loose)} 个散放文件, "
-          f"共 {scanned} 个成员, 0 命中)")
+
+    if opaque:
+        # 不得把对压缩容器外层字节的扫描冒充内部文件已扫。
+        names = ", ".join(p.relative_to(dist).as_posix() for p in opaque)
+        print(
+            f"[unknown] 检测到当前平台无法穿透扫描的压缩安装包: {names}；"
+            "请改扫其打包前 stage 目录（支持直接传入 stage 目录路径），禁止将压缩字节扫描视为通过。",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(
+        f"[ok] check_release_privacy: 通过 ({len(tar_gzs)} 个 tar.gz + {len(debs)} 个 .deb + "
+        f"{len(loose)} 个散放/stage 文件, 共 {scanned} 个成员, 0 命中)"
+    )
     return 0
 
 

@@ -30,14 +30,48 @@
 #         2 = 用法错误（没有 crate / 未知选项）。
 set -u
 
-: "${CARGO_HOME:=/Users/crow/work/music/.cargo-home}"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+if [ ! -d "$ROOT/crates" ]; then
+  echo "premerge-gate: 找不到仓库 crates/ 目录: $ROOT" >&2
+  exit 2
+fi
+cd "$ROOT" || exit 2
+
+# 复用仓库自适应环境脚本（不硬编码个人路径）；如未提供或不可写则退回 $HOME 或 mktemp 目录。
+if [ -f "$ROOT/scripts/dev/local-env.sh" ]; then
+  # shellcheck source=scripts/dev/local-env.sh
+  . "$ROOT/scripts/dev/local-env.sh"
+fi
+if [ -z "${CARGO_HOME:-}" ]; then
+  if [ -n "${HOME:-}" ] && [ -w "$HOME" ]; then
+    CARGO_HOME="$HOME/.cargo"
+  else
+    CARGO_HOME="$(mktemp -d "${TMPDIR:-/tmp}/yeban-cargo-home.XXXXXX")" || {
+      echo "premerge-gate: 无法创建临时 CARGO_HOME 目录" >&2
+      exit 2
+    }
+  fi
+fi
+if [ -z "${XDG_CACHE_HOME:-}" ]; then
+  if [ -n "${HOME:-}" ] && [ -w "$HOME" ]; then
+    XDG_CACHE_HOME="$HOME/.cache"
+  else
+    XDG_CACHE_HOME="$(mktemp -d "${TMPDIR:-/tmp}/yeban-cache-home.XXXXXX")" || {
+      echo "premerge-gate: 无法创建临时 XDG_CACHE_HOME 目录" >&2
+      exit 2
+    }
+  fi
+fi
 : "${RUSTUP_TOOLCHAIN:=stable}"
-: "${XDG_CACHE_HOME:=/Users/crow/work/music/.cache}"
 : "${RUST_MIN_STACK:=16777216}"
 export CARGO_HOME RUSTUP_TOOLCHAIN XDG_CACHE_HOME RUST_MIN_STACK
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$ROOT" || exit 2
+for req_tool in cargo python3; do
+  if ! command -v "$req_tool" >/dev/null 2>&1; then
+    echo "premerge-gate: 缺少必需工具 \`$req_tool\`，无法执行合并前门禁" >&2
+    exit 2
+  fi
+done
 
 # ⭐ `#199`：把 `--strict` 这类型开关**先摘出去**，否则它会被当成 crate 名传给 cargo。
 # ⛔ 不要动既有用法：`$1` 仍是第一个 crate，不带任何开关时行为与旧版逐字一致。
@@ -52,8 +86,10 @@ for arg in "$@"; do
 done
 [ "${#CRATES[@]}" -ge 1 ] || { echo "用法: $0 [--strict] <crate> [crate...]" >&2; exit 2; }
 
-LOGDIR="${TMPDIR:-/tmp}/premerge-gate.$$"
-mkdir -p "$LOGDIR" || exit 2
+LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/premerge-gate.XXXXXX")" || {
+  echo "premerge-gate: 无法创建日志目录" >&2
+  exit 2
+}
 
 FAILED=""
 note() { printf '%-46s %s\n' "$1" "$2"; }
