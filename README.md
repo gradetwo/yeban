@@ -10,6 +10,7 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
   &nbsp;|&nbsp;
   <a href="https://yeban.wangda.today">Website</a> ·
+  <a href="https://yeban.wangda.today/help/">Help &amp; manuals</a> ·
   <a href="docs/README.md">Documentation index</a>
 </p>
 
@@ -32,6 +33,18 @@ Installers from the rolling **nightly** build (tracks the `main` branch; unsigne
 | macOS (Intel) | [DMG image](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-apple-darwin.dmg) |
 | Linux (x86_64) | [DEB package](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-x86_64-unknown-linux-gnu.deb) |
 | Linux (arm64) | [DEB package](https://github.com/gradetwo/yeban/releases/download/nightly/yeban-0.0.1-aarch64-unknown-linux-gnu.deb) |
+
+## Help and manuals
+
+The five manuals (user guide, instruments and synthesizers, music theory, arrangement and orchestration, mixing) are on the website in Chinese and English: read them online at [yeban.wangda.today/help](https://yeban.wangda.today/help/), or download the PDFs directly:
+
+| Manual | 中文 PDF | English PDF |
+| :--- | :--- | :--- |
+| User guide | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-user-guide-zh.pdf) | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-user-guide-en.pdf) |
+| Instruments and synthesizers | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-instruments-zh.pdf) | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-instruments-en.pdf) |
+| Music theory | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-music-theory-zh.pdf) | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-music-theory-en.pdf) |
+| Arrangement and orchestration | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-arrangement-zh.pdf) | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-arrangement-en.pdf) |
+| Mixing | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-mixing-zh.pdf) | [PDF](https://yeban.wangda.today/help/pdf/yeban-manual-mixing-en.pdf) |
 
 Portable `.tar.gz` archives and `SHA256SUMS` are on the [nightly release page](https://github.com/gradetwo/yeban/releases/tag/nightly); all releases are listed under [Releases](https://github.com/gradetwo/yeban/releases).
 
