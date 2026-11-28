@@ -718,6 +718,7 @@ fn transform_slice(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]

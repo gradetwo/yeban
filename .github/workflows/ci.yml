@@ -728,19 +728,42 @@ jobs:
             echo "::error::cargo metadata 未推出任何成员包，分块计划为空 ⇒ 拒绝空跑"
             exit 1
           fi
-          chunks=4
-          per=$(( (total + chunks - 1) / chunks ))
-          echo "== 分块计划：workspace 成员 ${total} 个，均分 ${chunks} 块（每块 ≤ ${per} 个） =="
+          # 2026-11-28 主干 run 46131996646 实证：4 块均分仍不够 —— 含 yeban-app
+          # 的一块在块内把 target 从 1.5G 涨到 110G（yeban-app 有 398 个集成测试
+          # 目标，每个都要链接一份 app 库），块间裁剪救不了块内爆涨。改按包逐个
+          # 跑、包间裁剪；yeban-app 再按测试目标分批（每批 25 个），批间裁剪。
+          # 覆盖口径不变：每包的 --all-targets 全集（lib/bins/tests/benches/
+          # examples）逐项跑到，结尾仍断言已跑包数 == 成员总数。
+          echo "== 分块计划：workspace 成员 ${total} 个，逐包跑、包间裁剪 =="
           tested=0
-          for ((start = 0; start < total; start += per)); do
-            chunk=("${members[@]:start:per}")
-            args=()
-            for pkg in "${chunk[@]}"; do args+=(-p "$pkg"); done
-            echo "== test 块 $((start / per + 1)): ${chunk[*]} =="
-            cargo test "${args[@]}" --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
-            tested=$((tested + ${#chunk[@]}))
+          for pkg in "${members[@]}"; do
+            if [ "$pkg" = "yeban-app" ]; then
+              echo "== test 包 yeban-app: lib/bins =="
+              cargo test -p yeban-app --lib --bins --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+              bash scripts/dev/trim-target.sh \
+                || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 本批未裁剪"
+              mapfile -t app_tests < <(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="yeban-app") | .targets[] | select(.kind[]=="test") | .name' | sort)
+              echo "== test 包 yeban-app: 集成测试目标 ${#app_tests[@]} 个，每批 25 个 =="
+              for ((start = 0; start < ${#app_tests[@]}; start += 25)); do
+                batch=("${app_tests[@]:start:25}")
+                args=()
+                for t in "${batch[@]}"; do args+=(--test "$t"); done
+                echo "== test 批 $((start / 25 + 1)): ${batch[*]} =="
+                cargo test -p yeban-app "${args[@]}" --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+                bash scripts/dev/trim-target.sh \
+                  || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 本批未裁剪"
+                df -h . || true
+                du -sh target 2>/dev/null || true
+              done
+              echo "== test 包 yeban-app: benches/examples =="
+              cargo test -p yeban-app --benches --examples --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+            else
+              echo "== test 包: $pkg =="
+              cargo test -p "$pkg" --all-targets --locked 2>&1 | tee -a "$RUNNER_TEMP/gate.log"
+            fi
+            tested=$((tested + 1))
             bash scripts/dev/trim-target.sh \
-              || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 本块未裁剪"
+              || echo "::warning::trim-target 拒绝裁剪（有 cargo/rustc 在跑，或共享 target 锁被持有）⇒ 本包未裁剪"
             df -h . || true
             du -sh target 2>/dev/null || true
           done

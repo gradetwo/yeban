@@ -129,7 +129,16 @@ step "hdiutil create 前磁盘与目录体积诊断"
 du -sh "$dmgroot" || true
 df -h "$out_dir" "$work" || true
 step "hdiutil create → $out_dir/$name.dmg"
+# 显式给镜像容量：hdiutil 按 srcfolder 自动估算的卷容量在 x86_64 腿上不够
+# （2026-11-28 主干 Nightly run 46131996685：宿主盘尚余 44Gi，hdiutil 仍报
+# No space left on device —— 满的是镜像卷本身，不是宿主盘；aarch64 腿同盘
+# 同脚本成功，差别只在二进制体积）。容量按 dmgroot 实测体积的 2 倍 + 64MB
+# 留足，UDZO 压缩后产物大小不受此影响。
+size_kb="$(du -sk "$dmgroot" | awk '{print $1}')"
+size_mb=$(( size_kb / 1024 * 2 + 64 ))
+echo "[pkg-dmg] 镜像容量: ${size_mb}m (dmgroot ${size_kb} KB)"
 hdiutil create -volname "Yeban $version" -srcfolder "$dmgroot" -ov -format UDZO \
+  -size "${size_mb}m" \
   "$out_dir/$name.dmg"
 # 镜像已生成，立即释放 dmgroot 暂存目录，给后续 hdiutil verify/attach 留足空间
 rm -rf "$dmgroot"
