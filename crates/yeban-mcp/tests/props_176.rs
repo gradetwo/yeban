@@ -654,6 +654,20 @@ fn ten_broadcast_tools_publish_an_output_schema_their_real_responses_satisfy() {
         clip_touching["data"]["placement"]["clipId"], "01J8ZQ00000000000000000099",
         "片段形状必须带 placement 读数且指向新建片段: {clip_touching}"
     );
+    // T-FIX-1051：`create:true` 路径不能把真实新增的音报成空数组。除了下面
+    // `validate_complete` 钉“键必现”，这里再钉“值真的是刚加的那个音”。
+    let added = clip_touching["data"]["addedNotes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("片段形状必须带 addedNotes 数组: {clip_touching}"));
+    assert_eq!(added.len(), 1, "本次只加了一个音: {clip_touching}");
+    assert_eq!(
+        added[0]["pitch"], 60,
+        "回显的必须是刚加的音: {clip_touching}"
+    );
+    assert_eq!(
+        added[0]["startTick"], 0,
+        "回显的必须是刚加的音: {clip_touching}"
+    );
     let edit_notes_schema = tools::catalog()["tools"]
         .as_array()
         .expect("tools")

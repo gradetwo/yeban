@@ -1602,49 +1602,14 @@ fn edit_notes() -> Value {
                     "additionalProperties": false
                 }
             },
-            // T-FIX-741: 片段/摆放派生读数（只在相关调用上出现, 因此不进 required）。
-            "clip": {
-                "type": "object",
-                "required": ["clipId", "name", "kind", "noteCount", "endTick"],
-                "properties": {
-                    "clipId": {"type": "string"},
-                    "name": {"type": "string"},
-                    "kind": {"type": "string", "enum": ["midi", "audio"]},
-                    "noteCount": {"type": "integer", "minimum": 0},
-                    "endTick": {"type": "integer", "minimum": 0}
-                },
-                "additionalProperties": false
-            },
-            "placement": {
-                "type": "object",
-                "required": [
-                    "trackId",
-                    "placementId",
-                    "clipId",
-                    "startTick",
-                    "durationTicks",
-                    "loop"
-                ],
-                "properties": {
-                    "trackId": {"type": "string"},
-                    "placementId": {"type": "string"},
-                    "clipId": {"type": "string"},
-                    "startTick": {"type": "integer", "minimum": 0},
-                    "durationTicks": {"type": "integer", "minimum": 0},
-                    "loop": {
-                        "type": "object",
-                        "required": ["enabled", "startTick", "endTick"],
-                        "properties": {
-                            "enabled": {"type": "boolean"},
-                            "startTick": {"type": "integer", "minimum": 0},
-                            "endTick": {"type": "integer", "minimum": 0}
-                        },
-                        "additionalProperties": false
-                    }
-                },
-                "additionalProperties": false
-            },
-            // T-FIX-831: 本次新加音符的折算 tick 回显（只在加音符的调用上出现, 因此不进 required）。
+            // T-FIX-741 / T-FIX-1051: `clip` / `placement` 是**按调用形态条件出现**的
+            // 派生读数（工程级 `setTempo` 合法地两键全无）。它们**刻意不进**本 schema 的
+            // `properties`：`validate_complete` 要求声明的每个键必现，声明它们会让
+            // schema 与合法响应互相矛盾（`props_176` 的注释与 T-FIX-847 已钉死这一点）。
+            // 片段形态仍由该测试单独核读数值；⛔ 不要为了“多写几个字段”把条件键抬成常驻。
+            // T-FIX-831 / T-FIX-1051: 本次新加音符的折算 tick 回显。该键**恒发**（
+            // 没加音符时为空数组），因此不进 required 也能被 validate_complete 看到；
+            // ⛔ 不要把“某些路径没有”写成 schema 的常态。
             "addedNotes": {
                 "type": "array",
                 "items": {
