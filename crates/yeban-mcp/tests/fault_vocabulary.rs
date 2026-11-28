@@ -250,7 +250,7 @@ const SCANNER_BLIND_LITERAL_REASONS: [&str; 1] = ["engineSource"];
 const SCANNER_BLIND_LITERAL_PAYLOADS: [(&str, &[&str]); 1] =
     [("engineSource", &["cause", "hint", "reason"])];
 
-pub const GOLDEN_REASONS: [&str; 324] = [
+pub const GOLDEN_REASONS: [&str; 325] = [
     "araSessionLimitReached",
     "araSessionNotFound",
     "assetDecodeFailed",
@@ -363,6 +363,7 @@ pub const GOLDEN_REASONS: [&str; 324] = [
     "midiInputSecondsTypeMismatch",
     "midiInputUnknownPort",
     // ⭐ [G18]：`parse_scale` 的单边输入结构化拒绝（`domain/section_build.rs`）。
+    "missingField",
     "missingMode",
     "missingSpaceOrMode",
     "missingTick",
@@ -2381,7 +2382,7 @@ fn every_reason_is_asserted_somewhere() {
 /// 每条 `reason` 在生产区**字面 `json!` 对象**里带的同级键（排序）。
 /// ⚠ 口径：只收字面 `json!` 里的键；运行时 `map.insert(...)` 加进去的键不在内。
 /// 空数组 = 该 reason 的 `data` 里**没有**同级键（或 Data 由别的构造方式给出）。
-pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 324] = [
+pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 325] = [
     ("araSessionLimitReached", &["current", "limit", "reason"]),
     ("araSessionNotFound", &["loadedSessionIds", "reason"]),
     (
@@ -2605,6 +2606,7 @@ pub const GOLDEN_REASON_PAYLOADS: [(&str, &[&str]); 324] = [
         &["field", "ports", "reason", "requested"],
     ),
     // ⭐ [G18]：三条单边拒绝的字面 `json!` 同级键（排序表）。
+    ("missingField", &["field", "reason"]),
     ("missingMode", &["example", "modes", "note", "reason"]),
     ("missingSpaceOrMode", &["modes", "noteNames", "reason"]),
     (

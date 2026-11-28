@@ -14185,10 +14185,18 @@ pub fn check_polyphony(
 }
 
 /// 缺字段的统一错误。
+///
+/// `field` 同时进入人话 `message` 与机器可读 `data`：`data.reason` 固定为
+/// `missingField`，`data.field` 点名实际缺失的键。调用方因此不必解析文案就能把
+/// 「缺 `loopEnabled`」与「缺 `loopStartTick`」分开处理。
 fn missing(field: &str, expected: &str) -> Fault {
-    Fault::domain(
+    Fault::domain_with_data(
         ErrorCode::InvalidParameterRange,
         format!("缺少 `{field}`（期望 {expected}）"),
+        serde_json::json!({
+            "reason": "missingField",
+            "field": field,
+        }),
     )
 }
 
@@ -14562,7 +14570,7 @@ mod tests {
         let fault = parse_ops(&serde_json::json!([{"pitch": 60}]))
             .expect_err("只有 pitch 的裸音符也必须被拒");
         assert_eq!(lane_fault_data(&fault)["reason"], "bareNoteNeedsAddWrapper");
-        // 没有音符字段的无 kind 对象仍走统一的缺字段错误（不带 data、不改口径）。
+        // 没有音符字段的无 kind 对象仍走统一的缺字段错误（现在带字段级 data，不改口径）。
         let fault = parse_ops(&serde_json::json!([{
             "noteId": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
         }]))
@@ -14571,7 +14579,12 @@ mod tests {
         let Fault::Domain { data, .. } = &fault else {
             panic!("必须是领域失败");
         };
-        assert!(data.is_none(), "通用缺 kind 错误不该带 data: {data:?}");
+        let data = data.as_ref().expect("缺字段必须带字段级 data");
+        assert_eq!(
+            data["reason"], "missingField",
+            "缺 kind 的 reason: {data:?}"
+        );
+        assert_eq!(data["field"], "kind", "缺 kind 的 field: {data:?}");
     }
 
     #[test]
@@ -15271,12 +15284,12 @@ mod tests {
             // `DeviceParam` 的两个下标都**必填**（缺省不是 0）。
             (
                 serde_json::json!([{"kind": "setParam", "lane": "DeviceParam", "value": 0.0}]),
-                None,
+                Some("missingField"),
             ),
             (
                 serde_json::json!([{"kind": "setParam", "lane": "DeviceParam",
                                     "slotIndex": 0, "value": 0.0}]),
-                None,
+                Some("missingField"),
             ),
             (
                 serde_json::json!([{"kind": "setParam", "lane": "DeviceParam",
@@ -15286,7 +15299,7 @@ mod tests {
             // 缺 `value` / `value` 不是数字 / `lane` 不是字符串 / 缺 `lane`。
             (
                 serde_json::json!([{"kind": "setParam", "lane": "TrackVolume"}]),
-                None,
+                Some("missingField"),
             ),
             (
                 serde_json::json!([{"kind": "setParam", "lane": "TrackVolume", "value": "loud"}]),
@@ -15298,7 +15311,7 @@ mod tests {
             ),
             (
                 serde_json::json!([{"kind": "setParam", "value": 0.0}]),
-                None,
+                Some("missingField"),
             ),
             // 有限 `f64` 收窄到 `f32` 会溢出成 `inf` ⇒ 这一条**可达**（不是摆设）。
             (
@@ -15316,11 +15329,17 @@ mod tests {
                 panic!("必须是领域失败: {payload}");
             };
             let Some(reason) = expected_reason else {
-                assert!(data.is_none(), "缺字段错误不该带 data: {payload}");
+                assert!(data.is_none(), "形状/身份错误不该带 data: {payload}");
                 continue;
             };
             let data = data.clone().expect("形状错误必须带 data");
             assert_eq!(data["reason"], reason, "{payload} 的 data: {data}");
+            if reason == "missingField" {
+                assert!(
+                    data["field"].is_string(),
+                    "缺字段必须点名 field: {payload} / {data}"
+                );
+            }
             if reason.contains("Lane") {
                 assert_eq!(
                     data["allowed"],
@@ -15604,16 +15623,15 @@ mod tests {
         assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
         assert_eq!(lane_fault_data(&fault)["reason"], "paramNameMustBeString");
 
-        // 两个都不给 ⇒ 缺字段 (与旧口径一致, 无 data)。
+        // 两个都不给 ⇒ 缺字段（现在带字段级 data）。
         let fault = parse_ops(&serde_json::json!([
             {"kind": "setParam", "lane": "DeviceParam", "slotIndex": 0, "value": 0.5}
         ]))
         .expect_err("两个都不给必须被拒");
         assert_eq!(fault.domain_code(), Some(ErrorCode::InvalidParameterRange));
-        match &fault {
-            Fault::Domain { data, .. } => assert!(data.is_none(), "缺字段错误不带 data"),
-            Fault::Impl { error } => panic!("应当是领域失败, 实际是 {error:?}"),
-        }
+        let data = lane_fault_data(&fault);
+        assert_eq!(data["reason"], "missingField", "缺字段的 reason: {data:?}");
+        assert!(data["field"].is_string(), "缺字段必须点名 field: {data:?}");
     }
 
     /// ⭐ 第五份报告 A-3：`compile_with_param_echoes` 回显每条 `setParam`
@@ -17240,12 +17258,14 @@ mod tests {
             );
         }
 
-        // 缺 `value`：统一的缺字段错误（不带 data）。
+        // 缺 `value`：统一的缺字段错误（现在带字段级 data）。
         let fault = parse_ops(&serde_json::json!([{"kind": "setTrackMute"}])).expect_err("缺字段");
         let Fault::Domain { data, .. } = &fault else {
             panic!("必须是领域失败");
         };
-        assert!(data.is_none(), "缺字段错误不该带 data: {data:?}");
+        let data = data.as_ref().expect("缺字段必须带字段级 data");
+        assert_eq!(data["reason"], "missingField", "缺字段的 reason: {data:?}");
+        assert_eq!(data["field"], "value", "缺字段的 field: {data:?}");
 
         // 开关对象里 `kind` / `value` / `trackId` 之外的键：**响亮失败**，并指出
         // 目标音轨的两个合法位置 (`ops[].trackId` 逐条点名 / 顶层缺省回退)。
@@ -18721,15 +18741,15 @@ mod tests {
         }
 
         for (broken, expected_reason) in [
-            // 缺 `value`：统一的缺字段错误（没有 `data`）。
+            // 缺 `value`：统一的缺字段错误（带字段级 `data`）。
             (
                 serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "edgeId": edge_text}]),
-                None,
+                Some("missingField"),
             ),
             // 缺 `edgeId`。
             (
                 serde_json::json!([{"kind": SET_ROUTING_GAIN_KIND, "value": -3.0}]),
-                None,
+                Some("missingField"),
             ),
             // `value` 是布尔 / 字符串 / 对象 ⇒ 既不是数字也不是 `null`。
             (
@@ -18767,11 +18787,22 @@ mod tests {
                 "{broken}"
             );
             match expected_reason {
-                Some(reason) => assert_eq!(lane_fault_data(&fault)["reason"], reason, "{broken}"),
-                None => assert!(
-                    matches!(&fault, Fault::Domain { data: None, .. }),
-                    "缺字段 / 非法身份的失败不该带 `data`: {broken} / {fault:?}"
-                ),
+                Some(reason) => {
+                    let data = lane_fault_data(&fault);
+                    assert_eq!(data["reason"], reason, "{broken}");
+                    if reason == "missingField" {
+                        assert!(
+                            data["field"].is_string(),
+                            "缺字段必须点名 field: {broken} / {data}"
+                        );
+                    }
+                }
+                None => {
+                    assert!(
+                        matches!(&fault, Fault::Domain { data: None, .. }),
+                        "身份错误不该带 `data`: {broken} / {fault:?}"
+                    );
+                }
             }
         }
 
@@ -28525,15 +28556,28 @@ mod tests {
             Some("sectionColorMustBeNonEmptyStringMustBeString")
         );
 
-        // 缺 `section` 载荷 —— ⚠ `missing()` 这个既有辅助**不带** `reason`
-        // （与 `setScene` 缺载荷同一条路径），因此这里只断言"响亮失败"，
-        // 并**走既有读法**确认契约码是 `INVALID_PARAMETER_RANGE`，⛔ 不发明新理由。
+        // 缺 `section` 载荷 —— `missing()` 现在带字段级 `data`：
+        // `reason = missingField`，`field` 点名实际缺失的键。
         let fault = parse_ops(&serde_json::json!([{"kind": SET_SECTION_KIND}]))
             .expect_err("缺载荷必须被拒");
         let response = fault.to_tool_response().expect("失败必须能变成工具响应");
         assert_eq!(
             response.pointer("/error/code").and_then(Value::as_str),
             Some("INVALID_PARAMETER_RANGE")
+        );
+        assert_eq!(
+            response
+                .pointer("/error/data/reason")
+                .and_then(Value::as_str),
+            Some("missingField"),
+            "缺字段必须带字段级 reason: {response}"
+        );
+        assert_eq!(
+            response
+                .pointer("/error/data/field")
+                .and_then(Value::as_str),
+            Some(SECTION_PAYLOAD_FIELD),
+            "缺字段必须点名实际缺失的键: {response}"
         );
         assert!(
             response

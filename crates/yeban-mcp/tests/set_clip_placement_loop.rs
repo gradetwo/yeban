@@ -1008,13 +1008,11 @@ fn render_path(
 ///    `reason = unknownSetClipPlacementLoopField`，`supportedFields` **逐字**等于
 ///    [`SET_CLIP_PLACEMENT_LOOP_FIELDS`]（5 个新值键 + `kind`）。
 /// 2. **缺键 ≠ null**：缺一个键报"缺少 `X`"并带 T-FIX-561 恢复信封
-///    （`data` 是对象：`reason = invalidParameterRange`，`received` 为
-///    `Null`，`detail` 点名缺失字段与期望类型，`nextStep` 指回
+///    （`data` 是对象：`reason = missingField`、`field` 点名缺失键，
+///    `received` 为 `Null`，`detail` 点名缺失字段与期望类型，`nextStep` 指回
 ///    `yeban_edit_notes`，`action` 点名需手补的键）；`loopStartTick: null`
 ///    是**形状错误**（`reason = valueMustBeUnsignedInteger`），
 ///    `loopEnabled: null` 是 `valueMustBeBoolean` —— 两者都不是"缺省"。
-///    缺键的 `data` 不带机器字段（领域 `missing()` 保持既有 `Fault` 形状）；
-///    恢复层从 `data.detail` 的固定文案解析字段名，写进 `nextStep.action`；
 ///    ⛔ 不再把原样回显的 `ops` 当可执行模板。
 /// 3. 三个新值键**全部必填**：逐个删掉都必须红。
 ///
@@ -1102,8 +1100,12 @@ fn the_wire_carries_new_values_only() {
             "缺 `{missing}` 线上必须带恢复信封对象: {response}"
         );
         assert_eq!(
-            data["reason"], "invalidParameterRange",
-            "缺 `{missing}` 的 reason 是码位派生的通用值: {response}"
+            data["reason"], "missingField",
+            "缺 `{missing}` 的 reason 必须是字段级缺失词: {response}"
+        );
+        assert_eq!(
+            data["field"], missing,
+            "缺 `{missing}` 的 field 必须点名实际缺失的键: {response}"
         );
         assert_eq!(
             data["detail"],
