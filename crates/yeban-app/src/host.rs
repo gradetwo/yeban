@@ -250,6 +250,26 @@ pub fn apply_scroll_view(ui: &MainWindow, view: &ViewState, viewport_width: f32,
     // ── 注入块到此结束（T-FIX-494）：滚动快路径只写上面这些依赖偏移的属性。
 }
 
+/// T-FIX-920：把排列 / 钢琴卷帘共用的横向视口回到 tick 0（标尺起点与可见剪辑一起回来）。
+///
+/// 只在“明确的回开头”动作里调用（停止按钮 / rewind）；普通重投影、撤销、选片段都
+/// ⛔ 不调用，否则用户滚到的位置会被顺手抹掉。没有权威工程时仍把唯一偏移归零，
+/// 不让播放头在 001 而视口停在旧位置。
+fn reset_horizontal_view_to_start(ui: &MainWindow, undo: Option<&UndoPort>) {
+    let Some(project) = undo.and_then(UndoPort::try_project) else {
+        ui.set_roll_scroll_x(0.0);
+        ui.set_bar_start_index(0);
+        return;
+    };
+    match ViewState::from_project(&project) {
+        Ok(view) => apply_scroll_view(ui, &view, arrangement_viewport_px(ui), 0.0),
+        Err(_) => {
+            ui.set_roll_scroll_x(0.0);
+            ui.set_bar_start_index(0);
+        }
+    }
+}
+
 fn bar_ruler_readout(bar_positions: &[f32], viewport_width: f32, scroll_x: f32) -> (i32, i32, f32) {
     let bar_width = match bar_positions {
         [first, second, ..] => (second - first).max(0.0),
@@ -8322,6 +8342,9 @@ fn wire_transport_with_wiring(
     let stop_ui = slint::ComponentHandle::as_weak(ui);
     let stop_head = Rc::clone(&head_stop);
     let stop_record = Rc::clone(&record_control);
+    // T-FIX-920：停止按钮的语义是“停止并回到起点”，横向视口也必须一起回开头，
+    // 否则播放头在 001 而排列仍停在第 4 小节（用户失去“回到开头”的参照）。
+    let stop_undo = undo.clone();
     ui.on_stop(move || {
         // ⭐ T-FIX-348：停止按钮先结束录音 take（与录音键同一个入口），再停走带回起点。
         // 顺序不能反：落地要把片段摆在“按下停止”这一刻的播放头，回起点后只剩 0。
@@ -8363,6 +8386,8 @@ fn wire_transport_with_wiring(
         if let Some(ui) = stop_ui.upgrade() {
             apply_transport(&ui, reading);
             report_transport_dispatch(&ui, dispatch);
+            // T-FIX-920：Rewind/停止 不只归零播放头，排列横向视口也回到 001.01.000。
+            reset_horizontal_view_to_start(&ui, stop_undo.as_deref());
             if cancelled_pending {
                 if dispatch.is_dropped() {
                     // 停止命令没进环 ⇒ 引擎侧的取消也不成立，⛔ 不许写“已取消”。
@@ -23913,6 +23938,13 @@ fn commit_roll_auto_draw(
             }
             if let Some(updated_project) = port.try_project() {
                 sync_roll_target_selection(ui, &updated_project, &inserted);
+            }
+            // T-FIX-920：写音符是编辑动作，不是“重新定位”动作。`sync_roll_target_selection`
+            // 可能换掉当前片段身份（自动补片段 / 新建轨），将来任何标签联动都**不许**
+            // 把点击前的横向偏移改掉；这里把唯一偏移钉回指针落下时的值，再用同一个值
+            // 重投影。选片段 / 选轨仍由各自入口决定视口，两条路不混。
+            if (ui.get_roll_scroll_x() - scroll).abs() > f32::EPSILON {
+                ui.set_roll_scroll_x(scroll);
             }
             // T-FIX-677：落音后选中新音符；写在 reproject 之前，由 apply_view 重算标志
             // 并刷新状态栏。连续画多颗时是"最后一颗"的替换选区（裸单击口径）。
