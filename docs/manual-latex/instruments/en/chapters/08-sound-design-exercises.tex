@@ -3,7 +3,9 @@
 
 \classquote{不积跬步，无以至千里；不积小流，无以成江海。}{《荀子·劝学》 / Xunzi, "Encouraging Learning" (Quan Xue)}{Translation: Without small steps, you cannot reach a thousand li; without small streams, you cannot form a river or sea. Note: sound design grows from repeated small exercises — change one parameter, listen once.}
 
-This chapter turns the nine parameters from the previous two chapters into three playable exercises: a pad, a lead and a bass. Each starts from the default synthesizer and changes only the nine parameters; it does not touch EQ, reverb or compression, and does not assume ADSR, LFO, filter envelope, glide or a sub oscillator. The envelope is always the fixed 5 ms attack, 80 ms decay, sustain 0.7 and 50 ms release. A ``pad'' here is a timbre and a chord, not a slow fade-in.
+This chapter turns the nine parameters from the previous two chapters into three exercises with emotional scenes: a pad, a lead and a bass. Each scene asks first "who is listening, how close are they, is there danger?", then translates that judgment into the nine parameters; each exercise starts from the default synthesizer and changes only the nine parameters, touching no EQ, reverb or compression, and assuming no ADSR, LFO, filter envelope, glide or sub oscillator. Emotion is not an effect added at the end; it is a decision about where the sound should stand.
+
+Each of the three exercises has a listening coordinate: the Juno chorus teaches the pad to be "thin but wide", the Minimoog ladder filter teaches the lead to be "sparse but heavy", and the TR-808 long tail teaches the bass to be "deep, not explosive". They are not there for you to replicate hardware; they give the parameters an auditory reference. When you hesitate between 1600 Hz and 2200 Hz, ask first how wide this room needs to be, then turn the knob. The envelope is always the fixed 5 ms attack, 80 ms decay, sustain 0.7 and 50 ms release. A ``pad'' here is a timbre and a chord, not a slow fade-in.
 
 \begin{center}
 \begin{tikzpicture}[
@@ -54,11 +56,10 @@ Each track has at most 16 sounding voices. A four-note chord can be stacked four
 
 These are parameter recipes, not a tutorial for nine knobs. The current UI exposes only some quick readouts; write the nine parameters through the device-parameter path (project data or MCP \texttt{setParam} with \texttt{lane} set to \texttt{DeviceParam} and addressing by name). If a knob is not in the UI, do not assume it is hidden elsewhere; it may have no UI at all. Parameter names are case-insensitive, wavetable indices round to the nearest integer, and cutoff is clamped by the device to 20 Hz--0.45×sample rate.
 
-\section{Exercise 1: Pad}
-
+\section{Exercise 1: The Room at 4 A.M. (Pad)}
 
 \begin{exercise}
-Goal: a wide bed that supports the lead without fighting for the midrange. Start with a new MIDI synth track and the default synth; do not add EQ or reverb yet.
+Goal: for "4 A.M., a room with only rain outside the window", make a wide bed that supports the lead without fighting for the midrange. This scene does not need brightness; it needs the thickness of "someone is still in the room". Start with a new MIDI synth track and the default synth; do not add EQ or reverb yet.
 
 \begin{table}[htbp]
 \centering
@@ -97,9 +98,11 @@ Boundaries: the fixed 5 ms attack cannot produce a slow fade-in. To make the pad
 \screenshot{synth-pad-recipe}{Nine-parameter recipe for the pad exercise}
 \end{exercise}
 
-\section{Exercise 2: Lead}
+\noindent\textbf{Emotion check.} Listen with eyes closed for ten seconds and ask, "is this room empty, or is someone next door?" If the answer is "empty", lower \texttt{osc2\_level} a little; do not push the volume up.
 
-Goal: a monophonic lead that cuts through the pad, with a glassy edge but without becoming a bell. Start with another MIDI synth track and the default synth.
+\section{Exercise 2: A Monologue on a Rainy Phone Call (Lead)}
+
+Goal: for "one sentence spoken into a phone on a rainy night", make a monophonic lead that cuts through the pad, with a glassy edge but without becoming a bell. This scene should feel close, not bright enough to hurt. Start with another MIDI synth track and the default synth.
 
 \begin{table}[htbp]
 \centering
@@ -137,9 +140,11 @@ Boundaries: there is no glide/portamento and no adjustable ADSR; legato does not
 
 \screenshot{synth-lead-recipe}{Nine-parameter recipe for the lead exercise}
 
-\section{Exercise 3: Bass}
+\noindent\textbf{Emotion check.} Play lead and pad together, listen with eyes closed for ten seconds; if you hear "bright" before "person", lower \texttt{cutoff\_hz} by 200--400 Hz. Do not turn a monologue into a broadcast with the fader.
 
-Goal: a solid low end that still speaks on small speakers, without a sub oscillator. Start with a third MIDI synth track and the default synth.
+\section{Exercise 3: After the Drum Machine Stops in the Basement (Bass)}
+
+Goal: for "the drum machine has just stopped in the basement and the air is still shaking", make a solid low end that still speaks on small speakers, without a sub oscillator. This scene should feel deep, not explosive. Start with a third MIDI synth track and the default synth.
 
 \begin{table}[htbp]
 \centering
@@ -177,9 +182,11 @@ Boundaries: there is no sub oscillator, octave switch, glide or separate envelop
 
 \screenshot{synth-bass-recipe}{Nine-parameter recipe for the bass exercise}
 
+\noindent\textbf{Emotion check.} Mute lead and pad, leave only the bass for ten seconds; if it feels like "a machine under the floor", lower \texttt{drive} first, then consider lowering \texttt{osc2\_level}. This scene wants "the air still shaking", not "the wall shaking".
+
 \section{Three-track audition and checks}
 
-The three exercises can share one eight-bar section: the pad plays long chords, the lead plays a two-bar phrase, and the bass plays roots. Check in this order:
+Put the three scenes in one eight-bar section: the pad plays long chords, the lead plays a two-bar phrase, and the bass plays roots. Ask first whether the three scenes steal each other's spotlight, then check in this order:
 
 \begin{table}[htbp]
 \centering

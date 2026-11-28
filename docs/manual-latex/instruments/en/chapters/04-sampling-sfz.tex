@@ -67,6 +67,16 @@ The root key determines transposition. If a sample was recorded at C3 but \textt
 
 Velocity response comes from \texttt{amp\_veltrack} (default 100\%, range $-100$–$100$) plus an optional \texttt{amp\_velcurve\_N} point table; key-dependent loudness comes from \texttt{amp\_keytrack} (default 0 dB/key, range $-96$–$12$). Most libraries need neither changed; if an entire velocity layer is too loud or soft, inspect the library first, then consider changing the Yeban side.
 
+\subsection{MPC: sampling is not a sound pack}
+
+Akai and Roger Linn released the MPC60 in 1988: 12-bit sampling, sixteen velocity-sensitive pads, a built-in sequencer and swing. DJ Premier, Pete Rock and J Dilla all used MPC series instruments over long careers; what changed music was not ``it can sample'', but that sampling, performance and sequencing became one instrument.
+
+The lesson for SFZ is direct: a region is not ``a sound file'', it is one trigger. Which root and velocity layer the sample uses decides what you hear when you hit that pad; the pad's feel comes from performance and timing, not from the file format. Yeban's SFZ only handles the mapping of key range, root, velocity and sample; it does not handle MPC swing. For an MPC-style drag, solve it in MIDI/drum-machine timing (Chapter 9 covers \texttt{micro\_timing\_ticks}); do not expect a change to an SFZ region to deliver it.
+
+So when building a sampled instrument, do two things first: choose the right root and velocity layers so each pad ``feels like that instrument'' when pressed; then treat performance (velocity, timing, repetition) as part of the arrangement. An ``MPC feel'' is not a sample pack; it is sample selection plus pad performance plus timing.
+
+Boundaries: Yeban currently has no sixteen-pad MPC screen and no MPC swing knob. This chapter can reproduce sample mapping and velocity layers; timing and pad performance belong to the MIDI/drum-machine side. Do not use a looped sample to pretend it is ``MPC performance''.
+
 \section{Supported files and fallbacks}
 
 Yeban dispatches samples by suffix: \texttt{.wav}/\texttt{.wave} go through PCM/float WAV decoding; other common formats (FLAC, OGG, and so on) go through the general decoder. Both legs preserve channels, and samples with more than two channels are explicitly rejected rather than silently folded to mono.

@@ -89,6 +89,18 @@ Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\
 
 \screenshot{factory-preset-picker}{The preset entry in the bottom device rack is open, all six synth presets are visible, and the current track is a MIDI synth track.}
 
+\subsection{DX7 and Rhodes: factory voices do not come from nowhere}
+
+The six presets did not get their names by accident. Real instruments and synths stand behind them; knowing where they come from keeps a preset name from being mistaken for an engine specification.
+
+\textbf{The Yamaha DX7 (1983)} used digital FM synthesis: six operators, thirty-two algorithms, and frequency ratios plus feedback between operators to make glass, bells and electric piano. Its E Piano 1 preset brought digital electric piano into a great deal of pop production and took part of the Rhodes market with it. This chapter's FM Bell borrows the ``FM'' association, but Yeban's built-in engine is not FM: it is a two-oscillator wavetable plus a four-pole ladder low-pass, with no carrier/modulator ratio, FM depth or operator envelope. What you can do is use metallic/glass branches, a 4200 Hz cutoff and a little drive to create a ``glass/bell'' impression, not to fake the DX7 algorithm table.
+
+\textbf{The Fender Rhodes (mass-produced from 1965)} used tines and electromagnetic pickups to turn a strike into a bell-like transient plus a long tail. Its appeal is the grain at attack and the tail, not the words ``electric piano''. This chapter's envelope is fixed at 5 ms / 80 ms / 0.7 / 50 ms, so it cannot make the Rhodes tail; to approach it, use a short voice such as Glass Pluck and give the tail to arrangement, reverb or later effects. Do not pretend it is a sampled Rhodes.
+
+\textbf{The Hammond and Warm Organ} follow the same rule: Hammond's drawbars, tonewheel and rotary speaker are a complete electromechanical system; Warm Organ is an organ wavetable plus detune, not a drawbar organ. For a real Hammond voice, use a licensed sample or a third-party instrument.
+
+Factory presets are ``listening coordinates'', not ``certificates of historical replication''. Ask first how thick, bright and long the scene needs to be, then choose a preset and the parameters to change; the name helps you find a direction, it does not make the judgment for you.
+
 \section{Hollow Lead}
 
 Hollow Lead is the historical default: the first branch uses the hollow table at

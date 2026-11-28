@@ -134,13 +134,25 @@ Sub Bass & 0 & 1 & 0.95 & $0$ & 0.35 & $-5$ \\
 \end{table}
 
 Tables \ref{tab:preset-filter} and \ref{tab:preset-osc} give each preset its
-character directly: Hollow Lead is a 90%-level hollow branch plus a low-level
+character directly: Hollow Lead is a 90\%-level hollow branch plus a low-level
 second branch of the same table, suited to a soft lead; Warm Organ opens both
 organ branches and uses detune for organ-like thickness; Choir Pad uses vocal as
 the main branch and hollow as the auxiliary branch, and its pad character comes
 from the vocal table combined with a lower cutoff; FM Bell and Glass Pluck both
 use metallic/glass tables at high cutoff, the former brighter and the latter
 shorter; Sub Bass pushes cutoff down to 420 Hz and keeps only the low end.
+
+\subsection{Three landmark synths: three characters of subtractive synthesis}
+
+A parameter table tells you what is there now; it does not tell you why to play it that way. Three instruments in the history of subtractive synthesis map onto this chapter's three moves: the Minimoog turns ``less'' into weight, the Juno turns ``thin'' into width, and the TB-303 turns ``one line'' into groove.
+
+\textbf{The Minimoog (1970)} packed the room-sized modular Moog into a portable instrument: three oscillators, a ladder low-pass, and no recallable presets. Its lesson is not ``more parameters are better'', but ``every branch needs a job''. This chapter has only two branches, which is exactly the exercise: let \texttt{osc1} establish the line, then use \texttt{osc2}'s level and detune for thickness; leave the third layer to arrangement instead of forcing it into one patch. Yeban's Sub Bass, with a 420 Hz low-pass and one organ branch, is another way of writing ``less''.
+
+\textbf{The Juno-60/Juno-106 (1982/1984)} used DCOs and chorus to turn ``thin'' into ``wide''. Its chorus does not add a real third oscillator; it modulates time and stereo placement. This chapter has no chorus effect, so you can only use small detune between two branches of the same table, say $\pm5$ to $\pm9$ cents, and leave the rest of the width to later effects. Do not claim this equals the Juno chorus; it is an approximation with the available parameters, not a replica.
+
+\textbf{The TB-303 (1981)} was designed as a single-oscillator-plus-filter bass instrument for bass players, but the dance floor turned it into an acid lead. It reminds us that resonance and cutoff are not decoration: they change pitch perception and groove. Push \texttt{resonance} from 0.2 to 0.5 and the harmonics around cutoff are emphasised, so the melodic centre of gravity moves; that is not volume, and \texttt{drive} should not be used to compensate. Yeban has no 303 glide or accent controls; what you can practise is the judgment of ``one line plus one filter''.
+
+The common lesson: make one line clear first, then add the second; listen to phase and detune before talking about thickness. Parameters are hands; listening is the ear. Do not let a preset name listen for you.
 
 \section{Help-topic mapping for this chapter}
 
