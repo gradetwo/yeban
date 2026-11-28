@@ -9047,12 +9047,15 @@ mod tests {
 
         // 存下来的确实是演示工程 —— ⭐ `#215`：**除创建时刻外**逐字段相等，
         // 且创建时刻必须真的写进去（不再是 `0` ⇒ BWF 不再写 1970-01-01）。
+        // ⭐ T-FIX-886 分层：`--save-as` 走 `Sample::project()`，存的是播放面投影
+        // （`demo_project_for_playback()`），不是逐字节引脚的模型原件
+        // `demo_project()`——期望值必须跟产品路径一致，见 `bridge.rs` 的分层注释。
         let read_back = crate::open::open_project_file(&target).expect("读回");
         assert!(
             read_back.metadata.created_at_unix_ms > 0,
             "新建工程必须写入真实创建时刻（实得 0 ⇒ BWF 起源日期会退回 1970-01-01）"
         );
-        let mut expected = crate::bridge::demo_project();
+        let mut expected = crate::bridge::demo_project_for_playback();
         expected.metadata.created_at_unix_ms = read_back.metadata.created_at_unix_ms;
         assert_eq!(
             read_back, expected,
@@ -9076,7 +9079,7 @@ mod tests {
             filled_project.metadata.created_at_unix_ms > 0,
             "`--project-sample filled --save-as` 同样是创建，必须写真实时刻"
         );
-        let mut expected_filled = yeban_model::samples::filled_project();
+        let mut expected_filled = crate::bridge::filled_project_for_playback();
         expected_filled.metadata.created_at_unix_ms = filled_project.metadata.created_at_unix_ms;
         assert_eq!(filled_project, expected_filled);
         assert_ne!(filled_project, read_back);
