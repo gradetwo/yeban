@@ -720,6 +720,7 @@ fn transform_slice(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn scratch_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "yeban-slicer-{tag}-{}-{}",
@@ -733,6 +734,7 @@ mod tests {
     }
 
     /// 1 秒单声道正弦夹具（48 kHz，显式切点 0.5 秒 ⇒ 2 片）。
+    #[cfg(unix)]
     fn write_input_wav(path: &Path) {
         let samples: Vec<f32> = (0..48_000)
             .map(|index| (index as f32 * 0.01).sin() * 0.5)
@@ -741,6 +743,7 @@ mod tests {
         write_plain_wav(path, &format, &PcmBuffer::Float32(samples)).expect("写夹具 WAV");
     }
 
+    #[cfg(unix)]
     fn slice_options() -> SliceOptions {
         SliceOptions {
             cuts: Some(vec![0.5]),
