@@ -235,7 +235,7 @@ fn an_empty_registry_is_a_no_op() {
 // ===========================================================================
 
 #[test]
-fn the_save_flow_wires_the_refresh_hook() {
+fn host_source_contract_names_the_recapture_hook() {
     let aether_host = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host.rs"),
     )
