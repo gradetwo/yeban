@@ -32618,104 +32618,16 @@ pub fn wire_aether_callbacks(ui: &MainWindow) {
         }
     });
 
+    // ⭐ T-FIX-923：主入口「添加新轨道」不得只造一条 UI 通道条 —— 这里原先是
+    // 一段 UI-only 的演示数据写入（工程轨数一位不动），在无 `wire_aether_actions`
+    // 的执行面（活窗口 / MCP）会成为**最后写者**，于是出现「界面 1 条 / 工程 0 条」。
+    // 统一转交 `track-create-midi`（`wire_track_strip` 的唯一建轨入口），与
+    // `wire_aether_actions` 的转发形态逐字一致；建轨被拒时那里有可见回执。
     ui.on_track_add_requested({
         let weak = weak.clone();
         move || {
             if let Some(ui) = weak.upgrade() {
-                let tracks = ui.get_tracks();
-                let mut vec: Vec<TrackData> = (0..tracks.row_count())
-                    .filter_map(|i| tracks.row_data(i))
-                    .collect();
-                let next_id = vec.len() as i32 + 1;
-                let (kind_str, name_str, col) = match (next_id - 1) % 7 {
-                    0 => (
-                        "SYNTH · MPE",
-                        format!("0{}. Lead Synth", next_id),
-                        slint::Color::from_rgb_u8(56, 118, 145), // 黛蓝 #387691
-                    ),
-                    1 => (
-                        "DRUM RACK",
-                        format!("0{}. Tech Drums", next_id),
-                        slint::Color::from_rgb_u8(154, 106, 56), // 赭石 #9a6a38
-                    ),
-                    2 => (
-                        "GRANULAR",
-                        format!("0{}. Atmos Pad", next_id),
-                        slint::Color::from_rgb_u8(112, 94, 136), // 紫苏 #705e88
-                    ),
-                    3 => (
-                        "AUDIO · COMP",
-                        format!("0{}. Vocal Track", next_id),
-                        slint::Color::from_rgb_u8(52, 120, 100), // 沧浪 #347864
-                    ),
-                    4 => (
-                        "MIDI · STEP",
-                        format!("0{}. Arp Sequencer", next_id),
-                        slint::Color::from_rgb_u8(138, 79, 109), // 檀木 #8a4f6d
-                    ),
-                    5 => (
-                        "BASS · SUB",
-                        format!("0{}. Sub Bass", next_id),
-                        slint::Color::from_rgb_u8(46, 83, 107), // 玄青 #2e536b
-                    ),
-                    _ => (
-                        "AUX · BUS",
-                        format!("0{}. Aux Group", next_id),
-                        slint::Color::from_rgb_u8(82, 99, 119), // 霜灰 #526377
-                    ),
-                };
-                vec.push(TrackData {
-                    id: next_id,
-                    name: name_str.into(),
-                    kind: kind_str.into(),
-                    color: col,
-                    bus: "Bus 1 (Synth Grp)".into(),
-                    volume_db: -3.0,
-                    pan: "C".into(),
-                    muted: false,
-                    soloed: false,
-                    armed: false,
-                    insert1: "Wavetable MPE".into(),
-                    insert2: "Pro-QLinear 8".into(),
-                    insert3: "".into(),
-                    clip1: "Init Loop".into(),
-                    clip2: "".into(),
-                    clip3: "".into(),
-                    clip4: "".into(),
-                });
-                ui.set_tracks(ModelRc::new(VecModel::from(vec)));
-
-                let blocks = ui.get_timeline_blocks();
-                let mut block_vec: Vec<TimelineBlockData> = (0..blocks.row_count())
-                    .filter_map(|i| blocks.row_data(i))
-                    .collect();
-                let is_aud = ((next_id - 1) % 7) == 1 || ((next_id - 1) % 7) == 3;
-                // 十版片段四色与投影路径同规则（bridge::clip_*_color）。
-                let demo_rgb = crate::bridge::RgbColor::new(col.red(), col.green(), col.blue());
-                let demo_base = crate::bridge::clip_base_color(demo_rgb);
-                let demo_marker = crate::bridge::clip_marker_color(demo_rgb);
-                block_vec.push(TimelineBlockData {
-                    track_id: next_id,
-                    clip_ulid: "".into(),
-                    label: format!("{} Pattern", kind_str).into(),
-                    start_px: 160.0,
-                    width_px: 160.0,
-                    is_audio: is_aud,
-                    gain_label: "0dB".into(),
-                    color: col,
-                    base_color: to_color(demo_base),
-                    text_color: to_color(crate::bridge::clip_text_color(demo_base)),
-                    guide_color: to_color(demo_marker),
-                    marker_color: to_color(demo_marker),
-                    note_count: if is_aud { 0 } else { 4 },
-                    // 新建片段没有音频样本 ⇒ 空 peaks（界面不画波形，⛔ 不假装有）。
-                    waveform_peaks: ModelRc::new(VecModel::from(Vec::<f32>::new())),
-                });
-                ui.set_timeline_blocks(ModelRc::new(VecModel::from(block_vec)));
-
-                ui.set_toast_message(
-                    format!("[轨道] 已新增第 {} 轨 (同时支持音频与 MIDI 混排)", next_id).into(),
-                );
+                ui.invoke_track_create_midi();
             }
         }
     });
