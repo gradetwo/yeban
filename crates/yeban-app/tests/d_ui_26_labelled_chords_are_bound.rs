@@ -1061,7 +1061,7 @@ fn the_clip_matrix_hint_never_promises_tab() {
 /// 清单与 ① 同口径（两承诺源合并计数）；宿主侧必须留有对应的滚轮分支证据，
 /// ⛔ 让手势承诺只印不用。
 #[test]
-fn wheel_gesture_promises_are_pinned_and_wired() {
+fn gesture_counts_evidence_matches_the_pinned_inventory_and_host_source_names_both_branches() {
     let evidence = scan_corpus();
     let expected: BTreeMap<&str, usize> = [("Shift+Alt+滚轮", 4), ("Alt+滚轮", 4)]
         .into_iter()
