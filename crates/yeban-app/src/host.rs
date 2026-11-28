@@ -34148,6 +34148,11 @@ fn roll_base_pitch(ui: &MainWindow) -> u8 {
 
 fn apply_roll_pitch_range(ui: &MainWindow, next: u8) -> String {
     ui.set_roll_base_pitch(i32::from(next));
+    // 纵向窗口读数与 base 同步：滚轮/八度平移只经这里改 base，若 min/max
+    // 只在 apply_view 里写，滚动快路径后读数会停在旧窗口（判据实证）。
+    let (min_pitch, max_pitch) = roll_visible_pitch_window(ui);
+    ui.set_roll_min_pitch(i32::from(min_pitch));
+    ui.set_roll_max_pitch(i32::from(max_pitch));
     let top_pitch = next.saturating_add((crate::bridge::PITCH_LANE_COUNT - 1) as u8);
     let range_label = format!("{} – {}", midi_pitch_name(next), midi_pitch_name(top_pitch));
     ui.set_roll_pitch_range_label(range_label.clone().into());
