@@ -566,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if registered_hollow:
         print(
-            f"[ok] 无未登记零判据或新增空心克隆（⚠ 仍有 {len(registered_hollow)} 个已登记历史空心克隆待 T-FIX-905..928 恢复，"
+            f"[ok] 无未登记零判据或新增空心克隆（⚠ 仍有 {len(registered_hollow)} 个已登记历史空心克隆待恢复（恢复任务尚未编号），"
             "已从行为判据读数中剥离；传 --list-hollow 查看清单，--strict-hollow 强制拦截）"
         )
     else:
