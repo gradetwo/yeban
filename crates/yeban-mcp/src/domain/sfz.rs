@@ -4097,6 +4097,64 @@ pub struct SfzRenderOutcome {
     pub notes_with_pan: u64,
 }
 
+/// 是否必须拒绝一次“全静音且没有任何真实/正弦声源”的 SFZ 试听渲染。
+///
+/// 纯 `sample=*silence` 的乐器可以合法地静音（用户明确要静音）；但**声明了
+/// `sample=` 文件、实际一条也没读到，命中区域又全是内建静音**时，成功回执
+/// 会误导调用方以为“已经出声”。这条判据只在有排程音符、零文件样本、零正弦
+/// 回退、确有样本失败、且命中内建静音时成立；⛔ 不误伤纯 `*silence` 夹具，
+/// 也不误伤明确走内存正弦回退的试听路径。
+const fn all_silent_render_without_sources(
+    notes_scheduled: u64,
+    notes_using_builtin_silence: u64,
+    notes_using_file_sample: u64,
+    notes_using_sine_fallback: u64,
+    sample_failure_count: usize,
+    loaded_sample_failure_count: usize,
+) -> bool {
+    notes_scheduled > 0
+        && notes_using_builtin_silence > 0
+        && notes_using_file_sample == 0
+        && notes_using_sine_fallback == 0
+        && (sample_failure_count > 0 || loaded_sample_failure_count > 0)
+}
+
+/// 全静音假成功的**响亮拒绝**（试听导出与 `plan_render_sfz_wav` 共用同一条判据）。
+///
+/// `loaded_sample_failure_count` 由调用方按 **装载报告** 传：`yeban_load_sfz` 的
+/// `sample_sources` 为空时，`sampleFailures` 的条数；> 0 ⇒ 这份乐器一条样本也没读到。
+pub(crate) fn no_source_render_fault(
+    outcome: &SfzRenderOutcome,
+    loaded_sample_failure_count: usize,
+) -> Option<Fault> {
+    if !all_silent_render_without_sources(
+        outcome.notes_scheduled,
+        outcome.notes_using_builtin_silence,
+        outcome.notes_using_file_sample,
+        outcome.notes_using_sine_fallback,
+        outcome.sample_failures.len(),
+        loaded_sample_failure_count,
+    ) {
+        return None;
+    }
+    Some(Fault::domain_with_data(
+        CODE_RENDER,
+        "SFZ 渲染没有可用声源：排程音符全部落到内建静音，且声明的 sample 文件一条也没读到；\
+         拒绝写出全零 WAV（这不是可听的试听结果）",
+        serde_json::json!({
+            "notesScheduled": outcome.notes_scheduled,
+            "notesUsingBuiltinSilence": outcome.notes_using_builtin_silence,
+            "notesUsingFileSample": outcome.notes_using_file_sample,
+            "notesUsingSineFallback": outcome.notes_using_sine_fallback,
+            "sampleFilesFailedCount": outcome.sample_failures.len(),
+            "loadedSampleFilesFailedCount": loaded_sample_failure_count,
+            "sampleFailures": outcome.sample_failures.iter().take(5).collect::<Vec<_>>(),
+            "hint": "先修 sample= 相对路径并确认样本字节已按 assets/samples/manifest.json 外取；\
+                     用 yeban_load_sfz 的 regionDetails.sampleFileState / sampleFailures 核对",
+        }),
+    ))
+}
+
 /// 把工程里的音符经一份**已解析**的 SFZ 渲染成交织立体声浮点母带。
 ///
 /// 语义（每条都刻意可判据化）：
@@ -4313,7 +4371,7 @@ pub fn render(
         }
     }
     let peak = math::peak_of(&samples);
-    Ok(SfzRenderOutcome {
+    let outcome = SfzRenderOutcome {
         samples,
         frames,
         peak,
@@ -4358,7 +4416,11 @@ pub fn render(
         notes_with_sample_span,
         notes_with_multiple_regions,
         notes_with_pan,
-    })
+    };
+    if let Some(fault) = no_source_render_fault(&outcome, 0) {
+        return Err(fault);
+    }
+    Ok(outcome)
 }
 
 /// 一个音符的**样本来源裁决**（三种互斥出口；读数按它们分类计数）。
@@ -8006,5 +8068,32 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// 假成功判据：排程音符全落内建静音、零文件样本、零正弦回退，且确有
+    /// `sample=` 读取失败 ⇒ 必须拒绝；纯 `*silence` 或明确正弦回退 ⛔ 不误伤。
+    #[test]
+    fn silent_render_without_file_or_sine_sources_is_refused() {
+        assert!(all_silent_render_without_sources(559, 390, 0, 0, 4466, 0));
+        assert!(
+            all_silent_render_without_sources(559, 390, 0, 0, 0, 4466),
+            "装载报告显示一条样本都没读到、且命中区域全是内建静音 ⇒ 也要拒绝"
+        );
+        assert!(
+            !all_silent_render_without_sources(2, 2, 0, 0, 0, 0),
+            "纯内建静音（没有声明失败的样本）是合法静音，不得误伤"
+        );
+        assert!(
+            !all_silent_render_without_sources(2, 2, 0, 2, 1, 0),
+            "明确走正弦回退的试听有真实信号，不得误伤"
+        );
+        assert!(
+            !all_silent_render_without_sources(0, 0, 0, 0, 3, 0),
+            "没有排程音符的空渲染保持既有语义"
+        );
+        assert!(
+            !all_silent_render_without_sources(2, 0, 2, 0, 0, 0),
+            "读到文件样本时正常出声"
+        );
     }
 }

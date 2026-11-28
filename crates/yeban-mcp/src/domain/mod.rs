@@ -7675,6 +7675,36 @@ fn plan_render_sfz_wav(domain: &Domain, call: &ToolCall) -> Result<Plan, Fault> 
             &instrument.initial_cc,
         )
     })??;
+    // 装载报告与试听结果必须**交叉核对**：真实鼓组在仓库里没有样本字节时，
+    // `sample=*silence` 区域会把排程音符吸成 390 条内建静音，而 `render`
+    // 自身的 cache 只看命中区域 ⇒ 看不到「整份乐器一条样本都没读到」。
+    // 这里用 `SfzLoad` 的真实读数补上这一条：零读入 + 有失败 + 全静音试听
+    // ⇒ 在编码前响亮拒绝，⛔ 不写出 9 MB 全零 WAV。
+    // ⭐ 管理侧复验修正（T-FIX-1049）：装载失败只在与排程音符的键/力度范围
+    // 重叠时才算「本该出声却没声源」。与排程无关区域的失败（例如只渲染
+    // `*silence` 音高时另一音高的 `missing.wav`）不得误拒合法的内建静音渲染。
+    let loaded_sample_failure_count = if instrument.sample_sources.is_empty() {
+        instrument
+            .regions
+            .iter()
+            .filter(|region| {
+                !region.builtin_silence
+                    && (region.sample_file_state.starts_with("unreadable")
+                        || region.sample_file_state.starts_with("rejected"))
+                    && notes.iter().any(|note| {
+                        i32::from(note.pitch) >= region.key_low
+                            && i32::from(note.pitch) <= region.key_high
+                            && note.velocity >= region.velocity_low
+                            && note.velocity <= region.velocity_high
+                    })
+            })
+            .count()
+    } else {
+        0
+    };
+    if let Some(fault) = sfz::no_source_render_fault(&outcome, loaded_sample_failure_count) {
+        return Err(fault);
+    }
     // 编码**复用**与 `yeban_render_master` 同一份实现（`write_master_container`）：
     // 24-bit PCM + 同一份 TPDF 抖动 + 同一个容器写入器。`with_bext = false` 是
     // 两者唯一刻意的差别 —— 本工具不写 `bext`（无时间戳）⇒ 同一请求逐字节可复现。

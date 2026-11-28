@@ -685,3 +685,70 @@ fn the_sine_fallback_counter_counts_unreadable_samples_and_excludes_builtin_sile
         silence["peak"]
     );
 }
+
+/// `Programs/` 根判据：`Programs/kit.sfz` 里的 `sample=../Samples/tone.wav`
+/// 必须按 **instrument 根**（`Programs` 的父目录）解析并真的读到、真的出声。
+/// 这正是 issue 里声称的 `samplePathOutsideRoot` 场景；T-FIX-266 已把根处理
+/// 加进 `resolve_sample_path`，本判据把这条行为钉在 MCP 全链上，防回归。
+#[test]
+fn programs_sibling_samples_resolve_from_instrument_root_and_render_audibly() {
+    let scratch = Scratch::new("programs");
+    let programs = scratch.join("Programs");
+    let samples = scratch.join("Samples");
+    std::fs::create_dir_all(&programs).expect("建 Programs");
+    std::fs::create_dir_all(&samples).expect("建 Samples");
+    write_constant_wav(&samples.join("tone.wav"), 0.5, 4_800, 48_000);
+    let sfz = programs.join("kit.sfz");
+    std::fs::write(
+        &sfz,
+        "<region> sample=../Samples/tone.wav key=60 pitch_keycenter=60\n",
+    )
+    .expect("写 Programs 夹具");
+
+    let mut dispatcher = dispatcher_with_project();
+    let loaded = call_tool(
+        &mut dispatcher,
+        "yeban_load_sfz",
+        serde_json::json!({ "path": sfz.display().to_string() }),
+    );
+    assert_eq!(loaded["status"], "success", "{loaded}");
+    let data = &loaded["data"];
+    assert_eq!(data["loaded"], true);
+    assert_eq!(
+        data["sampleFilesReadCount"], 1,
+        "`../Samples` 必须解析到 instrument 根并真读: {data}"
+    );
+    assert_eq!(data["sampleFilesFailedCount"], 0, "{data}");
+    let state = data["regionDetails"][0]["sampleFileState"]
+        .as_str()
+        .expect("sampleFileState");
+    assert!(
+        state.starts_with("file(") && state.contains("tone.wav") && state.contains("frames=4800"),
+        "区域状态必须点名真读到的文件: {state}"
+    );
+
+    let target = scratch.join("programs-out.wav");
+    let instrument_id = data["instrumentId"].as_u64().expect("instrumentId");
+    let rendered = call_tool(
+        &mut dispatcher,
+        "yeban_render_sfz_wav",
+        serde_json::json!({
+            "path": target.display().to_string(),
+            "instrumentId": instrument_id,
+            "frames": 4_800,
+            "sampleRate": 48_000,
+        }),
+    );
+    assert_eq!(rendered["status"], "success", "{rendered}");
+    let rendered = &rendered["data"];
+    assert_eq!(rendered["notesUsingFileSample"], 1, "{rendered}");
+    assert_eq!(rendered["notesUsingSineFallback"], 0, "{rendered}");
+    let peak = rendered["peak"].as_f64().expect("peak");
+    assert!(peak > 0.0, "有文件样本时不得静音: {rendered}");
+    let bytes = std::fs::read(&target).expect("读回 WAV");
+    let (_, _, samples) = wav_read(&bytes);
+    assert!(
+        samples.iter().any(|sample| *sample != 0),
+        "解码后的 PCM 不得全零"
+    );
+}
