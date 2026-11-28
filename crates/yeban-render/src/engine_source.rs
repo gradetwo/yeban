@@ -1010,6 +1010,72 @@ fn check_choke_groups_not_split(
     Ok(())
 }
 
+/// 把 SFZ 独占组里**尚未挂链**的键并入该组唯一已挂链的分区。
+///
+/// ## 为什么需要这一步
+///
+/// 逐件链是按 GM 键组手工/出厂配置的：电子鼓风格 trap 的 `hats` 链只
+/// 认 42，换成原声鼓 SFZ 后同一独占组还出现 44（踏板/开镲）。42 在
+/// `hats` 链、44 在余量，两个键会落到两台引擎；[`check_choke_groups_not_split`]
+/// 会如实报错，但系统自带鼓组预制因此整轨不可渲染。
+///
+/// 本函数只做**无歧义**的合并：一个独占组的键若恰好只被一条链认领，
+/// 其余键都落在余量，就把这些余量键并入该链。若同一组已被**多条链**
+/// 分别认领，说明各链器件归属存在冲突，不做静默取舍，仍交给
+/// [`check_choke_groups_not_split`] 响亮失败。
+///
+/// 身份/顺序纪律：只改 `keys` 并保持原链序；链名、器件、声相、增益
+/// 全部逐位保留。被并入的键从此走该链的器件 —— 这是“同一独占组必须
+/// 同链”的直接代价，只有唯一认领链时才做。
+fn adopt_unchained_choke_keys(
+    prepared: &PreparedSfz,
+    chains: &[LaneChainDef],
+) -> Vec<LaneChainDef> {
+    let mut effective = chains.to_vec();
+    let mask_keys = |mask: [u64; 2]| -> Vec<u8> {
+        let mut keys = Vec::new();
+        for (word, bits) in mask.iter().enumerate() {
+            for bit in 0..64 {
+                if bits & (1u64 << bit) != 0 {
+                    keys.push(u8::try_from(word * 64 + bit).unwrap_or(u8::MAX));
+                }
+            }
+        }
+        keys
+    };
+    for region in prepared.regions() {
+        let off_by = region.off_by();
+        if off_by == 0 {
+            continue;
+        }
+        let mut group_keys = mask_keys(region.key_mask());
+        for victim in prepared.regions() {
+            if victim.group() == off_by {
+                group_keys.extend(mask_keys(victim.key_mask()));
+            }
+        }
+        group_keys.sort_unstable();
+        group_keys.dedup();
+        let mut owners: Vec<usize> = group_keys
+            .iter()
+            .filter_map(|key| effective.iter().position(|chain| chain.keys.contains(key)))
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.len() != 1 {
+            continue;
+        }
+        let destination = owners[0];
+        for key in group_keys {
+            if !effective[destination].keys.contains(&key) {
+                effective[destination].keys.push(key);
+            }
+        }
+        effective[destination].keys.sort_unstable();
+    }
+    effective
+}
+
 /// [`LaneSplitSource`] 的一个 lane 组：过滤调度表的引擎源 ＋ 本组链的
 /// 运行态（无可执行器件 ⇒ `None` ⇒ 整级不执行）＋ 组声相增益。
 struct LaneGroup {
@@ -1124,13 +1190,17 @@ impl LaneSplitSource {
         chains: &[LaneChainDef],
         bpm: f64,
     ) -> Result<Self, EngineSourceError> {
+        let effective_chains = snapshot.sfz().get(&track).map_or_else(
+            || chains.to_vec(),
+            |plan| adopt_unchained_choke_keys(plan.prepared(), chains),
+        );
         if let Some(plan) = snapshot.sfz().get(&track) {
-            check_choke_groups_not_split(plan.prepared(), chains, track)?;
+            check_choke_groups_not_split(plan.prepared(), &effective_chains, track)?;
         }
         let sample_rate = snapshot.sample_rate();
         let schedule = snapshot.schedules().get(&track).cloned();
-        let mut groups = Vec::with_capacity(chains.len());
-        for chain in chains {
+        let mut groups = Vec::with_capacity(effective_chains.len());
+        for chain in &effective_chains {
             let filtered = schedule
                 .as_ref()
                 .map(|full| filter_schedule(full, |pitch| chain.keys.contains(&pitch)));
@@ -1154,7 +1224,9 @@ impl LaneSplitSource {
         }
         let remainder_filtered = schedule.as_ref().map(|full| {
             filter_schedule(full, |pitch| {
-                !chains.iter().any(|chain| chain.keys.contains(&pitch))
+                !effective_chains
+                    .iter()
+                    .any(|chain| chain.keys.contains(&pitch))
             })
         });
         let remainder =
@@ -2782,18 +2854,19 @@ mod tests {
         assert_eq!(render(), render(), "分组渲染必须逐位可复现");
     }
 
-    /// §5.1 断言 4（choke 回归）＋拆组响亮失败（双保险）：
-    /// 开镲（46, group=1）长音后接闭镲（42, off_by=1）——hats 同组
-    /// [42,46] 时分组渲染的掐尾时刻与单源渲染差 ≤ 1 块；把 42/46 拆到
-    /// 不同分区时，分组源构造必须响亮失败。
+    /// §5.1 断言 4（choke 回归）＋单侧余量合并：
+    /// 开镲（44, group=1）长音后接闭镲（42, off_by=1）——hats 同组
+    /// [42,44] 时分组渲染的掐尾时刻与单源渲染差 ≤ 1 块；只在 hats 链里
+    /// 放 42、把 44 留在余量时，构造期必须把 44 并入 hats 链并保留掐尾，
+    /// 而不是让系统鼓组预制整轨不可渲染。
     #[test]
-    fn choke_survives_lane_grouping_and_split_groups_fail_loudly() {
+    fn choke_survives_lane_grouping_and_unchained_victim_is_coalesced() {
         let dir = tempfile::tempdir().expect("临时目录");
         let sfz_path = dir.path().join("kit.sfz");
-        let sfz_text = "<region> sample=open.wav key=46 group=1 amp_veltrack=0\n\
+        let sfz_text = "<region> sample=open.wav key=44 group=1 amp_veltrack=0\n\
                         <region> sample=closed.wav key=42 group=2 off_by=1 amp_veltrack=0\n";
         std::fs::write(&sfz_path, sfz_text).expect("写 SFZ");
-        let notes = [(0u64, 46u8, 1_920u64), (960, 42, 120)];
+        let notes = [(0u64, 44u8, 1_920u64), (960, 42, 120)];
         let hats_chain = |keys: Vec<u8>| LaneChainDef {
             keys,
             name: "hats".to_owned(),
@@ -2837,7 +2910,7 @@ mod tests {
         };
 
         // 单源基线与同组分组渲染的掐尾时刻对账。
-        let (project, track, timbre) = build(vec![hats_chain(vec![42, 46])]);
+        let (project, track, timbre) = build(vec![hats_chain(vec![42, 44])]);
         let mut plain = timbre.track_source(track).expect("必须能武装");
         let plain_out = render_stereo_any(&mut plain, 72_000);
         let mut lane = timbre
@@ -2852,7 +2925,7 @@ mod tests {
             "choke 掐尾时刻差不得超过 1 块（单源 {plain_last} vs 分组 {lane_last}）"
         );
         // 非空证明：没有闭镲时开镲长音必须响得久得多（掐尾真的发生过）。
-        let (mut open_project, open_track) = lane_project(&[(0, 46, 1_920)], Vec::new());
+        let (mut open_project, open_track) = lane_project(&[(0, 44, 1_920)], Vec::new());
         open_project
             .tracks
             .get_mut(&open_track)
@@ -2890,15 +2963,23 @@ mod tests {
         assert_eq!(plain.steal_counter().load(Ordering::Relaxed), 0);
         assert_eq!(lane.steal_counter().load(Ordering::Relaxed), 0);
 
-        // 拆组 ⇒ 构造响亮失败（触发键 42 在组内、受害键 46 在余量）。
-        let (_project2, track2, timbre2) = build(vec![hats_chain(vec![42])]);
-        let error = timbre2
-            .lane_track_source(track2, &[hats_chain(vec![42])], 120.0)
-            .expect_err("拆开独占组的分组必须失败");
+        // 42/44 型：触发键 42 在 hats 链、受害键 44 在余量。构造期必须
+        // 把 44 并入 42 所在的链，而不是响亮失败；渲染后掐尾时刻与单源
+        // 一致，且比无闭镲时短得多（choke 语义真的保留）。
+        let (project2, track2, timbre2) = build(vec![hats_chain(vec![42])]);
+        let mut split_lane = timbre2
+            .lane_track_source(track2, &project2.tracks[&track2].lane_chains, project2.bpm)
+            .expect("单侧余量的独占组必须被合并进同一 lane 链");
+        let split_out = render_stereo_any(&mut split_lane, 72_000);
+        let split_last = last_audible(&split_out);
+        println!("### [lane-choke] split_last={split_last}");
         assert!(
-            error.message().contains("off_by=1"),
-            "失败报文必须点名独占组: {}",
-            error.message()
+            plain_last.abs_diff(split_last) <= 128,
+            "42/44 合并后的掐尾时刻差不得超过 1 块（单源 {plain_last} vs 合并 {split_last}）"
+        );
+        assert!(
+            split_last + 8_000 < open_last,
+            "42/44 合并后必须仍被闭镲掐尾（合并 {split_last} vs 无闭镲 {open_last}）"
         );
     }
 }
