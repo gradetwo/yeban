@@ -1614,8 +1614,8 @@ mod tests {
             .to_smf_bytes()
             .expect("编码");
         let parsed = parse_smf(&bytes).expect("回读");
-        // 换算（与解析侧同一对公式）：200 音分 ⇒ 8191（8192 越界被钳）⇒ 回读 199；
-        // 0 音分 ⇒ 中心 ⇒ 回读 0。
+        // 换算（与解析侧同一对公式 + 对称舍入）：200 音分 ⇒ 8191（8192 越界被钳）
+        // ⇒ 回读 200；0 音分 ⇒ 中心 ⇒ 回读 0。
         let bends: Vec<(u64, i16)> = parsed
             .pitch_bends
             .iter()
@@ -1623,7 +1623,7 @@ mod tests {
             .collect();
         assert_eq!(
             bends,
-            vec![(0, 0), (120, 199), (480, 0), (1080, 0)],
+            vec![(0, 0), (120, 200), (480, 0), (1080, 0)],
             "曲线逐点写出；480 是末点非 0 的复位，1080 之后没有多余的 0"
         );
     }
@@ -1844,9 +1844,93 @@ mod tests {
             })
             .collect();
         assert_eq!(curves.len(), 1, "只导出了那一颗音符");
-        // 200 音分经 14-bit 量化往返成 199；-400 音分超出 ±2 半音默认范围被钳成 -200；
+        // 200 音分经 14-bit 量化 + 对称舍入往返成 200；-400 音分超出 ±2 半音默认范围被钳成 -200；
         // 末点非 0 的复位落在 tick 960 = 音符**结束**（区间左闭右开）⇒ 不归属。
-        assert_eq!(curves[0], vec![(0, 0), (240, 199), (480, -200)]);
+        assert_eq!(curves[0], vec![(0, 0), (240, 200), (480, -200)]);
+    }
+
+    /// 构造一颗只带弯音曲线的单音工程；曲线 tick 是音符局部 tick。
+    fn project_with_pitch_curve(curve: Vec<(u64, i16)>) -> YebanProjectV1 {
+        let mut project = YebanProjectV1::default();
+        let clip_id = EntityId::new();
+        let note_id = EntityId::new();
+        let mut note = MidiNote::new(note_id, 0, 60, 960);
+        note.pitch_bend_curve = curve;
+        let mut notes: BTreeMap<EntityId, MidiNote> = BTreeMap::new();
+        notes.insert(note_id, note);
+        project.clip_pool.insert(
+            clip_id,
+            yeban_model::project::ClipPoolEntry {
+                id: clip_id,
+                name: "Bend".to_owned(),
+                content: ClipContent::Midi { notes },
+            },
+        );
+        let track_id = EntityId::new();
+        let placement_id = EntityId::new();
+        let mut track = yeban_model::project::TrackV3 {
+            id: track_id,
+            name: "BendTrack".to_owned(),
+            ..yeban_model::project::TrackV3::default()
+        };
+        track.clips.insert(
+            placement_id,
+            ClipPlacement {
+                id: placement_id,
+                clip_id,
+                start_tick: 0,
+                duration_ticks: 960,
+                ..ClipPlacement::default()
+            },
+        );
+        project.insert_track(track).expect("插入音轨");
+        project
+    }
+
+    fn curve_from_smf(bytes: &[u8]) -> Vec<(u64, i16)> {
+        use yeban_model::Op;
+
+        let parsed = parse_smf(bytes).expect("回读");
+        let plan = crate::import::plan_midi_import(
+            &crate::import::content_free_project(),
+            &parsed,
+            &crate::import::MidiImportOptions::default(),
+        )
+        .expect("导入计划");
+        plan.ops
+            .iter()
+            .find_map(|op| match op {
+                Op::AddNote { note, .. } => Some(note.pitch_bend_curve.clone()),
+                _ => None,
+            })
+            .expect("应导入一颗音符")
+    }
+
+    /// 回归判据：199 音分的弯音曲线经 export→import→export 三轮后仍是 199，
+    /// 不允许每轮向 0 漂移 1 音分（199→198→197）。
+    #[test]
+    fn pitch_bend_curve_does_not_drift_toward_zero_across_three_rounds() {
+        let original = vec![(0, 199), (240, 0)];
+        let mut curve = original.clone();
+        let mut first_bytes: Option<Vec<u8>> = None;
+        for round in 1..=3 {
+            let project = project_with_pitch_curve(curve.clone());
+            let bytes = export_from_project(&project)
+                .expect("投影")
+                .to_smf_bytes()
+                .expect("编码");
+            let next = curve_from_smf(&bytes);
+            assert_eq!(
+                next, original,
+                "round {round}: 199 音分曲线不得向零漂移；实际 {next:?}"
+            );
+            if let Some(reference) = &first_bytes {
+                assert_eq!(&bytes, reference, "round {round}: 同曲线导出字节必须恒等");
+            } else {
+                first_bytes = Some(bytes.clone());
+            }
+            curve = next;
+        }
     }
 
     /// 判据 (类别③ 静默丢弃 vs 明确 Err): 一条轨道里的**音频片段**不会截断它

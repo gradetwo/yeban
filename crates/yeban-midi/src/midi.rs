@@ -26,9 +26,12 @@
 //!
 //! ## 边界（这次没有证明什么）
 //!
-//! - 拍号变更 (`TimeSignature`)、调号、滑音 (`SlideConfig`)、弯音曲线、
-//!   连击 (`ratchet`)、触发概率 (< 1.0) **不导出**; 登记在 notes 的 `pending`。
+//! - 拍号变更 (`TimeSignature`)、调号、滑音 (`SlideConfig`)、连击 (`ratchet`)、
+//!   触发概率 (< 1.0) **不导出**; 登记在 notes 的 `pending`。
 //!   `micro_timing_ticks` 会并入起始 tick。
+//! - ⭐ ADR-0014 D3：`pitch_bend_curve` **逐点导出**为 `E0` 弯音事件（音符局部 tick
+//!   ⇒ 绝对 tick）；量化规则见 `encode_pitch_bend_cents` / `decode_pitch_bend_cents`
+//!   的对称舍入说明。
 //! - ⭐ `#312`：**歌词**（`MidiNote::syllable`，非空）写成 `FF 05` 歌词元事件，
 //!   位置是音符的**生效起点**（`micro_timing_ticks` 已并入）、排在同一 tick 的
 //!   `NoteOn` **之前**，文本按 UTF-8 原样。
@@ -614,6 +617,37 @@ pub fn lyric_text(note: &MidiNote) -> Option<&str> {
     }
 }
 
+/// 对称四舍五入（half away from zero）的整数除法：`numer / denom`。
+///
+/// 导出/回读的 14-bit 弯音换算共用这一条规则。向零截断会让正的音分值每轮
+/// 少 1 音分（199→198→197），对称舍入则使整数音分在量化步长内稳定复现。
+fn round_div(numer: i32, denom: i32) -> i32 {
+    debug_assert!(denom > 0);
+    let quotient = numer / denom;
+    let remainder = numer % denom;
+    if remainder.unsigned_abs() * 2 >= denom.unsigned_abs() {
+        quotient + i32::signum(numer) * i32::signum(denom)
+    } else {
+        quotient
+    }
+}
+
+/// 音分 ⇒ 居中 14-bit 弯音原值（`-8192..=8191`，`0 = center`）。
+///
+/// `range_semitones` 是轨内弯音范围（模型/导出侧保证 2..=24）；先按
+/// `range_semitones × 100` 音分换算，再对称舍入并钳位到 midly 的 14-bit 域。
+fn encode_pitch_bend_cents(cents: i16, range_semitones: u8) -> i16 {
+    let range_cents = i32::from(range_semitones) * 100;
+    debug_assert!(range_cents > 0, "弯音范围必须为正");
+    round_div(i32::from(cents) * 8192, range_cents).clamp(-8192, 8191) as i16
+}
+
+/// 居中 14-bit 弯音原值 ⇒ 音分；与 [`encode_pitch_bend_cents`] 对称舍入。
+fn decode_pitch_bend_cents(raw: i16, range_cents: i32) -> i16 {
+    debug_assert!(range_cents > 0, "弯音范围必须为正");
+    round_div(i32::from(raw) * range_cents, 8192).clamp(-range_cents, range_cents) as i16
+}
+
 /// 把一个音符的起始 tick 规范化 (把微时值并入, 并钳到 0)。
 fn effective_start(note: &MidiNote) -> u64 {
     let offset = note.micro_timing_ticks.unwrap_or(0);
@@ -948,9 +982,10 @@ impl MidiExport {
                     RawEvent::Lyric { text, .. } => {
                         TrackEventKind::Meta(MetaMessage::Lyric(text.as_bytes()))
                     }
-                    // ⭐ ADR-0014 D3：音分 ⇒ `midly` 的**居中** 14-bit 值（0 = 中心）。
-                    // 换算按事件自带的弯音范围（半音）：范围 2 时 1 音分 = 8192/200
-                    // （与改前逐位相同）；整除截断，越界钳位。
+                    // ⭐ ADR-0014 D3 / T-FIX-925：音分 ⇒ `midly` 的**居中** 14-bit 值
+                    // （0 = 中心）。换算按事件自带的弯音范围（半音）：范围 2 时
+                    // 1 音分 = 8192/200。**对称四舍五入**（不是向零截断）—— 导出与
+                    // 回读用同一规则，整数音分多轮往返不再逐轮向零漂移；越界钳位。
                     RawEvent::PitchBend {
                         channel,
                         cents,
@@ -959,10 +994,10 @@ impl MidiExport {
                     } => TrackEventKind::Midi {
                         channel: u4::new(*channel),
                         message: MidiMessage::PitchBend {
-                            bend: PitchBend::from_int(
-                                (i32::from(*cents) * 8192 / (i32::from(*range_semitones) * 100))
-                                    .clamp(-8192, 8191) as i16,
-                            ),
+                            bend: PitchBend::from_int(encode_pitch_bend_cents(
+                                *cents,
+                                *range_semitones,
+                            )),
                         },
                     },
                     // ⭐ 第五份报告 C-2：`BendRange` 恒由 `track_events` 在排序后
@@ -1708,10 +1743,10 @@ pub fn parse_smf(bytes: &[u8]) -> Result<ParsedMidi, MidiError> {
                             // 半音，与旧口径逐位一致）。⭐ 第五份报告 C-2 的往返
                             // 不对称在此修复：导出侧对超 ±2 半音的轨写 RPN 并按
                             // 新范围换算，回读按同一范围折回。
+                            // T-FIX-925：回读也走**对称舍入**，与导出侧同一规则；
+                            // 否则整数音分多轮往返会逐轮向零漂移。
                             let range_cents = bend_ranges[usize::from(channel)].range_cents();
-                            let cents = (i32::from(bend.as_int()) * range_cents / 8192)
-                                .clamp(-range_cents, range_cents)
-                                as i16;
+                            let cents = decode_pitch_bend_cents(bend.as_int(), range_cents);
                             pitch_bends.push(ParsedPitchBend {
                                 track: track_index,
                                 channel,
@@ -2648,7 +2683,7 @@ mod tests {
 
     /// 判据（⭐ C-2 导入侧）：CC 38 的音分部分计入范围（2 半音 + 50 音分
     /// = 250）；范围按通道隔离（通道 1 的设置不影响通道 0）。
-    /// 整数截断误差 ≤ 1 音分：8191 × 250 / 8192 = 249.97 ⇒ 249。
+    /// 对称舍入误差 ≤ 1 音分：8191 × 250 / 8192 = 249.97 ⇒ 250。
     #[test]
     fn rpn_range_includes_cc38_cents_and_is_per_channel() {
         let bytes = smf_single_track(&[
@@ -2656,16 +2691,16 @@ mod tests {
             (0, cc(1, 100, 0)),
             (0, cc(1, 6, 2)),
             (0, cc(1, 38, 50)),
-            (0, bend_ev(1, 8191)),  // 通道 1：249
+            (0, bend_ev(1, 8191)),  // 通道 1：250
             (0, bend_ev(0, 4096)),  // 通道 0：缺省 ±2 ⇒ 100
             (0, bend_ev(0, -8192)), // 通道 0：-200（缺省范围下限恰达）
         ]);
         let parsed = parse_smf(&bytes).expect("自造 SMF 必须可解析");
-        assert_eq!(bend_cents(&parsed), [249, 100, -200]);
+        assert_eq!(bend_cents(&parsed), [250, 100, -200]);
     }
 
     /// 判据（⭐ C-2 导入侧）：范围边界 —— 12 半音时满幅负弯恰 −1200，
-    /// 满幅正弯因 14 位不对称（+8191）读 1199，与理想值差 1 音分（容差内）。
+    /// 满幅正弯因 14 位不对称（+8191）经对称舍入读 1200，与理想值一致。
     #[test]
     fn rpn_range_boundary_values() {
         let bytes = smf_single_track(&[
@@ -2677,7 +2712,48 @@ mod tests {
             (0, bend_ev(0, 8191)),
         ]);
         let parsed = parse_smf(&bytes).expect("自造 SMF 必须可解析");
-        assert_eq!(bend_cents(&parsed), [-1200, 1199]);
+        assert_eq!(bend_cents(&parsed), [-1200, 1200]);
+    }
+
+    /// 单次量化断言：整数音分经 编码→解码 一次的误差不超过 1 音分
+    /// （只证明单步不越界，不替多轮稳定性背书）。
+    #[test]
+    fn pitch_bend_single_round_quantization_error_is_at_most_one_cent() {
+        for range_semitones in 2_u8..=24 {
+            let range_cents = i32::from(range_semitones) * 100;
+            // `MidiNote::pitch_bend_curve` 的音分上限是 ±1200；范围更窄时以范围为界。
+            let model_max = range_cents.min(1200);
+            for cents in [-model_max, -199, -1, 0, 1, 199, model_max] {
+                let raw = encode_pitch_bend_cents(cents as i16, range_semitones);
+                let decoded = decode_pitch_bend_cents(raw, range_cents);
+                assert!(
+                    (i32::from(decoded) - cents).abs() <= 1,
+                    "范围 {range_semitones} 半音：{cents} 音分 ⇒ {raw} ⇒ {decoded}，误差 > 1"
+                );
+            }
+        }
+    }
+
+    /// 多轮稳定断言：每个合法整数音分在同一范围下连续三轮 编码→解码 都回到自身，
+    /// 不出现单向漂移（199→198→197 的回归）。
+    #[test]
+    fn pitch_bend_integer_cents_are_stable_across_three_rounds() {
+        for range_semitones in 2_u8..=24 {
+            let range_cents = i32::from(range_semitones) * 100;
+            let model_max = range_cents.min(1200);
+            for cents in -model_max..=model_max {
+                let mut raw = encode_pitch_bend_cents(cents as i16, range_semitones);
+                for round in 1..=3 {
+                    let decoded = decode_pitch_bend_cents(raw, range_cents);
+                    assert_eq!(
+                        i32::from(decoded),
+                        cents,
+                        "范围 {range_semitones} 半音：{cents} 音分第 {round} 轮漂到 {decoded}"
+                    );
+                    raw = encode_pitch_bend_cents(decoded, range_semitones);
+                }
+            }
+        }
     }
 
     /// ⭐ `#312` 判据 2: `None` / `Some("")` 都**不写**歌词事件（空文本没有内容），
