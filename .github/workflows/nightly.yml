@@ -319,6 +319,7 @@ jobs:
           # yeban-app --version 在无显示的 runner 上也能跑（release.yml 的版本对账同款用法）；
           # yeban-mcp 没有 --version 开关，只验存在与可执行位。
           work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
           tar -xzf dist/*.tar.gz -C "$work"
           root=$(find "$work" -maxdepth 1 -type d -name 'yeban-*' | head -1)
           test -n "$root" || { echo "✗ 解包后找不到 yeban-* 目录"; exit 1; }
@@ -342,6 +343,21 @@ jobs:
           [ "$BIN_LINE" = "yeban-app $VERSION" ] \
             || { echo "::error::包内二进制的自报版本 '$BIN_LINE' 与清单版本 'yeban-app $VERSION' 不一致 ⇒ 拒绝发布"; exit 1; }
           echo "✓ 冒烟通过：包能解、yeban-app --version 与清单版本一致 ✓"
+
+      - name: 释放 macOS 打包前磁盘空间（清理已不再使用的 target/ 与 Cargo 缓存）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # stage/ 与 dist/*.tar.gz 已生成并通过冒烟，target/ 在后续 DMG 打包中不再使用；
+          # x86_64-apple-darwin 交叉编会同时保留宿主与目标产物，极易在 macos-15 上把磁盘撑满导致 hdiutil create ENOSPC。
+          echo "--- 清理前磁盘空间 ---"
+          df -h . /tmp || true
+          du -sh target "${CARGO_HOME:-$HOME/.cargo}/registry" 2>/dev/null || true
+          rm -rf target
+          rm -rf "${CARGO_HOME:-$HOME/.cargo}/registry/cache" "${CARGO_HOME:-$HOME/.cargo}/registry/src"
+          echo "--- 清理后磁盘空间 ---"
+          df -h . /tmp || true
 
       - name: 安装包（DEB / DMG / MSI；与 release.yml 共用 scripts/dev/package-* 脚本）
         shell: bash

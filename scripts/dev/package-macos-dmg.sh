@@ -111,24 +111,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- 1. 装配 Yeban.app (复用 bundle-macos.sh 的既有路) -----------------------
-step "装配 Yeban.app (bundle-macos.sh, 二进制 = stage/yeban-app)"
-YEBAN_BUNDLE_BINARY="$stage_dir/yeban-app" \
-YEBAN_BUNDLE_OUT="$work/Yeban.app" \
-YEBAN_BUNDLE_SKIP_SMOKE="${YEBAN_PKG_SKIP_RUN:-}" \
-  bash "$repo_root/scripts/dev/bundle-macos.sh"
-[[ -d "$work/Yeban.app" ]] || die "bundle-macos.sh 跑完但 Yeban.app 不在: $work/Yeban.app"
-
-# --- 2. 打 DMG ---------------------------------------------------------------
+# --- 1. 直接在 dmgroot 内装配 Yeban.app (避免 cp -R 留存双份 .app 占满磁盘) --
 dmgroot="$work/dmgroot"
 mkdir -p "$dmgroot"
-cp -R "$work/Yeban.app" "$dmgroot/Yeban.app"
+step "装配 Yeban.app (bundle-macos.sh, 二进制 = stage/yeban-app)"
+YEBAN_BUNDLE_BINARY="$stage_dir/yeban-app" \
+YEBAN_BUNDLE_OUT="$dmgroot/Yeban.app" \
+YEBAN_BUNDLE_SKIP_SMOKE="${YEBAN_PKG_SKIP_RUN:-}" \
+  bash "$repo_root/scripts/dev/bundle-macos.sh"
+[[ -d "$dmgroot/Yeban.app" ]] || die "bundle-macos.sh 跑完但 Yeban.app 不在: $dmgroot/Yeban.app"
+
+# --- 2. 打 DMG ---------------------------------------------------------------
 ln -s /Applications "$dmgroot/Applications"
 
 mkdir -p "$out_dir"
+step "hdiutil create 前磁盘与目录体积诊断"
+du -sh "$dmgroot" || true
+df -h "$out_dir" "$work" || true
 step "hdiutil create → $out_dir/$name.dmg"
 hdiutil create -volname "Yeban $version" -srcfolder "$dmgroot" -ov -format UDZO \
   "$out_dir/$name.dmg"
+# 镜像已生成，立即释放 dmgroot 暂存目录，给后续 hdiutil verify/attach 留足空间
+rm -rf "$dmgroot"
 write_sha256_sidecar "$out_dir" "$name.dmg"
 
 # --- 3. 自验 -----------------------------------------------------------------
