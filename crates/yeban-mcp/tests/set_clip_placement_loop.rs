@@ -1010,12 +1010,12 @@ fn render_path(
 /// 2. **缺键 ≠ null**：缺一个键报"缺少 `X`"并带 T-FIX-561 恢复信封
 ///    （`data` 是对象：`reason = invalidParameterRange`，`received` 为
 ///    `Null`，`detail` 点名缺失字段与期望类型，`nextStep` 指回
-///    `yeban_edit_notes`）；`loopStartTick: null` 是**形状错误**
-///    （`reason = valueMustBeUnsignedInteger`），`loopEnabled: null`
-///    是 `valueMustBeBoolean` —— 两者都不是"缺省"。
-///    （领域 `Fault` 本身仍不带 data——`notes.rs` 的缺字段单元判据守着；
-///    线上 `data` 由派发层 `recovery::enrich_tool_value` 统一补，
-///    故此处断言的是信封内容而非"无 data"。）
+///    `yeban_edit_notes`，`action` 点名需手补的键）；`loopStartTick: null`
+///    是**形状错误**（`reason = valueMustBeUnsignedInteger`），
+///    `loopEnabled: null` 是 `valueMustBeBoolean` —— 两者都不是"缺省"。
+///    缺键的 `data` 不带机器字段（领域 `missing()` 保持既有 `Fault` 形状）；
+///    恢复层从 `data.detail` 的固定文案解析字段名，写进 `nextStep.action`；
+///    ⛔ 不再把原样回显的 `ops` 当可执行模板。
 /// 3. 三个新值键**全部必填**：逐个删掉都必须红。
 ///
 /// 注入（实测红）：把 `reject_set_clip_placement_loop_fields` 的调用删掉 ⇒ 第 1 条
@@ -1072,11 +1072,9 @@ fn the_wire_carries_new_values_only() {
     // ---- 2. 缺键：三个新值键逐个删 ----
     // 缺键现在带 T-FIX-561 恢复信封（见文件头 §2）：`data` 是对象，不再是
     // `Null`。断言信封的实质内容——`detail` 点名缺失字段与期望类型、
-    // `received` 为 `Null`（字段根本不在）、`nextStep` 指回同一工具。
-    // ⛔ 不断言 nextStep 可直接执行：模板原样回显本次调用的 `ops`，缺的键
-    // 仍需调用方按 `detail`/`expected` 补上后重试（与工具参数层缺参
-    // `missingParam` 的"最小合法模板可直接执行"不同，这是操作层缺字段
-    // 的固有形态，不在此处抬高口径）。
+    // `received` 为 `Null`（字段根本不在）、`nextStep` 指回同一工具，且
+    // `action` 点名需手补的键。模板本身不假装可直接执行：操作层缺字段与
+    // 工具参数层 `missingParam` 的“最小合法模板可直接执行”不同口径。
     for (missing, expected) in [
         ("loopEnabled", "布尔"),
         ("loopStartTick", "非负整数"),
@@ -1136,6 +1134,19 @@ fn the_wire_carries_new_values_only() {
         assert!(
             data["nextStep"]["arguments"].is_object(),
             "缺 `{missing}` 的 nextStep 必须带参数模板: {response}"
+        );
+        let action = data["nextStep"]["action"].as_str().unwrap_or_default();
+        assert!(
+            action.contains(missing),
+            "缺 `{missing}` 的 nextStep.action 必须点名需手补的键，实际: {action:?}"
+        );
+        assert!(
+            action.contains(expected),
+            "缺 `{missing}` 的 nextStep.action 必须带期望类型，实际: {action:?}"
+        );
+        assert!(
+            action.contains("不要原样重放"),
+            "缺 `{missing}` 的 nextStep.action 必须明确不要原样重放: {action:?}"
         );
         assert!(
             response["error"]["message"]

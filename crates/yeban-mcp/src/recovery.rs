@@ -571,6 +571,22 @@ fn entity_candidates(code: &str, data: &Map<String, Value>, domain: &Domain) -> 
     }
 }
 
+/// 从缺字段的 `detail` 文案里取 `(字段名, 期望类型)`。
+///
+/// 领域层的 `notes::missing()` 刻意**不带 data**（`Fault` 的既有形状不能为一个
+/// 恢复提示改契约）；`enrich_tool_value` 已把同一条 message 写进 `data.detail`，
+/// 恢复层因此只读文案、不反向依赖领域层加字段。文案由 `notes::missing()`
+/// 单点生成：`缺少 `{field}`（期望 {expected}）`。
+fn missing_field_from_detail(detail: &str) -> Option<(String, String)> {
+    let rest = detail.strip_prefix("缺少 `")?;
+    let (field, tail) = rest.split_once("`（期望 ")?;
+    let expected = tail.strip_suffix('）')?;
+    if field.is_empty() || expected.is_empty() {
+        return None;
+    }
+    Some((field.to_owned(), expected.to_owned()))
+}
+
 fn next_step_for_domain(
     call: &ToolCall,
     code: &str,
@@ -579,6 +595,34 @@ fn next_step_for_domain(
     accepted: &[Value],
     domain: &Domain,
 ) -> Value {
+    let missing = data
+        .get("missingField")
+        .and_then(Value::as_str)
+        .map(|field| {
+            let expected = data
+                .get("missingFieldExpected")
+                .and_then(Value::as_str)
+                .unwrap_or("该字段声明的类型");
+            (field.to_owned(), expected.to_owned())
+        })
+        .or_else(|| {
+            data.get("detail")
+                .and_then(Value::as_str)
+                .and_then(missing_field_from_detail)
+        });
+    if let Some((field, expected)) = missing {
+        let template = minimal_arguments(call.tool, Some(&call.arguments), domain);
+        // 操作层缺字段的模板**不能**假装可直接执行：`minimal_arguments` 只补顶层
+        // 必填，`ops` 元素里缺的键仍原样回显。这里把「手补哪个键」写进 action，
+        // 与工具参数层 `missingParam` 的“最小合法模板可直接执行”明确分口径。
+        return json!({
+            "tool": call.tool.name,
+            "arguments": template,
+            "action": format!(
+                "在 `ops` 元素中手补缺失键 `{field}`（期望 {expected}）后重试；不要原样重放本次模板"
+            )
+        });
+    }
     if data.get("reason").and_then(Value::as_str) == Some("opsValidationFailed") {
         let mut template = minimal_arguments(call.tool, Some(&call.arguments), domain);
         template.insert("ops".to_owned(), json!([{"kind": "setTempo", "bpm": 120}]));
