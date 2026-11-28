@@ -41,21 +41,70 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 step() { printf '\n[pkg-msi] %s\n' "$*"; }
 die() { printf '[pkg-msi][fail] %s\n' "$*" >&2; exit 1; }
 
+validate_version() {
+  local v="$1"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$ ]] \
+    || die "非法版本号 '$v': 必须符合 SemVer x.y.z[-prerelease][+build] 形态"
+}
+
+validate_target() {
+  [[ "$1" == "x86_64-pc-windows-msvc" ]] \
+    || die "MSI 只支持 x86_64-pc-windows-msvc, 收到: $1"
+}
+
 read_version() {
+  local v
   if [[ -n "${YEBAN_PKG_VERSION:-}" ]]; then
-    printf '%s' "$YEBAN_PKG_VERSION"
-    return
-  fi
-  python3 - "$repo_root/Cargo.toml" <<'PY'
+    v="$YEBAN_PKG_VERSION"
+  else
+    v="$(python3 - "$repo_root/Cargo.toml" <<'PY'
 import pathlib, sys, tomllib
 print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["workspace"]["package"]["version"])
 PY
+)"
+  fi
+  [[ -n "$v" ]] || die "版本解析为空"
+  validate_version "$v"
+  printf '%s' "$v"
 }
+
+write_sha256_sidecar() {
+  local dir="$1" fname="$2"
+  python3 - "$dir" "$fname" <<'PY'
+import hashlib, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+fname = sys.argv[2]
+h = hashlib.sha256()
+with open(d / fname, "rb") as f:
+    for chunk in iter(lambda: f.read(65536), b""):
+        h.update(chunk)
+(d / (fname + ".sha256")).write_text(f"{h.hexdigest()}  {fname}\n", encoding="utf-8")
+PY
+}
+
+write_admin_install_ps1() {
+  local dest="$1"
+  cat > "$dest" <<'PS1'
+param([string]$Msi, [string]$Target)
+$quotedMsi = '"' + $Msi + '"'
+$quotedTarget = 'TARGETDIR="' + $Target + '"'
+$p = Start-Process msiexec -ArgumentList @('/a', $quotedMsi, '/qn', $quotedTarget) -Wait -PassThru
+exit $p.ExitCode
+PS1
+}
+
+if [[ "${1:-}" == "--dump-admin-install-ps1" ]]; then
+  out_ps1="${2:?用法: package-windows-msi.sh --dump-admin-install-ps1 <path>}"
+  write_admin_install_ps1 "$out_ps1"
+  exit 0
+fi
 
 # --- --print-name: 渠道清单机械引用的命名模板 -------------------------------
 if [[ "${1:-}" == "--print-name" ]]; then
   target="${2:?用法: package-windows-msi.sh --print-name <target>}"
-  printf 'yeban-%s-%s.msi\n' "$(read_version)" "$target"
+  validate_target "$target"
+  ver="$(read_version)"
+  printf 'yeban-%s-%s.msi\n' "$ver" "$target"
   exit 0
 fi
 
@@ -63,8 +112,7 @@ stage_dir="${1:?用法: package-windows-msi.sh <stage目录> <target> <输出目
 target="${2:?用法: package-windows-msi.sh <stage目录> <target> <输出目录>}"
 out_dir="${3:?用法: package-windows-msi.sh <stage目录> <target> <输出目录>}"
 
-[[ "$target" == "x86_64-pc-windows-msvc" ]] \
-  || die "MSI 只支持 x86_64-pc-windows-msvc, 收到: $target"
+validate_target "$target"
 for f in yeban-app.exe yeban-mcp.exe LICENSE; do
   [[ -f "$stage_dir/$f" ]] || die "stage 目录缺 $f: $stage_dir"
 done
@@ -152,15 +200,11 @@ fi
 # 它不是发布物, 不删会被 workflow 的 dist/* 一并上传到 Release 里
 # (2026-11-16 run 43823130284 的 Windows artifact 实证混入)。
 rm -f "$out_abs/$name.wixpdb"
-( cd "$out_abs" && python3 -c "import hashlib; print(hashlib.sha256(open('$name.msi','rb').read()).hexdigest() + '  $name.msi')" > "$name.msi.sha256" )
+write_sha256_sidecar "$out_abs" "$name.msi"
 
-# --- 3. 自验: msiexec /a 管理安装 + --version 对账 ---------------------------
+# --- 3. 自验: msiexec /a 解包到临时目录"
 step "自验: msiexec /a 解包到临时目录"
-cat > "$work/admin-install.ps1" <<'PS1'
-param([string]$Msi, [string]$Target)
-$p = Start-Process msiexec -ArgumentList @('/a', $Msi, '/qn', "TARGETDIR=$Target") -Wait -PassThru
-exit $p.ExitCode
-PS1
+write_admin_install_ps1 "$work/admin-install.ps1"
 admin_dir="$work/admin"
 powershell.exe -NoProfile -ExecutionPolicy Bypass \
   -File "$(cygpath -w "$work/admin-install.ps1")" \

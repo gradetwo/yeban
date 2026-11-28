@@ -56,21 +56,56 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 step() { printf '\n[pkg-deb] %s\n' "$*"; }
 die() { printf '[pkg-deb][fail] %s\n' "$*" >&2; exit 1; }
 
+validate_version() {
+  local v="$1"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$ ]] \
+    || die "非法版本号 '$v': 必须符合 SemVer x.y.z[-prerelease][+build] 形态（严禁换行、冒号或引号）"
+}
+
+validate_target() {
+  case "$1" in
+    x86_64-unknown-linux-gnu) deb_arch="amd64" ;;
+    aarch64-unknown-linux-gnu) deb_arch="arm64" ;;
+    *) die "目标 '$1' 没有 DEB 架构映射 (只支持 x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu)" ;;
+  esac
+}
+
 read_version() {
+  local v
   if [[ -n "${YEBAN_PKG_VERSION:-}" ]]; then
-    printf '%s' "$YEBAN_PKG_VERSION"
-    return
-  fi
-  python3 - "$repo_root/Cargo.toml" <<'PY'
+    v="$YEBAN_PKG_VERSION"
+  else
+    v="$(python3 - "$repo_root/Cargo.toml" <<'PY'
 import pathlib, sys, tomllib
 print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["workspace"]["package"]["version"])
+PY
+)"
+  fi
+  [[ -n "$v" ]] || die "版本解析为空"
+  validate_version "$v"
+  printf '%s' "$v"
+}
+
+write_sha256_sidecar() {
+  local dir="$1" fname="$2"
+  python3 - "$dir" "$fname" <<'PY'
+import hashlib, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+fname = sys.argv[2]
+h = hashlib.sha256()
+with open(d / fname, "rb") as f:
+    for chunk in iter(lambda: f.read(65536), b""):
+        h.update(chunk)
+(d / (fname + ".sha256")).write_text(f"{h.hexdigest()}  {fname}\n", encoding="utf-8")
 PY
 }
 
 # --- --print-name: 渠道清单机械引用的命名模板 -------------------------------
 if [[ "${1:-}" == "--print-name" ]]; then
   target="${2:?用法: package-linux-deb.sh --print-name <target>}"
-  printf 'yeban-%s-%s.deb\n' "$(read_version)" "$target"
+  validate_target "$target"
+  ver="$(read_version)"
+  printf 'yeban-%s-%s.deb\n' "$ver" "$target"
   exit 0
 fi
 
@@ -78,11 +113,7 @@ stage_dir="${1:?用法: package-linux-deb.sh <stage目录> <target> <输出目�
 target="${2:?用法: package-linux-deb.sh <stage目录> <target> <输出目录>}"
 out_dir="${3:?用法: package-linux-deb.sh <stage目录> <target> <输出目录>}"
 
-case "$target" in
-  x86_64-unknown-linux-gnu) deb_arch="amd64" ;;
-  aarch64-unknown-linux-gnu) deb_arch="arm64" ;;
-  *) die "目标 $target 没有 DEB 架构映射 (只支持 x86_64/aarch64-unknown-linux-gnu)" ;;
-esac
+validate_target "$target"
 
 command -v dpkg-deb >/dev/null 2>&1 || die "缺少工具: dpkg-deb"
 for f in yeban-app yeban-mcp LICENSE; do
@@ -102,7 +133,17 @@ if command -v ldd >/dev/null 2>&1; then
 fi
 
 # --- 装配 --------------------------------------------------------------------
-work="$(mktemp -d)"
+work_base="${TMPDIR:-/tmp}"
+work="$(mktemp -d "$work_base/yeban-deb.XXXXXX")"
+# 若 /tmp 挂载了 noexec，dpkg-deb -x 解开后的 [[ -x ]] 自验会恒为假 ⇒ 退回输出目录旁建工作区
+probe_exec="$work/.exec_probe"
+printf '#!/bin/sh\n' > "$probe_exec" && chmod 0755 "$probe_exec"
+if [[ ! -x "$probe_exec" ]]; then
+  rm -rf "$work"
+  mkdir -p "$out_dir"
+  work="$(mktemp -d "$out_dir/.yeban-deb-work.XXXXXX")"
+fi
+rm -f "$work/.exec_probe"
 trap 'rm -rf "$work"' EXIT
 root="$work/root"
 mkdir -p "$root/usr/lib/yeban" "$root/usr/bin" \
@@ -166,7 +207,7 @@ EOF
 mkdir -p "$out_dir"
 step "dpkg-deb --build → $out_dir/$name.deb"
 dpkg-deb --root-owner-group --build "$root" "$out_dir/$name.deb"
-( cd "$out_dir" && python3 -c "import hashlib; print(hashlib.sha256(open('$name.deb','rb').read()).hexdigest() + '  $name.deb')" > "$name.deb.sha256" )
+write_sha256_sidecar "$out_dir" "$name.deb"
 
 # --- 自验 ①②③ ---------------------------------------------------------------
 step "自验: dpkg-deb --info / --contents / -x"
