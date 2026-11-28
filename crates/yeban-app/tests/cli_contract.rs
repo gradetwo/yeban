@@ -2849,6 +2849,148 @@ fn import_audio_save_as_round_trips_asset_through_the_real_binary() {
     assert_eq!(buffer.len(), 64, "帧数 = 64（单声道）");
 }
 
+/// 判据 B10 的幂等分支（T-FIX-727）: **真二进制**上，同一份 WAV 导入两次（中间经
+/// `--save-as` 落盘、`--open` 回读）⇒ 容器里这份字节只有一条音频片段、资产池只有一份
+/// 字节，第二次导入不发提交。
+///
+/// 为什么必须住在真二进制这一层：`import_audio.rs` 的单元判据
+/// `importing_the_same_bytes_twice_keeps_one_clip_and_commits_once` 跑的是进程内
+/// `UndoPort`，证明不了 argv 解析、容器落盘/回读与资产登记三层接起来后仍然幂等。
+/// 本条沿用 B10 的真 argv、`imported-audio:` 报告行与公开入口回读，把"创建/复用"和
+/// "有没有提交"作为可观测读数钉住；再打开一次，读数必须逐项相同。
+#[test]
+fn importing_the_same_wav_twice_through_the_real_binary_keeps_one_clip_and_one_asset() {
+    let dir = scratch_dir("import-audio-idempotent");
+    let input = write_real_container(&dir, "in.yeban");
+    let wav = dir.join("take.wav");
+    let samples: Vec<i16> = (0..64_i16).map(|index| index * 137 - 4_000).collect();
+    yeban_render::wav::write_plain_wav(
+        &wav,
+        &yeban_render::rf64::PcmFormat::integer(1, 48_000, 16),
+        &yeban_render::dither::PcmBuffer::Int16(samples),
+    )
+    .expect("写夹具 WAV");
+    let expected = yeban_model::ids::AssetHash::of_bytes(&std::fs::read(&wav).expect("读夹具 WAV"));
+
+    let mid = dir.join("mid.yeban");
+    let first = invoke(&[
+        "--open",
+        input.to_str().expect("输入路径必须是 UTF-8"),
+        "--import-audio",
+        wav.to_str().expect("WAV 路径必须是 UTF-8"),
+        "--save-as",
+        mid.to_str().expect("中间容器路径必须是 UTF-8"),
+    ]);
+    assert_eq!(first.code, 0, "第一次导入必须成功: {first:?}");
+    let first_line =
+        line_with(&first.stdout, "imported-audio:").expect("第一次必须有 imported-audio 报告行");
+    assert_eq!(
+        field(first_line, "created").as_deref(),
+        Some("true"),
+        "首次导入必须新建片段: {first_line}"
+    );
+    let first_clip = field(first_line, "clip").expect("报告行必须带片段身份");
+    assert_ne!(
+        field(first_line, "commit").as_deref(),
+        Some("<none>"),
+        "首次新建必须有一次提交: {first_line}"
+    );
+
+    let final_path = dir.join("out.yeban");
+    let second = invoke(&[
+        "--open",
+        mid.to_str().expect("中间容器路径必须是 UTF-8"),
+        "--import-audio",
+        wav.to_str().expect("WAV 路径必须是 UTF-8"),
+        "--save-as",
+        final_path.to_str().expect("最终容器路径必须是 UTF-8"),
+    ]);
+    assert_eq!(second.code, 0, "第二次导入必须成功: {second:?}");
+    let second_line =
+        line_with(&second.stdout, "imported-audio:").expect("第二次必须有 imported-audio 报告行");
+    assert_eq!(
+        field(second_line, "created").as_deref(),
+        Some("false"),
+        "同内容已落盘 ⇒ 必须复用片段: {second_line}"
+    );
+    assert_eq!(
+        field(second_line, "commit").as_deref(),
+        Some("<none>"),
+        "幂等命中 ⇒ 不得再提交一次: {second_line}"
+    );
+    assert_eq!(
+        field(second_line, "clip").as_deref(),
+        Some(first_clip.as_str()),
+        "复用必须是同一个片段身份: {second_line}"
+    );
+    assert_eq!(
+        field(second_line, "asset").as_deref(),
+        Some(expected.as_str()),
+        "两次导入必须指向同一份源字节: {second_line}"
+    );
+
+    let readings = |path: &Path| {
+        let reopened = yeban_app::open::open_project_archive_file(
+            path,
+            &yeban_app::open::ProjectOpenOptions::default(),
+        )
+        .expect("保存的容器必须能正常打开");
+        let clips = reopened
+            .project
+            .clip_pool
+            .values()
+            .filter(|entry| matches!(&entry.content, yeban_model::ClipContent::Audio { asset, .. } if asset.as_str() == expected.as_str()))
+            .count();
+        let assets = reopened
+            .assets
+            .iter()
+            .filter(|(hash, _)| *hash == expected)
+            .count();
+        let indexed = reopened
+            .project
+            .assets
+            .keys()
+            .filter(|hash| **hash == expected)
+            .count();
+        (clips, assets, indexed)
+    };
+
+    assert_eq!(
+        readings(&final_path),
+        (1, 1, 1),
+        "两次导入后：这份字节只许一条片段、一份池字节、一条资产索引"
+    );
+    assert_eq!(
+        readings(&mid),
+        (1, 1, 1),
+        "第一次落盘的中间容器也必须只有一份"
+    );
+
+    let reopened = yeban_app::open::open_project_archive_file(
+        &final_path,
+        &yeban_app::open::ProjectOpenOptions::default(),
+    )
+    .expect("最终容器必须能正常打开");
+    let audit = yeban_app::open::audit_project_assets(&reopened);
+    assert!(
+        audit.missing.is_empty(),
+        "引用不得悬空: {:?}",
+        audit.missing
+    );
+    assert!(
+        audit.unindexed_pool.is_empty(),
+        "池里不许有未索引条目: {:?}",
+        audit.unindexed_pool
+    );
+    assert!(
+        audit.index_without_pool.is_empty(),
+        "索引不许指向池外字节: {:?}",
+        audit.index_without_pool
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 判据 B15c（`#200`）: 3 轨产物的**损失表文本**必须同时写明「已验的音色」「音色来自**供体**」
 /// 「⛔ **不是用户工程的设备链**」。
 ///
