@@ -1,0 +1,60 @@
+name: Docs Manual Build & Gates
+
+on:
+  push:
+    paths:
+      - 'docs/manual-latex/**'
+      - 'scripts/gates/check_manual_*.py'
+      - '.github/workflows/docs-manual.yml'
+  pull_request:
+    paths:
+      - 'docs/manual-latex/**'
+      - 'scripts/gates/check_manual_*.py'
+      - '.github/workflows/docs-manual.yml'
+  workflow_dispatch:
+    inputs:
+      check_links:
+        description: 'Run external URL reachability check'
+        type: boolean
+        default: true
+
+jobs:
+  build-manuals:
+    name: Build 10 PDFs & Run Manual Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XeLaTeX and CJK fonts
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            texlive-xetex texlive-lang-chinese texlive-latex-extra texlive-pictures \
+            fonts-noto-cjk poppler-utils
+
+      - name: Validate build scripts syntax
+        run: |
+          sh -n docs/manual-latex/common/build.sh
+          sh -n docs/manual-latex/common/build-all.sh
+
+      - name: Build all 10 manual PDFs (Missing character = 0)
+        run: |
+          ./docs/manual-latex/common/build-all.sh
+
+      - name: Run manual quality gates
+        # Note on screenshot placeholders (coordinated with ISS-MWZOOCKV-60321E):
+        # Currently all 170 screenshot sites are placeholders until real UI captures
+        # land in figures/. This gate reports the exact placeholder/image counts loudly;
+        # enable --strict-screenshots once real figures are committed.
+        run: |
+          python3 scripts/gates/check_manual_quality.py \
+            ${{ (github.event_name != 'workflow_dispatch' || inputs.check_links) && '--check-links' || '' }}
+
+      - name: Upload 10 built PDFs
+        uses: actions/upload-artifact@v4
+        with:
+          name: yeban-manuals-pdf
+          path: docs/manual-latex/*/*/main.pdf
+          if-no-files-found: error
