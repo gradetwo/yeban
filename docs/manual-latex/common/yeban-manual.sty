@@ -21,7 +21,7 @@
 % right=of), compute coordinates with calc ($(a)+(1,0)$), and draw
 % on background layers; load those libraries centrally so every
 % volume builds without per-volume setup.
-\usetikzlibrary{positioning,calc,backgrounds,arrows,arrows.meta}
+\usetikzlibrary{positioning,calc,backgrounds,arrows,arrows.meta,decorations.pathreplacing}
 % English volumes quote Chinese classical texts in the original
 % (chapter epigraphs keep the source text plus a translation), so
 % they need a CJK fallback font; Chinese volumes already load ctex.
@@ -99,8 +99,13 @@
 % \screenshot argument warns loudly instead of being dropped.
 \RequirePackage{xparse}
 
-% Screenshot placeholder: management captures the real UI shot and
-% replaces the placeholder file under figures/ with the same name.
+% Screenshot: load a real UI capture from <volume>/figures/ when it
+% exists; otherwise keep the old placeholder and emit a loud compile
+% warning.  The build script runs inside <volume>/<lang>/, so the shared
+% figures directory is one level up.  A second local figures/ lookup is
+% kept for a volume built from its own root.
+\newcommand{\yeban@includegraphics}[1]{%
+  \includegraphics[width=\linewidth,height=0.72\textheight,keepaspectratio]{#1}}
 \NewDocumentCommand{\screenshot}{m m g}{%
   \IfValueT{#3}{%
     \def\yeban@ss@third{#3}%
@@ -110,10 +115,20 @@
     \fi}%
   \begin{figure}[htbp]
     \centering
-    \fbox{\begin{minipage}[c][5.2cm][c]{0.82\textwidth}
-      \centering\color{yebangrey}\textbf{Screenshot placeholder}\\[4pt]
-      \texttt{#1}
-    \end{minipage}}
+    \IfFileExists{../figures/#1.png}{%
+      \yeban@includegraphics{../figures/#1.png}%
+    }{%
+      \IfFileExists{figures/#1.png}{%
+        \yeban@includegraphics{figures/#1.png}%
+      }{%
+        \PackageWarning{yeban-manual}{MISSING SCREENSHOT: figures/#1.png (volume-relative); placeholder kept}%
+        \typeout{!! yeban-manual: MISSING SCREENSHOT #1}%
+        \fbox{\begin{minipage}[c][5.2cm][c]{0.82\textwidth}
+          \centering\color{yebangrey}\textbf{Screenshot placeholder}\\[4pt]
+          \texttt{#1}
+        \end{minipage}}%
+      }%
+    }%
     \caption{#2}
     \label{fig:#1}
   \end{figure}}
@@ -144,5 +159,55 @@
 \newenvironment{exercise}{\par\smallskip\noindent\textbf{\yeban@ex@label}\ }{\par\smallskip}
 \newenvironment{helpmapping}{\par\smallskip\noindent\textbf{\yeban@help@label}\par\smallskip}{\par\smallskip}
 
+
+% Concept-drawing primitives for chapters that intentionally have no UI shot.
+% The chapter supplies the figure/tikzpicture wrapper, so the source tree
+% itself records one real TikZ picture per zero-image chapter.
+\newcommand{\yebangenreddraw}[4]{%
+  \node[font=\small\bfseries] at (3.8,4.9) {#1};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=3.2cm,minimum height=0.95cm,align=center] (lo) at (0,3.8) {低频 / Low\\#2};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=3.2cm,minimum height=0.95cm,align=center] (mi) at (3.8,3.8) {中频 / Mid\\#3};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=3.2cm,minimum height=0.95cm,align=center] (hi) at (7.6,3.8) {高频 / High\\#4};
+  \draw[->,thick,yebanblue] (lo) -- (mi); \draw[->,thick,yebanblue] (mi) -- (hi);
+  \draw[step=0.42cm,thin,gray!55] (0,0.1) grid (3.6,1.45);
+  \node[anchor=north] at (1.8,-0.05) {鼓组网格 / Drum grid: 16 bars};
+  \foreach \x in {1,...,8} {\draw[gray!70] (\x*0.42,0.1) -- (\x*0.42,1.45);}
+  \foreach \x in {0,4} {\fill[yebanblue!35] (\x*0.42,0.1) rectangle ++(0.42,0.26);}
+  \foreach \x in {2,6} {\fill[yebangrey!40] (\x*0.42,0.36) rectangle ++(0.42,0.26);}
+  \foreach \x in {1,3,5,7} {\fill[yebanblue!18] (\x*0.42,0.62) rectangle ++(0.42,0.26);}
+  \node[anchor=north] at (6.3,-0.05) {段落能量 / Section energy};
+  \draw[->,gray] (4.4,0.1) -- (4.4,2.1) node[above,font=\scriptsize] {E};
+  \draw[->,gray] (4.4,0.1) -- (8.8,0.1) node[right,font=\scriptsize] {时间 / time};
+  \draw[very thick,yebanblue] (4.6,0.55) .. controls (5.2,0.35) and (5.6,1.6) .. (6.4,1.75)
+    .. controls (7.2,1.9) and (7.8,1.1) .. (8.6,0.55);
+  \node[anchor=north] at (6.3,2.4) {起 / 展开 / 高潮 / 收束};
+  \draw[decorate,decoration={brace,amplitude=4pt}] (4.6,0.5) -- (8.6,0.5);
+}
+\newcommand{\yebaniconicdraw}{%
+  \node[font=\small\bfseries] at (3.8,5.0) {808 / 909 / 303};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=2.2cm,minimum height=0.9cm,align=center] (a) at (0,3.9) {TR-808\\节奏 / rhythm};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=2.2cm,minimum height=0.9cm,align=center] (b) at (3.8,3.9) {TR-909\\节奏 / rhythm};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=2.2cm,minimum height=0.9cm,align=center] (c) at (7.6,3.9) {TB-303\\低音 / bass};
+  \draw[->,thick] (a) -- (b); \draw[->,thick] (b) -- (c);
+  \node[anchor=west] at (0,2.6) {\textbf{信号流 / signal flow}};
+  \draw[->,very thick,yebanblue] (0,2.0) -- (7.6,2.0);
+  \node[fill=white,draw,rounded corners] at (1.8,2.0) {Sequencer};
+  \node[fill=white,draw,rounded corners] at (5.8,2.0) {Filter / Mix};
+  \node[anchor=west,fill=white,inner sep=1pt] at (0,1.2) {\textbf{面板布局 / panel layout}};
+  \foreach \x/\lab in {0/KICK,2.5/SNARE,5/HAT,7.5/MIX} {
+    \draw[rounded corners,fill=yebanboxbg] (\x,0.05) rectangle ++(2.0,0.95);
+    \node at (\x+1,0.75) {\lab};
+    \foreach \k in {0.35,0.7,1.05,1.4} {\draw[fill=yebangrey] (\x+\k,0.35) circle (0.09);}
+  }
+}
+\newcommand{\yebanflowdraw}{%
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=2.4cm,minimum height=0.9cm] (src) {Source / 音源};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=2.4cm,minimum height=0.9cm,right=of src] (ins) {Insert / 设备链};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=2.4cm,minimum height=0.9cm,right=of ins] (bus) {Bus / 总线};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=2.4cm,minimum height=0.9cm,right=of bus] (out) {Master / 输出};
+  \draw[->,very thick,yebanblue] (src) -- (ins); \draw[->,very thick,yebanblue] (ins) -- (bus); \draw[->,very thick,yebanblue] (bus) -- (out);
+  \node[below=5mm of ins,align=center] {增益 / 染色\\动态 / 空间};
+  \node[below=5mm of bus,align=center] {发送 / 回收\\电平预算};
+}
 \makeindex
 \endinput
