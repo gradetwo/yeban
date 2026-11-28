@@ -1049,12 +1049,18 @@ fn clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_si
     // ---- 源码纪律：从 `src/host.rs` 现读，⛔ 不靠注释里的数字 ----
     let host_source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/host.rs"))
         .expect("读本 crate 的 host.rs");
+    // ⭐ 管理侧复验修正（T-FIX-908）：`let Op::… {` 是解构模式不是构造点，须排除；
+    // 真构造点现为两处——`clip_duration_ops_for`（缩放手势）与自动卷帘插音的
+    // 摆放延长（`AutoRollNoteInsert`），后者与缩放手势无关、不得被本钉误伤。
     let construction_sites = host_source
         .match_indices("Op::SetClipPlacementDuration {")
-        .count();
+        .count()
+        - host_source
+            .match_indices("let Op::SetClipPlacementDuration {")
+            .count();
     assert_eq!(
-        construction_sites, 1,
-        "`host.rs` 里 `Op::SetClipPlacementDuration` 的构造点必须**恰好一处**（实测 {construction_sites}）"
+        construction_sites, 2,
+        "`host.rs` 里 `Op::SetClipPlacementDuration` 的构造点必须**恰好两处**（缩放手势 ＋ 自动卷帘延长，实测 {construction_sites}）"
     );
     let gesture_sites = host_source
         .match_indices("resize_selected_clip_duration(")
@@ -1066,7 +1072,7 @@ fn clip_duration_ops_for_is_the_only_set_clip_placement_duration_construction_si
 
     report_line(&format!(
         "[clip-duration] `clip_duration_ops_for` 对 `{a_ulid}` 逐字段对账；下限 / 零增量 / 3 种非法输入为空批；\
-         `host.rs` 里构造点 1 处、动作函数站点 2 处"
+         `host.rs` 里构造点 2 处、动作函数站点 2 处"
     ));
 }
 

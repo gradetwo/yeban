@@ -214,6 +214,11 @@ export component ArrangementViewport inherits Rectangle {
     callback add-track();
     callback audition-chord(string);
     callback ruler-seek(length);
+    // ⭐ 管理侧复验修正（T-FIX-908）：活标尺补回屏读器入口（死文件
+    // `workspace/arrangement_view.slint` 的 U-07 R2 三动作），与根回调同名转发。
+    callback ruler-step(int);
+    callback ruler-seek-bar(string);
+    in property <string> playhead-timecode;
     callback scrub-timeline(length);
     /// 滚轮分流：`shift` = 横向滚动、`alt` = 纵向缩放、`shift+alt` = 横向缩放。
     /// 无修饰由界面 `reject` ⇒ 冒泡给 `Flickable` 做纵向滚动。
@@ -391,7 +396,11 @@ export component ArrangementViewport inherits Rectangle {
 
         // TOP HEADER ROW: Track header top box + Ruler + Chord Progression Track (Collapsible)
         Rectangle {
-            height: root.show-chord-track ? 54px : 26px;
+            // ⭐ 管理侧复验修正（T-FIX-908）：段落带（18px）须计入顶部带高——
+            // 此前只算标尺 24 + 和弦 30，段落带把标尺顶出带外 16px，车道
+            // Flickable 盖住标尺下半、指针 seek 被抢（恢复判据实测）。
+            height: (root.section-names.length > 0 ? 18px : 0px) + 24px
+                + (root.show-chord-track ? 30px : 0px) + 2px;
             // 顶部带底色（Wang 2026-11-16：学 Logic，标尺带比轨道背景浅一档）：
             // 取令牌阶梯里紧邻车道背景 Theme.bg-canvas 的上一档 Theme.bg-panel；
             // 底边显式 1px 分隔线，理顺工具行/标尺与轨道区之间的横线。
@@ -636,6 +645,17 @@ export component ArrangementViewport inherits Rectangle {
                             background: Tokens.texture-physical ? Tokens.ruler-brush : Tokens.bg-shell;
                             border-color: Tokens.texture-physical ? transparent : Tokens.skin-hover;
                             clip: true;
+                            // ⭐ 管理侧复验修正（T-FIX-908）：活标尺补回无障碍身份与三动作
+                            // （U-07 R2：可调定位器 slider；增减 = 上 / 下一小节，
+                            // SetValue = 输入小节号），注册表 `arrangement-ruler` 此前
+                            // 只剩死文件里的字面量、活树无此节点。
+                            accessible-role: slider;
+                            accessible-id: "arrangement-ruler";
+                            accessible-label: @tr("小节与拍标尺");
+                            accessible-value: root.playhead-timecode;
+                            accessible-action-increment => { root.ruler-step(1); }
+                            accessible-action-decrement => { root.ruler-step(-1); }
+                            accessible-action-set-value(v) => { root.ruler-seek-bar(v); }
 
                             // [Q6] 标尺格数与间距来自投影（`host::apply_view` 的
                             // `bar-count` / `bar-width-px`），与下方片段块共用同一个

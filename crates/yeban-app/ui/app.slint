@@ -2048,6 +2048,9 @@ export component MainWindow inherits Window {
                     add-track() => { root.track-add-requested(); }
                     audition-chord(name) => { root.chord-audition(name); }
                     ruler-seek(pos) => { root.ruler-seek(pos); }
+                    ruler-step(steps) => { root.ruler-step(steps); }
+                    ruler-seek-bar(bar) => { root.ruler-seek-bar(bar); }
+                    playhead-timecode: root.timecode-text;
                     scrub-timeline(pos) => { root.ruler-seek(pos - root.roll-scroll-x * 1px); }
                     arrangement-wheel(dx, dy, shift, alt) => {
                         root.arrangement-wheel(dx, dy, shift, alt);
