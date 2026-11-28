@@ -572,22 +572,25 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
         // ⭐ 第五份报告 C-2：`slide` 折进弯音曲线（标准 `E0` 载体，见
         // [`slide_merged_bend_curve`]）—— SMF 没有滑音字段，弯音是唯一
         // 标准载体；折完之后编码器与普通弯音曲线走同一条路。
-        // 本轨弯音范围只由**折入曲线**的最大 |音分| 抬高（纯弯音曲线
-        // 保持 ±2 的 D3 口径，⛔ 不因同轨有 slide 而改变量化）。
+        // ⭐ T-FIX-926：弯音范围由**最终曲线**的最大 |音分| 抬高，不区分这条
+        // 曲线来自 `slide` 折入还是用户直接写的 `pitch_bend_curve`。普通曲线
+        // 超 ±2 半音时旧版只钳位不抬高，1000c 回读成 199c 且不写 RPN —— 静默
+        // 截断用户数据。这里统一按最大 |cents| 定范围（上限 24 半音），编码器
+        // 因此会写 RPN 并按新范围换算；≤ ±2 半音保持旧口径（不写 RPN）。
         let mut bend_range_semitones: u8 = 2;
         for note in &mut notes {
             if note.slide.is_some() {
                 note.pitch_bend_curve = slide_merged_bend_curve(note);
-                let max_cents = note
-                    .pitch_bend_curve
-                    .iter()
-                    .map(|&(_, cents)| i32::from(cents).abs())
-                    .max()
-                    .unwrap_or(0);
-                let needed = u8::try_from(((max_cents + 99) / 100).clamp(2, 24))
-                    .expect("钳过的范围在 u8 内");
-                bend_range_semitones = bend_range_semitones.max(needed);
             }
+            let max_cents = note
+                .pitch_bend_curve
+                .iter()
+                .map(|&(_, cents)| i32::from(cents).abs())
+                .max()
+                .unwrap_or(0);
+            let needed =
+                u8::try_from(((max_cents + 99) / 100).clamp(2, 24)).expect("钳过的范围在 u8 内");
+            bend_range_semitones = bend_range_semitones.max(needed);
         }
         // T-FIX-924：导出轨的通道优先取本轨音符的原通道。导入侧 CC 被折进
         // 自动化泳道时丢失了通道；若仍按轨道序号分配，ch9 的 CC7 会回读成 ch0。
@@ -1781,6 +1784,94 @@ mod tests {
         );
     }
 
+    /// 判据（T-FIX-926 / ISS-MWYOTC29-C79262）：普通 `pitch_bend_curve` 超过
+    /// ±2 半音时也必须抬高范围并写 RPN，不得静默钳成 ±200。
+    ///
+    /// 1000 音分 ⇒ 10 半音范围（RPN 101/100/6/38 = 0/0/10/0）；回读必须
+    /// 在 14-bit 量化误差内回到 1000，而不是修复前的 199。
+    #[test]
+    fn plain_pitch_curve_beyond_two_semitones_writes_rpn_and_round_trips() {
+        let project = project_with_pitch_curve(vec![(0, 1000), (240, 1000), (480, 0)]);
+        let bytes = export_from_project(&project)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        let rpn: Vec<(u8, u8)> = parsed
+            .control_changes
+            .iter()
+            .filter(|cc| cc.tick == 0 && cc.channel == 0)
+            .map(|cc| (cc.controller, cc.value))
+            .collect();
+        assert_eq!(
+            rpn,
+            [(101, 0), (100, 0), (6, 10), (38, 0)],
+            "1000 音分普通曲线必须在 tick 0 写 10 半音 RPN: {rpn:?}"
+        );
+        assert_eq!(
+            curve_from_smf(&bytes),
+            vec![(0, 1000), (240, 1000), (480, 0)],
+            "普通 1000 音分曲线必须往返回到原值，不得静默钳成 199"
+        );
+    }
+
+    /// 负向超范围同样按 |cents| 抬高范围：-1000 音分 ⇒ 10 半音，回读 -1000。
+    #[test]
+    fn negative_plain_pitch_curve_beyond_two_semitones_round_trips() {
+        let project = project_with_pitch_curve(vec![(0, -1000), (240, -1000), (480, 0)]);
+        let bytes = export_from_project(&project)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        let range = parsed
+            .control_changes
+            .iter()
+            .find(|cc| cc.tick == 0 && cc.controller == 6)
+            .map(|cc| cc.value);
+        assert_eq!(range, Some(10), "负向 -1000 音分也必须写 10 半音 RPN");
+        assert_eq!(
+            curve_from_smf(&bytes),
+            vec![(0, -1000), (240, -1000), (480, 0)],
+            "负向超范围曲线必须往返回到原值"
+        );
+    }
+
+    /// 普通曲线与 slide 混合时，范围取两者合并后的最大 |cents|（400 + 1200
+    /// = 1600 ⇒ 16 半音），不因“有 slide”或“曲线”任一路径各自算小而截断。
+    #[test]
+    fn plain_curve_and_slide_share_the_maximum_bend_range() {
+        let mut project = project_with_pitch_curve(vec![(0, 400), (240, 400), (480, 400)]);
+        let note = project
+            .clip_pool
+            .values_mut()
+            .find_map(|entry| match &mut entry.content {
+                ClipContent::Midi { notes } => notes.values_mut().next(),
+                ClipContent::Audio { .. } => None,
+            })
+            .expect("夹具必须有一颗 MIDI 音符");
+        note.slide = Some(yeban_model::music::SlideConfig {
+            duration_ticks: 480,
+            target_pitch: 72,
+            curve: yeban_model::music::CurveType::Linear,
+        });
+        let bytes = export_from_project(&project)
+            .expect("投影")
+            .to_smf_bytes()
+            .expect("编码");
+        let parsed = parse_smf(&bytes).expect("回读");
+        let range = parsed
+            .control_changes
+            .iter()
+            .find(|cc| cc.tick == 0 && cc.controller == 6)
+            .map(|cc| cc.value);
+        assert_eq!(
+            range,
+            Some(16),
+            "曲线 400c + slide 1200c 合并后 1600c ⇒ 16 半音范围"
+        );
+    }
+
     /// 判据（⭐ 第五份报告 C-2，D9 相加）：已有弯音曲线与 slide 在采样点上
     /// **相加** —— 弯音恒 +100 音分、slide 线性 0 → +200 ⇒ 合并曲线
     /// tick 0 = 100、tick 480 = 300。
@@ -1866,9 +1957,10 @@ mod tests {
             })
             .collect();
         assert_eq!(curves.len(), 1, "只导出了那一颗音符");
-        // 200 音分经 14-bit 量化 + 对称舍入往返成 200；-400 音分超出 ±2 半音默认范围被钳成 -200；
-        // 末点非 0 的复位落在 tick 960 = 音符**结束**（区间左闭右开）⇒ 不归属。
-        assert_eq!(curves[0], vec![(0, 0), (240, 200), (480, -200)]);
+        // T-FIX-926：-400 音分超出 ±2 半音默认范围 ⇒ 范围抬到 4 半音并写 RPN，
+        // 回读仍是 -400（不再静默钳成 -200）。末点非 0 的复位落在 tick 960 =
+        // 音符**结束**（区间左闭右开）⇒ 不归属。
+        assert_eq!(curves[0], vec![(0, 0), (240, 200), (480, -400)]);
     }
 
     /// 构造一颗只带弯音曲线的单音工程；曲线 tick 是音符局部 tick。
