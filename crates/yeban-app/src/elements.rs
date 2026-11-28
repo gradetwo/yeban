@@ -3384,6 +3384,38 @@ impl ElementRegistry {
             "确认打开 / 创建（主操作）",
             false,
         );
+        // ⭐ T-FIX-951：官方 demo 下载条（演示分类且有选中条目时出现）。
+        // 四个 id 均由 startup_chooser.slint 的 accessible-id 直接落节点，
+        // 类型与 slint 的 accessible-role 同义；不登记会让方向 2 对账变红、
+        // 读屏/自动化看不到这条控件。
+        registry.add(
+            "startup-demo-download-bar",
+            ElementKind::Text,
+            "dialogs/startup_chooser.slint",
+            "演示工程下载条（下什么 / 进度 / 取消 / 失败重试全程可见）",
+            false,
+        );
+        registry.add(
+            "startup-demo-download-progress",
+            ElementKind::ProgressIndicator,
+            "dialogs/startup_chooser.slint",
+            "演示工程下载进度（进度文本与值）",
+            false,
+        );
+        registry.add(
+            "startup-demo-download-button",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "下载 / 重试演示工程",
+            false,
+        );
+        registry.add(
+            "startup-demo-cancel-download-button",
+            ElementKind::Button,
+            "dialogs/startup_chooser.slint",
+            "取消演示工程下载",
+            false,
+        );
         // 另存为模板对话框：默认关闭（`template-save-open=false`），不进默认帧。
         // 三格文本（曲风 / 子曲风 / 模板名）不在 UI 侧校验：校验、落盘、同名
         // 覆盖确认全在宿主（`host::wire_project_templates`）与 `crate::templates`。
