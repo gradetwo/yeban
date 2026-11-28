@@ -121,8 +121,12 @@ const KEY_WORDS: &[(&str, LogicalKey)] = &[
     ("→", LogicalKey::RightArrow),
 ];
 
-/// 键名 token 的终止字符集：空白、成对括号、中点（`·` 是仓库里分隔提示的写法）、引号、分号。
-const KEY_STOPS: &[char] = &[' ', '(', ')', '[', ']', '·', '"', ';'];
+/// 键名 token 的终止字符集：空白、成对括号（半角与全角）、中点（`·` 是仓库里分隔提示的写法）、引号、分号。
+const KEY_STOPS: &[char] = &[' ', '(', ')', '（', '）', '[', ']', '·', '"', ';'];
+
+/// 手势词表：`修饰词 + 手势词` 是**手势承诺**（⛔ 键位承诺）——兑现面是宿主的滚轮处理，
+/// ⛔ 键表。手势承诺单独清点（⑪），⛔ 混进和弦清单、⛔ 当未知键名放过。
+const GESTURE_WORDS: &[&str] = &["滚轮"];
 
 /// **裸键**承诺词表（⑨/⑩ 的对象：括号里单独一把不带修饰词的键）。
 ///
@@ -212,6 +216,8 @@ struct Evidence {
     incomplete: Vec<Occurrence>,
     /// 接到了键名，但键名不在词表里 ⇒ ⛔ 当它不是承诺（那是静默漏网）。
     unknown_keys: Vec<Occurrence>,
+    /// `修饰词 + 手势词` 的手势承诺（⑪ 清点，兑现面是宿主滚轮处理）。
+    gestures: Vec<Occurrence>,
 }
 
 /// 一条字符串字面在源文件里的位置。
@@ -229,6 +235,16 @@ impl Evidence {
         self.bare.extend(other.bare);
         self.incomplete.extend(other.incomplete);
         self.unknown_keys.extend(other.unknown_keys);
+        self.gestures.extend(other.gestures);
+    }
+
+    /// `手势原话 -> 出现次数`（⑪ 的多重集）。
+    fn gesture_counts(&self) -> BTreeMap<&str, usize> {
+        let mut map: BTreeMap<&str, usize> = BTreeMap::new();
+        for gesture in &self.gestures {
+            *map.entry(gesture.printed.as_str()).or_insert(0) += 1;
+        }
+        map
     }
 
     /// `原话 -> 出现次数`（① 的多重集）。
@@ -435,6 +451,7 @@ fn chords_in_literal(file: &'static str, line: usize, literal: &str) -> Evidence
         let mut pos = i + token.chars().count();
         let mut parsed: Option<LogicalKey> = None;
         let mut unknown: Option<String> = None;
+        let mut gesture = false;
         loop {
             let mut p = pos;
             while chars.get(p) == Some(&' ') {
@@ -473,12 +490,22 @@ fn chords_in_literal(file: &'static str, line: usize, literal: &str) -> Evidence
             let token_str: String = chars[p..end].iter().collect();
             match key_of(&token_str) {
                 Some(key) => parsed = Some(key),
+                None if GESTURE_WORDS.contains(&token_str.as_str()) => gesture = true,
                 None => unknown = Some(token_str),
             }
             pos = end;
             break;
         }
         let printed: String = chars[i..pos].iter().collect();
+        if gesture {
+            out.gestures.push(Occurrence {
+                file,
+                line,
+                printed,
+            });
+            i = pos.max(i + 1);
+            continue;
+        }
         if let Some(key) = parsed {
             out.chords.push(Chord {
                 file,
@@ -605,11 +632,12 @@ const PINNED_PROMISES: &[(&str, usize, Action)] = &[
     ("Cmd+Z", 3, Action::Undo),
     ("Shift+Enter", 3, Action::AcceptAiSuggestion),
     ("Cmd/Ctrl+Alt+M", 1, Action::ToggleConsoleMaximize),
-    ("Ctrl+Alt+D", 1, Action::ToggleCountIn),
+    ("Ctrl+Alt+D", 3, Action::ToggleCountIn),
     ("Ctrl+Alt+M", 1, Action::ToggleConsoleMaximize),
+    ("Ctrl+Alt+N", 5, Action::ToggleMetronome),
     ("Ctrl+C", 1, Action::CopyClipboard),
     ("Ctrl+N", 2, Action::NewTrack),
-    ("Ctrl+S", 1, Action::SaveProject),
+    ("Ctrl+S", 4, Action::SaveProject),
     ("Ctrl+Shift+S", 1, Action::SaveProjectAs),
     ("Ctrl+Shift+Z", 1, Action::Redo),
     ("Ctrl+V", 1, Action::PasteClipboard),
@@ -820,8 +848,13 @@ fn registry_names_cannot_diverge_from_the_markup() {
         "登记表里一句键位承诺都没扫到 ⇒ 承诺源 B 的扫描面失效（⛔ 把空集当成绿）"
     );
     for (literal, printed) in promises {
+        // 状态概括名（登记表把两态并一条，如「节拍器开关：开 / 关 (Ctrl+Alt+N)」）：
+        // 两态字面都必须在 `.slint` 里逐字存在且承诺同一把键，才算不漂移。
+        let state_combined = literal.contains("开 / 关")
+            && slint.contains(&literal.replace("开 / 关", "开"))
+            && slint.contains(&literal.replace("开 / 关", "关"));
         assert!(
-            slint.contains(&literal),
+            slint.contains(&literal) || state_combined,
             "{REGISTRY_FILE} 的登记名 {literal:?} 携带 `{printed}`，但 `.slint` 里**没有**逐字相同\
              的字面 ⇒ 界面与控件树各说一把键（`D-UI-26` 那一类缺陷的第二个源头）"
         );
@@ -990,7 +1023,8 @@ fn the_focus_caveat_in_the_text_is_the_key_tables_behavior() {
 /// 键表只为 `Focus::MainCanvas` 绑定 `Tab` 做视图切换，没有“打开/聚焦 Clip 矩阵”的
 /// `Tab` 动作；`ui/transport_bar.slint` 的悬停提示曾写 `Clip 激发矩阵 [Tab]`，
 /// 是把键表不做的动作印给用户。本判据同时钉住两件事：任何 Clip 矩阵文案⛔ 带 `Tab`，
-/// 且 transport_bar 必须保留恰好一条无键位的提示（⛔ 用“删掉提示”换绿）。
+/// 且 transport_bar 必须保留两条无键位的提示（accessible-label 与悬停气泡各一，
+/// ⛔ 用“删掉提示”换绿）。
 #[test]
 fn the_clip_matrix_hint_never_promises_tab() {
     let mut transport_hints = 0usize;
@@ -1017,8 +1051,37 @@ fn the_clip_matrix_hint_never_promises_tab() {
         }
     }
     assert_eq!(
-        transport_hints, 1,
-        "transport_bar.slint 必须保留恰好一条 `Clip 激发矩阵` 提示 ⇒ ⛔ 用删除提示来绕过\
-         本判据"
+        transport_hints, 2,
+        "transport_bar.slint 必须保留两条 `Clip 激发矩阵` 提示（accessible-label 与悬停\
+         气泡各一）⇒ ⛔ 用删除提示来绕过本判据"
+    );
+}
+
+/// ⑪（手势承诺）：`修饰词 + 滚轮` 是手势承诺，兑现面是宿主滚轮处理而非键表。
+/// 清单与 ① 同口径（两承诺源合并计数）；宿主侧必须留有对应的滚轮分支证据，
+/// ⛔ 让手势承诺只印不用。
+#[test]
+fn wheel_gesture_promises_are_pinned_and_wired() {
+    let evidence = scan_corpus();
+    let expected: BTreeMap<&str, usize> = [("Shift+Alt+滚轮", 4), ("Alt+滚轮", 4)]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        evidence.gesture_counts(),
+        expected,
+        "手势承诺多重集与钉值不符 ⇒ 新增手势承诺要同步扩本清单"
+    );
+    let host = include_str!("../src/host.rs");
+    assert!(
+        host.contains("on_arrangement_wheel"),
+        "宿主滚轮回调 on_arrangement_wheel 不在 ⇒ 手势承诺没有兑现面"
+    );
+    assert!(
+        host.contains("if shift && alt"),
+        "Shift+Alt+滚轮（横向缩放）的宿主分支不在 ⇒ 手势承诺落空"
+    );
+    assert!(
+        host.contains("} else if alt {"),
+        "Alt+滚轮（纵向缩放）的宿主分支不在 ⇒ 手势承诺落空"
     );
 }
