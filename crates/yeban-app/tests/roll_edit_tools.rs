@@ -4340,8 +4340,10 @@ fn a_group_resize_changes_every_selected_duration_and_clamps_at_the_grid_minimum
 //   `roll-edit-status` 为**空**（`velocity_op_for` 返回 `None` 后直接 return，无任何
 //   界面写入），修复后逐字命中语义文案；② 剪刀点在音符**左沿**（吸附后 == 音符起点，
 //   退化切分 ⇒ `split_ops_for` 空集）⇒ 同上。
-// - **契约判据**（防漂移）：同形回执函数存在（`roll-edit-status` ＋ `update_toast`
-//   两写都在函数体内）、五条路径的拒绝与空批文案逐字就位、成功清理前缀覆盖新文案家族。
+// - **契约判据**（防漂移）：同形回执函数存在（`roll-edit-status` ＋ `report_notice`
+//   两写都在函数体内；T-FIX-913 起不再经信息级 `update_toast`—— 操作没做成是错误，
+//   提示条必须按错误级常驻，模块回执行里必须有这条拒绝）、五条路径的拒绝与空批文案逐字就位、
+//   成功清理前缀覆盖新文案家族。
 //
 // ## 文案语言前提
 //
@@ -4354,6 +4356,8 @@ fn a_group_resize_changes_every_selected_duration_and_clamps_at_the_grid_minimum
 ///
 /// 红对照：本判据在修复前 main 上整体红 —— 回执函数与全部新文案都不存在
 /// （ISS-MWX74WAJ-B22B67 / wb-kong T-FIX-517 审计的七处静默点）。
+/// T-FIX-913 起回执函数的第二写是 `report_notice`（错误级），不再是信息级
+/// `update_toast`；键盘微移臂也收进同一入口，三条选区/音符拖动文案带下一步。
 #[test]
 fn t_fix_581_roll_rejection_receipt_contract_pins_the_five_paths() {
     let host = std::fs::read_to_string(
@@ -4362,21 +4366,28 @@ fn t_fix_581_roll_rejection_receipt_contract_pins_the_five_paths() {
     .expect("读 host.rs");
     assert!(
         host.contains("pub fn report_roll_edit_rejected"),
-        "同形回执函数必须存在（roll-edit-status + update_toast 两写）"
+        "同形回执函数必须存在（roll-edit-status + report_notice 两写）"
     );
-    // 回执函数体必须同形两写（状态行 + 提示条都在函数里，调用方不许各写一份）。
+    // 回执函数体必须同形两写（状态行 + 错误级回执都在函数里，调用方不许各写一份），
+    // 且不得再经信息级 update_toast（操作没做成不得一闪而过，T-FIX-913）。
     let fn_start = host
         .find("pub fn report_roll_edit_rejected")
         .expect("回执函数位置");
     let fn_body = &host[fn_start..fn_start + 500];
     assert!(
-        fn_body.contains("set_roll_edit_status") && fn_body.contains("update_toast"),
-        "回执函数必须同形两写：roll-edit-status + update_toast"
+        fn_body.contains("set_roll_edit_status") && fn_body.contains("report_notice"),
+        "回执函数必须同形两写：roll-edit-status + report_notice"
+    );
+    assert!(
+        !fn_body.contains("update_toast"),
+        "回执函数不得再经信息级 update_toast"
     );
     for literal in [
-        // 移动臂（T-FIX-210 既有文案，重构后仍走同一条入口）
-        "音符拖动被拒：音符身份已失效（可能已被删除）",
-        "音符拖动被拒：已到音高上限/下限或已到时间轴边界",
+        // 移动臂（T-FIX-210 既有文案，T-FIX-913 起带可执行下一步；重构后仍走同一条入口）
+        "音符拖动被拒：音符身份已失效（可能已被删除），工程没有变化。请重新选择音符后再拖动。",
+        "音符拖动被拒：已到音高上限/下限或已到时间轴边界，工程没有变化。请缩小拖动幅度，或把音符拖回边界内再松手。",
+        // 键盘微移臂（T-FIX-913 起收进同一入口，带可执行下一步）
+        "模型拒绝：选区移动越界或身份已失效，工程没有变化。请重新选择后再移动，或缩小移动幅度后重试。",
         // 改时值（拖拽臂：err 分支 + 空批两语义）
         "时值调整被拒：模型拒绝了这一次提交（工程未改）",
         "时值调整没有生效：没有可改动的对象（音符身份已失效，可能已被删除）",
@@ -4404,10 +4415,10 @@ fn t_fix_581_roll_rejection_receipt_contract_pins_the_five_paths() {
         );
     }
     // 调用面：移动臂 2 + 改时值 2 + 力度拖拽 2 + 建音符 2 + 橡皮擦 2 + 剪刀 3 + 力度双击 2
-    // = 15 处调用 + 1 处定义 = 16 处出现。
+    // + 键盘微移 1 = 16 处调用 + 1 处定义 = 17 处出现。
     let calls = host.matches("report_roll_edit_rejected(").count();
     assert!(
-        calls >= 16,
+        calls >= 17,
         "五条路径的拒绝/空批必须全部经同一条回执入口出声（实测 {calls} 处）"
     );
     // 成功清理前缀随文案家族扩展（T-FIX-210 的形状）。

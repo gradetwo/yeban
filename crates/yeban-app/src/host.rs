@@ -22496,9 +22496,9 @@ fn apply_action(
             }
             if port.commit_ops(now_ms(), "nudge selection", ops).is_err() {
                 // ⭐ T-FIX-210：模型拒绝（越界 / 身份失效）⇒ 写回执，别让用户以为键没生效。
-                let reason = "模型拒绝：选区移动越界或身份已失效";
-                ui.set_roll_edit_status(reason.into());
-                update_toast(ui, reason);
+                // ⭐ T-FIX-913：经统一入口出声（卷帘状态行＋模块回执行＋错误级常驻提示条），
+                // 文案带可执行下一步（重新选择 / 缩小移动幅度）。
+                report_roll_edit_rejected(ui, roll_nudge_rejected_message(current_language()));
                 return false;
             }
             refresh_undo_window(ui, port, true);
@@ -26136,7 +26136,8 @@ fn commit_note_drag(
     if ops.is_empty() {
         // ⭐ T-FIX-210：解析失败 = 音符身份已失效（已被删 / 不在工程里）⇒ 写回执，
         // 否则用户只看到"拖了又弹回"。T-FIX-581 起两写收进同形入口。
-        report_roll_edit_rejected(ui, "音符拖动被拒：音符身份已失效（可能已被删除）");
+        // ⭐ T-FIX-913：文案带可执行下一步（重新选择音符后再拖动）。
+        report_roll_edit_rejected(ui, roll_note_drag_identity_message(current_language()));
         return;
     }
     let label = if ops.len() > 1 {
@@ -26148,7 +26149,8 @@ fn commit_note_drag(
         // 模型拒绝（结果越界 / 身份已不存在）⇒ 如实什么都不做，⛔ **不重试**：
         // `Op::MoveNote` 是**相对**变换，重试会把同一个增量再加一次。
         // ⭐ T-FIX-210：拒绝必须出声，否则"弹回"没有原因。T-FIX-581 起两写收进同形入口。
-        report_roll_edit_rejected(ui, "音符拖动被拒：已到音高上限/下限或已到时间轴边界");
+        // ⭐ T-FIX-913：文案带可执行下一步（缩小拖动幅度 / 拖回边界内再松手）。
+        report_roll_edit_rejected(ui, roll_note_drag_bounds_message(current_language()));
         return;
     }
     clear_own_rejection_status(ui);
@@ -32299,6 +32301,20 @@ fn clear_own_rejection_status(ui: &MainWindow) {
     let text = current.as_str();
     if OWN_PREFIXES.iter().any(|prefix| text.starts_with(prefix)) {
         ui.set_roll_edit_status("".into());
+        return;
+    }
+    // ⭐ T-FIX-913：三条选区/音符拖动拒绝改走九语文案 —— 非中文界面上的状态行
+    // 是其余八种语言的整句，不再以中文前缀开头；按三条文案 × 九种语言逐字比对，
+    // 否则一次成功操作后拒绝文案会继续挂在状态行上。其余五条路径仍写中文源语言
+    // 字面量，走上面的前缀分支。
+    for lang in crate::cli::Language::ALL {
+        if text == roll_nudge_rejected_message(lang)
+            || text == roll_note_drag_identity_message(lang)
+            || text == roll_note_drag_bounds_message(lang)
+        {
+            ui.set_roll_edit_status("".into());
+            return;
+        }
     }
 }
 
@@ -32321,22 +32337,141 @@ fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
     ui.set_toast_message(s);
 }
 
+/// T-FIX-913：键盘微移选区被模型拒绝的主文案（九语闭集）。
+///
+/// 只写用户能判断的三件事：发生了什么、工程没有变化、下一步可做什么。
+/// 中文句保留 T-FIX-210 的旧字面量作前缀（`模型拒绝：选区移动越界或身份已失效`），
+/// 既有判据与 [`clear_own_rejection_status`] 的前缀分支继续命中。
+/// 与 [`stems_no_project_message`] 同制式（Rust 侧表，⛔ 不进 `.slint` 的 `@tr`）。
+#[must_use]
+pub fn roll_nudge_rejected_message(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => {
+            "模型拒绝：选区移动越界或身份已失效，工程没有变化。请重新选择后再移动，或缩小移动幅度后重试。"
+        }
+        EnUs => {
+            "Model rejected it: moving the selection would go out of bounds or the selection is stale, and the project is unchanged. Select the notes again and move them, or use a smaller move and try again."
+        }
+        FrFr => {
+            "Le modèle a refusé : déplacer la sélection dépasserait les limites ou la sélection n'est plus valable, et le projet n'a pas changé. Sélectionnez à nouveau les notes puis déplacez-les, ou réduisez l'amplitude du déplacement et réessayez."
+        }
+        EsEs => {
+            "El modelo lo rechazó: mover la selección saldría de los límites o la selección ya no es válida, y el proyecto no cambió. Vuelve a seleccionar las notas y muévelas, o reduce la amplitud del movimiento e inténtalo de nuevo."
+        }
+        PtBr => {
+            "O modelo recusou: mover a seleção ultrapassaria os limites ou a seleção não é mais válida, e o projeto não mudou. Selecione as notas novamente e mova-as, ou reduza a amplitude do movimento e tente de novo."
+        }
+        JaJp => {
+            "モデルが拒否しました：選択範囲の移動が範囲外になるか、選択が無効になっています。プロジェクトは変更されていません。音符を選択し直してから移動するか、移動幅を小さくして再試行してください。"
+        }
+        KoKr => {
+            "모델이 거부했습니다. 선택 영역을 이동하면 범위를 벗어나거나 선택이 더 이상 유효하지 않습니다. 프로젝트는 변경되지 않았습니다. 음을 다시 선택한 뒤 이동하거나, 이동 폭을 줄여 다시 시도하세요."
+        }
+        RuRu => {
+            "Модель отклонила действие: перемещение выделения выйдет за границы или выделение устарело, проект не изменён. Выделите ноты заново и переместите их или уменьшите шаг перемещения и повторите попытку."
+        }
+        DeDe => {
+            "Das Modell hat abgelehnt: Das Verschieben der Auswahl würde die Grenzen überschreiten oder die Auswahl ist nicht mehr gültig; das Projekt wurde nicht verändert. Wähle die Noten erneut aus und verschiebe sie, oder verkleinere den Verschiebeschritt und versuche es erneut."
+        }
+    }
+}
+
+/// T-FIX-913：音符拖动因身份失效被拒的主文案（九语闭集）。
+///
+/// 中文句保留 T-FIX-210 的旧字面量作前缀（`音符拖动被拒：音符身份已失效（可能已被删除）`）。
+/// 下一步是真的可执行动作：被删的音符拖不回来，只能重新选择还存在的音符再拖。
+#[must_use]
+pub fn roll_note_drag_identity_message(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => {
+            "音符拖动被拒：音符身份已失效（可能已被删除），工程没有变化。请重新选择音符后再拖动。"
+        }
+        EnUs => {
+            "Note drag rejected: the note no longer exists (it may have been deleted), and the project is unchanged. Select the note again and drag it."
+        }
+        FrFr => {
+            "Déplacement de note refusé : la note n'existe plus (elle a peut-être été supprimée), et le projet n'a pas changé. Sélectionnez à nouveau la note puis déplacez-la."
+        }
+        EsEs => {
+            "Arrastre de nota rechazado: la nota ya no existe (puede haberse eliminado), y el proyecto no cambió. Vuelve a seleccionar la nota y arrástrala."
+        }
+        PtBr => {
+            "Arraste de nota recusado: a nota não existe mais (pode ter sido excluída), e o projeto não mudou. Selecione a nota novamente e arraste-a."
+        }
+        JaJp => {
+            "ノートのドラッグが拒否されました：ノートが存在しません（削除された可能性があります）。プロジェクトは変更されていません。ノートを選択し直してからドラッグしてください。"
+        }
+        KoKr => {
+            "노트 드래그가 거부되었습니다. 노트가 더 이상 존재하지 않습니다(삭제되었을 수 있습니다). 프로젝트는 변경되지 않았습니다. 노트를 다시 선택한 뒤 드래그하세요."
+        }
+        RuRu => {
+            "Перетаскивание ноты отклонено: ноты больше нет (возможно, она удалена), проект не изменён. Выделите ноту заново и перетащите её."
+        }
+        DeDe => {
+            "Noten-Ziehen abgelehnt: Die Note existiert nicht mehr (sie wurde möglicherweise gelöscht); das Projekt wurde nicht verändert. Wähle die Note erneut aus und ziehe sie."
+        }
+    }
+}
+
+/// T-FIX-913：音符拖动撞到音高/时间边界被拒的主文案（九语闭集）。
+///
+/// 中文句保留 T-FIX-210 的旧字面量作前缀（`音符拖动被拒：已到音高上限/下限或已到时间轴边界`）。
+/// 下一步是真的可执行动作：缩小拖动幅度，或把音符拖回边界内再松手。
+#[must_use]
+pub fn roll_note_drag_bounds_message(lang: crate::cli::Language) -> &'static str {
+    use crate::cli::Language::{DeDe, EnUs, EsEs, FrFr, JaJp, KoKr, PtBr, RuRu, ZhCn};
+    match lang {
+        ZhCn => {
+            "音符拖动被拒：已到音高上限/下限或已到时间轴边界，工程没有变化。请缩小拖动幅度，或把音符拖回边界内再松手。"
+        }
+        EnUs => {
+            "Note drag rejected: the pitch limit or the timeline edge was reached, and the project is unchanged. Drag a shorter distance, or drag the note back inside the limits before releasing."
+        }
+        FrFr => {
+            "Déplacement de note refusé : la limite de hauteur ou le bord de la chronologie est atteint, et le projet n'a pas changé. Réduisez l'amplitude du déplacement, ou ramenez la note à l'intérieur des limites avant de relâcher."
+        }
+        EsEs => {
+            "Arrastre de nota rechazado: se alcanzó el límite de altura o el borde de la línea de tiempo, y el proyecto no cambió. Arrastra una distancia menor o devuelve la nota dentro de los límites antes de soltarla."
+        }
+        PtBr => {
+            "Arraste de nota recusado: o limite de altura ou a borda da linha do tempo foi atingido, e o projeto não mudou. Arraste uma distância menor ou traga a nota de volta para dentro dos limites antes de soltar."
+        }
+        JaJp => {
+            "ノートのドラッグが拒否されました：音高の上限／下限またはタイムラインの端に達しました。プロジェクトは変更されていません。ドラッグする距離を短くするか、離す前にノートを範囲内に戻してください。"
+        }
+        KoKr => {
+            "노트 드래그가 거부되었습니다. 음높이 한계나 타임라인 끝에 도달했습니다. 프로젝트는 변경되지 않았습니다. 더 짧게 드래그하거나, 놓기 전에 노트를 범위 안으로 되돌리세요."
+        }
+        RuRu => {
+            "Перетаскивание ноты отклонено: достигнут предел высоты или край шкалы времени, проект не изменён. Перетащите на меньшее расстояние или верните ноту внутрь границ, прежде чем отпустить."
+        }
+        DeDe => {
+            "Noten-Ziehen abgelehnt: Die Tonhöhengrenze oder der Rand der Zeitleiste ist erreicht; das Projekt wurde nicht verändert. Ziehe eine kürzere Strecke oder bringe die Note vor dem Loslassen zurück innerhalb der Grenzen."
+        }
+    }
+}
+
 /// ⭐ T-FIX-581：卷帘五条提交路径（改时值 / 力度 / 建音符 / 橡皮擦 / 剪刀）在模型拒绝
 /// 或空批时的**统一回执** —— 与移动臂（`T-FIX-210`）同形：`roll-edit-status` ＋
-/// [`update_toast`] 两处都写。
+/// 错误级回执两处都写。
 ///
 /// 为什么抽函数：移动臂此前是两行内联（`set_roll_edit_status` ＋ `update_toast`），
 /// 五条路径补回执时再各写一遍就是十几份复制 —— 抽成唯一入口，形状漂移由编译挡住。
 /// ⛔ 默认不能静默（Wang 2026-11-18 定）：五条路径的 err 分支与空批**都必须**经这里出声，
 /// 否则用户看到的是「点了但什么都没发生」，与卡住不可区分。
 ///
-/// 与 [`report_rejected`] 的分工：那条走 `report_notice`（模块回执行 + 错误级常驻提示条），
-/// 服务于 mixer / device 等模块动作；本条走卷帘自己的 `roll-edit-status` 行 + 信息级提示条
-/// —— 同一条手势通道的既有口径（`音符拖动被拒：…` 就是这条形状），五条路径照旧。
+/// ⭐ T-FIX-913：本入口的落点从信息级 [`update_toast`] 改为 [`report_notice`]（错误级）。
+/// 操作没做成是**错误**（UX 原则 §5：错误保留到问题解决，⛔ 不许一闪而过）——
+/// 旧形状只写卷帘状态行＋几秒自动收走的信息级提示条，模块回执行里没有这条拒绝，
+/// 用户回头查不到；新形状同时写卷帘状态行与模块回执行（`module-status-text`），
+/// 提示条按错误级常驻。与 [`report_rejected`] 的分工不变：那条服务于 mixer / device
+/// 等模块动作的通用拒绝（固定泛文案）；本条服务于卷帘手势拒绝（逐条可执行下一步）。
 pub fn report_roll_edit_rejected(ui: &MainWindow, reason: impl Into<SharedString>) {
     let reason: SharedString = reason.into();
     ui.set_roll_edit_status(reason.clone());
-    update_toast(ui, reason);
+    report_notice(ui, &reason, true);
 }
 
 fn place_latest_audio_clip(ui: &MainWindow, port: &UndoPort) {
