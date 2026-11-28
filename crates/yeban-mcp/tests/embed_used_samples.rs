@@ -247,7 +247,12 @@ fn save_embeds_only_triggered_samples() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path.clone(), project, false)
+        .open_in_memory_with_assets(
+            project_path.clone(),
+            project,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入夹具工程");
     let saved = call_tool(&mut dispatcher, &auth, "yeban_save_project", json!({}));
     assert_eq!(saved["data"]["saved"], true, "第一次保存必须落盘: {saved}");
@@ -286,14 +291,16 @@ fn save_embeds_only_triggered_samples() {
         loaded.project.embedded_samples, expected,
         "内嵌表必须逐项等于触发集（SFZ ＋ tone60 ＋ low），无多收无漏收"
     );
-    let expected_hashes: BTreeSet<AssetHash> = expected
+    let mut expected_hashes: BTreeSet<AssetHash> = expected
         .values()
         .map(|hash| AssetHash::parse(hash).expect("合法哈希"))
         .collect();
+    // 工程自身还引用规范样本的 kick 资产，它与内嵌采样同池落盘。
+    expected_hashes.insert(yeban_model::samples::filled_project_assets()[0].0.clone());
     assert_eq!(
         loaded.assets.keys().cloned().collect::<BTreeSet<_>>(),
         expected_hashes,
-        "容器资产池必须恰好是内嵌表的三条哈希"
+        "容器资产池必须恰好是内嵌表三条哈希加工程自有 kick 资产"
     );
 
     let saved_again = call_tool(&mut dispatcher, &auth, "yeban_save_project", json!({}));
@@ -316,7 +323,12 @@ fn embedded_project_renders_bit_identically_without_the_library() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path.clone(), project, false)
+        .open_in_memory_with_assets(
+            project_path.clone(),
+            project,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入夹具工程");
     let saved = call_tool(&mut dispatcher, &auth, "yeban_save_project", json!({}));
     assert_eq!(saved["data"]["saved"], true, "保存必须落盘: {saved}");
@@ -386,7 +398,12 @@ fn render_without_embedded_map_fails_loudly_without_the_library() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path.clone(), project, false)
+        .open_in_memory_with_assets(
+            project_path.clone(),
+            project,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入夹具工程");
     let response = call_tool_raw(
         &mut dispatcher,
@@ -427,7 +444,12 @@ fn save_without_sampler_tracks_writes_no_map() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path.clone(), project, false)
+        .open_in_memory_with_assets(
+            project_path.clone(),
+            project,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入夹具工程");
     // 无采样轨 ⇒ 内嵌表为空 ⇒ 摘要与打开时一致 ⇒ 首次保存会跳过；用 force 写盘再验容器。
     let saved = call_tool(
@@ -443,7 +465,13 @@ fn save_without_sampler_tracks_writes_no_map() {
         loaded.project.embedded_samples.is_empty(),
         "无采样轨 ⇒ 表必须为空"
     );
-    assert!(loaded.assets.is_empty(), "无采样轨 ⇒ 容器不得多出资产");
+    // 无采样轨 ⇒ 不内嵌采样；容器里只剩工程自引用的 kick 资产一份。
+    let kick_hash = &yeban_model::samples::filled_project_assets()[0].0;
+    assert_eq!(
+        loaded.assets.keys().collect::<Vec<_>>(),
+        vec![kick_hash],
+        "无采样轨 ⇒ 容器只带工程自有资产"
+    );
 }
 
 /// B2（第四份报告）：采样两处都缺时保存仍成功，缺失清单进成功回执。
@@ -477,7 +505,12 @@ fn save_with_missing_samples_reports_them_and_keeps_edits() {
     let (mut dispatcher, auth) = fresh_dispatcher();
     dispatcher
         .domain_mut()
-        .open_in_memory(project_path.clone(), project, false)
+        .open_in_memory_with_assets(
+            project_path.clone(),
+            project,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入夹具工程");
 
     // 基线：先成功保存一次。此后 `savedDigest` 的标尺 = 会话自己的只读摘要。
@@ -498,7 +531,12 @@ fn save_with_missing_samples_reports_them_and_keeps_edits() {
         let (mut clean_dispatcher, clean_auth) = fresh_dispatcher();
         clean_dispatcher
             .domain_mut()
-            .open_in_memory(&clean_path, clean_project, false)
+            .open_in_memory_with_assets(
+                &clean_path,
+                clean_project,
+                false,
+                yeban_model::samples::filled_project_assets(),
+            )
             .expect("注入夹具工程（无编辑半）");
         let open_digest = clean_dispatcher
             .domain()

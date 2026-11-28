@@ -53,9 +53,15 @@ fn dispatcher_with_project(project: YebanProjectV1) -> Dispatcher {
     let token = BearerToken::generate().token;
     let mut dispatcher = Dispatcher::new(token, ScopeSet::all(), RunMode::Production);
     dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
+    // 规范工程引用了音频资产：会话 CAS 池必须带真实字节，否则保存守卫
+    // （T-FIX-500）会以 missingAudioAsset 响亮拒绝。
+    let assets: Vec<_> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .filter(|(hash, _)| project.assets.contains_key(hash))
+        .collect();
     dispatcher
         .domain_mut()
-        .open_in_memory(unique_path("fixture"), project, false)
+        .open_in_memory_with_assets(unique_path("fixture"), project, false, assets)
         .expect("注入规范工程");
     dispatcher
 }
@@ -412,7 +418,12 @@ fn automation_read_follows_the_model_through_the_unique_entry() {
     }
     dispatcher
         .domain_mut()
-        .open_in_memory(unique_path("changed"), changed, false)
+        .open_in_memory_with_assets(
+            unique_path("changed"),
+            changed,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("换一份工程");
     let second = call_tool(&mut dispatcher, "yeban_edit_automation", arguments);
     let values = second["data"]["read"]["values"].as_array().expect("values");
@@ -536,7 +547,12 @@ fn direct_edits_are_authored_by_the_mcp_edit_origin_in_the_persisted_log() {
     dispatcher.domain_mut().set_now_ms(1_760_000_000_000);
     dispatcher
         .domain_mut()
-        .open_in_memory(path.clone(), project, false)
+        .open_in_memory_with_assets(
+            path.clone(),
+            project,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入规范工程");
 
     let audio = wav_s16(48_000, &[0, 1_000, -1_000, 0]);
@@ -982,7 +998,12 @@ fn engine_state_reads_three_single_sources() {
     }
     dispatcher
         .domain_mut()
-        .open_in_memory(unique_path("engine"), changed, false)
+        .open_in_memory_with_assets(
+            unique_path("engine"),
+            changed,
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("换一份工程");
     let after = call_tool(
         &mut dispatcher,

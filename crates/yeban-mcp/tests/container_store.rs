@@ -166,7 +166,13 @@ fn call(dispatcher: &mut Dispatcher, auth: &str, name: &str, arguments: Value) -
 /// 写容器 —— 裸 JSON 已经没有读路径了（判据 7 正面钉住这件事）。
 fn container_fixture(project: &YebanProjectV1) -> Vec<u8> {
     let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
-    write_project_container(project, &history, &BTreeMap::new()).expect("写真容器")
+    // 工程引用了音频资产时，容器必须带真实字节：保存守卫（T-FIX-500）要求
+    // 元数据与 CAS 字节两边都在，缺字节的容器打开后一保存就被响亮拒绝。
+    let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .filter(|(hash, _)| project.assets.contains_key(hash))
+        .collect();
+    write_project_container(project, &history, &assets).expect("写真容器")
 }
 
 /// 写一份**真容器**工程夹具并打开它。返回 `(路径, 打开响应)`。
@@ -290,10 +296,18 @@ fn save_writes_a_standard_container_with_the_zip_magic() {
     let names: Vec<&str> = archive.names().collect();
     assert!(names.contains(&PROJECT_JSON_NAME), "{names:?}");
     assert!(names.contains(&HISTORY_DAG_NAME), "{names:?}");
-    assert_eq!(archive.len(), 2, "没有资产时恰好 2 个条目: {names:?}");
+    // 规范工程引用一份音频资产，保存出的容器必须带它的 CAS 条目。
+    let (kick_hash, _) = &yeban_model::samples::filled_project_assets()[0];
+    let kick_entry = format!("assets/{}", kick_hash.as_str());
+    assert!(names.contains(&kick_entry.as_str()), "{names:?}");
     assert_eq!(
-        saved["data"]["assets"], 0,
-        "夹具没有 CAS 资产 ⇒ 容器里只有 project.json + history.dag"
+        archive.len(),
+        3,
+        "工程+图谱+一份资产恰好 3 个条目: {names:?}"
+    );
+    assert_eq!(
+        saved["data"]["assets"], 1,
+        "夹具带一份 CAS 资产 ⇒ 保存报告必须数到它"
     );
 }
 
@@ -696,8 +710,14 @@ fn assets_round_trip_with_content_addressing() {
     // 一份"已打开"的会话（不碰文件系统），然后把一份资产放进 CAS 池。
     dispatcher
         .domain_mut()
-        .open_in_memory(path.clone(), yeban_model::samples::filled_project(), false)
+        .open_in_memory_with_assets(
+            path.clone(),
+            yeban_model::samples::filled_project(),
+            false,
+            yeban_model::samples::filled_project_assets(),
+        )
         .expect("注入会话");
+    let kick_hash = yeban_model::samples::filled_project_assets()[0].0.clone();
     let payload: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
     let hash = dispatcher
         .domain_mut()
@@ -708,7 +728,8 @@ fn assets_round_trip_with_content_addressing() {
         AssetHash::of_bytes(&payload),
         "CAS 键必须等于字节摘要"
     );
-    assert_eq!(dispatcher.domain().asset_count(), 1);
+    // 池里已有规范工程的 kick 资产，再放入 payload 后共 2 份。
+    assert_eq!(dispatcher.domain().asset_count(), 2);
     assert_eq!(
         dispatcher.domain().asset(&hash),
         Some(payload.as_slice()),
@@ -723,7 +744,7 @@ fn assets_round_trip_with_content_addressing() {
         json!({ "force": true }),
     );
     assert_eq!(saved["data"]["saved"], true, "{saved}");
-    assert_eq!(saved["data"]["assets"], 1, "{saved}");
+    assert_eq!(saved["data"]["assets"], 2, "{saved}");
 
     let bytes = fs::read(&path).expect("容器字节");
     let archive = read_container(&bytes, &ContainerLimits::default()).expect("容器可读");
@@ -743,9 +764,14 @@ fn assets_round_trip_with_content_addressing() {
     // 走模型层的工程容器读取器再验一遍 CAS 完整性（它会**重算**哈希）。
     let project_archive =
         read_project_container(&bytes, &ContainerLimits::default()).expect("工程容器可读");
-    assert_eq!(project_archive.assets.len(), 1);
-    assert_eq!(project_archive.assets[0].0, hash);
-    assert_eq!(project_archive.assets[0].1, payload);
+    // 容器里共 2 份资产：规范工程的 kick 与本判据放入的 payload。
+    assert_eq!(project_archive.assets.len(), 2);
+    let payload_entry = project_archive
+        .assets
+        .iter()
+        .find(|(entry_hash, _)| *entry_hash == hash)
+        .expect("payload 资产必须在容器里");
+    assert_eq!(payload_entry.1, payload);
 
     // 关闭 → 重新打开 ⇒ 资产池原样回来（"放进资产 → 保存 → 重新打开"的端到端）。
     call(
@@ -761,10 +787,12 @@ fn assets_round_trip_with_content_addressing() {
         json!({ "path": path.display().to_string() }),
     );
     assert_eq!(reopened["status"], "success", "{reopened}");
-    assert_eq!(reopened["data"]["assets"], 1, "{reopened}");
+    assert_eq!(reopened["data"]["assets"], 2, "{reopened}");
+    let mut expected_hashes = vec![hash.clone(), kick_hash.clone()];
+    expected_hashes.sort();
     assert_eq!(
         dispatcher.domain().asset_hashes(),
-        vec![hash.clone()],
+        expected_hashes,
         "池的键序 = 哈希升序（BTreeMap）"
     );
     assert_eq!(
@@ -780,7 +808,7 @@ fn assets_round_trip_with_content_addressing() {
         "yeban_save_project",
         json!({ "force": true }),
     );
-    assert_eq!(saved_again["data"]["assets"], 1, "{saved_again}");
+    assert_eq!(saved_again["data"]["assets"], 2, "{saved_again}");
     let bytes = fs::read(&path).expect("容器字节");
     let archive = read_container(&bytes, &ContainerLimits::default()).expect("容器可读");
     assert!(archive.get(&expected_name).is_some(), "资产必须被写回");

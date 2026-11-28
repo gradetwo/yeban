@@ -87,8 +87,13 @@ impl Scratch {
 /// 工程 → **真容器**字节（`project.json` + 空 `history.dag`，无资产）。
 fn container_fixture(project: &YebanProjectV1) -> Vec<u8> {
     let history = serde_json::to_vec(&yeban_model::CommitGraph::new()).expect("空图谱 JSON");
-    yeban_model::container::write_project_container(project, &history, &BTreeMap::new())
-        .expect("写真容器")
+    // 工程引用了音频资产时，容器必须带真实字节：保存守卫（T-FIX-500）要求
+    // 元数据与 CAS 字节两边都在，缺字节的容器打开后一保存就被响亮拒绝。
+    let assets: BTreeMap<_, _> = yeban_model::samples::filled_project_assets()
+        .into_iter()
+        .filter(|(hash, _)| project.assets.contains_key(hash))
+        .collect();
+    yeban_model::container::write_project_container(project, &history, &assets).expect("写真容器")
 }
 
 impl Drop for Scratch {
