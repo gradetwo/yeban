@@ -659,17 +659,35 @@ fn real_project_import_edit_and_mix_in_a_live_window() {
     ui.invoke_tool_selected(2);
     let live_view = host::project_with_view_state(&undo.try_project().unwrap(), ui).expect("投影");
     let scroll_x = ui.get_roll_scroll_x().max(0.0);
+    // 目标音符必须落在当前纵向窗口内：窗口外音高在命中测试里被裁掉
+    // （钳到边道的绘制位置不算可抓），只按 x 选会选到抓不起的音符。
+    let (win_lo, win_hi) = (ui.get_roll_min_pitch(), ui.get_roll_max_pitch());
     let target_note = live_view
         .notes
         .iter()
-        .find(|n| n.x >= scroll_x && n.x < scroll_x + 900.0)
-        .or_else(|| live_view.notes.first())
-        .expect("至少一个可见音符")
+        .find(|n| {
+            n.x >= scroll_x
+                && n.x < scroll_x + 900.0
+                && i32::from(n.pitch) >= win_lo
+                && i32::from(n.pitch) <= win_hi
+        })
+        .expect("纵向窗口内至少一个可见音符")
         .clone();
     let note_entity = target_note.id.parse::<EntityId>().unwrap();
     let dur_before = target_note.duration_ticks;
-    let (px, py) =
-        yeban_app::bridge::host_to_painted((target_note.x - scroll_x) + 2.0, target_note.y + 4.0);
+    // 抓取点必须取界面实际绘制的坐标（note-positions/note-ys 已按当前
+    // roll-base-pitch 重投影）；投影原始 y 是默认基音帧，基音被选轨取景
+    // 移动后会差出数个泳道，命中测试按当前基音换算必然落空。
+    let ui_idx = (0..ui.get_note_ulids().row_count())
+        .find(|&idx| {
+            ui.get_note_ulids()
+                .row_data(idx)
+                .is_some_and(|id| id.as_str() == target_note.id)
+        })
+        .expect("目标音符必须在界面可见数组里");
+    let painted_x = ui.get_note_positions().row_data(ui_idx).unwrap_or(0.0);
+    let painted_y = ui.get_note_ys().row_data(ui_idx).unwrap_or(0.0);
+    let (px, py) = yeban_app::bridge::host_to_painted(painted_x + 2.0, painted_y + 4.0);
     assert!(
         ui.invoke_note_drag_grab(px, py),
         "[N9] ToolDrag::ResizeDuration 必须能抓起音符"
