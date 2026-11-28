@@ -2662,3 +2662,15 @@ msgstr "縦方向を縮小（Alt+ホイール）"
 
 msgid "纵向放大（Alt+滚轮）"
 msgstr "縦方向を拡大（Alt+ホイール）"
+
+# --- T-FIX-991: autosave draft banner (app.slint) ---
+#: crates/yeban-app/ui/app.slint
+msgid "检测到未保存的自动保存草稿"
+msgstr "未保存の自動保存ドラフトを検出しました"
+
+msgid "恢复草稿"
+msgstr "ドラフトを復元"
+
+msgid "放弃草稿并隔离"
+msgstr "ドラフトを破棄して隔離"
+

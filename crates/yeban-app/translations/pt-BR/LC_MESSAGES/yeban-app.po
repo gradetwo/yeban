@@ -2662,3 +2662,15 @@ msgstr "Reduzir zoom vertical (Alt+roda)"
 
 msgid "纵向放大（Alt+滚轮）"
 msgstr "Aumentar zoom vertical (Alt+roda)"
+
+# --- T-FIX-991: autosave draft banner (app.slint) ---
+#: crates/yeban-app/ui/app.slint
+msgid "检测到未保存的自动保存草稿"
+msgstr "Rascunho de salvamento automático não salvo detectado"
+
+msgid "恢复草稿"
+msgstr "Restaurar rascunho"
+
+msgid "放弃草稿并隔离"
+msgstr "Descartar e isolar o rascunho"
+

@@ -2662,3 +2662,15 @@ msgstr "Vertikal verkleinern (Alt+Mausrad)"
 
 msgid "纵向放大（Alt+滚轮）"
 msgstr "Vertikal vergrößern (Alt+Mausrad)"
+
+# --- T-FIX-991: autosave draft banner (app.slint) ---
+#: crates/yeban-app/ui/app.slint
+msgid "检测到未保存的自动保存草稿"
+msgstr "Ungespeicherten Autosave-Entwurf erkannt"
+
+msgid "恢复草稿"
+msgstr "Entwurf wiederherstellen"
+
+msgid "放弃草稿并隔离"
+msgstr "Entwurf verwerfen und isolieren"
+

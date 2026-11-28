@@ -2662,3 +2662,15 @@ msgstr "Zoom vertically out (Alt+scroll)"
 
 msgid "纵向放大（Alt+滚轮）"
 msgstr "Zoom vertically in (Alt+scroll)"
+
+# --- T-FIX-991: autosave draft banner (app.slint) ---
+#: crates/yeban-app/ui/app.slint
+msgid "检测到未保存的自动保存草稿"
+msgstr "Unsaved autosave draft detected"
+
+msgid "恢复草稿"
+msgstr "Restore draft"
+
+msgid "放弃草稿并隔离"
+msgstr "Discard and quarantine draft"
+
