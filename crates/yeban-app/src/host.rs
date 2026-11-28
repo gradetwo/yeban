@@ -3801,7 +3801,10 @@ pub fn wire_export_wav_browse(ui: &MainWindow, picker: Rc<dyn crate::file_picker
             return;
         };
         let path = crate::file_picker::with_default_extension(path, "wav");
-        ui.set_export_wav_path(SharedString::from(path.to_string_lossy().as_ref()));
+        // T-FIX-919：只在显示/填框层去掉 Windows 扩展长度前缀；写出层读的是
+        // 这一格文本，普通盘符/UNC 去前缀后等价，长出 MAX_PATH 的路径保留前缀。
+        let visible = user_visible_path(&path);
+        ui.set_export_wav_path(SharedString::from(visible.to_string_lossy().as_ref()));
     });
 }
 
@@ -14215,6 +14218,65 @@ pub fn ensure_default_parent_dir(target: &std::path::Path) {
     }
 }
 
+/// ⭐ T-FIX-919：把 Windows `canonicalize` 产生的扩展长度前缀从**用户可见路径**
+/// 里去掉，但只在普通盘符/UNC 且去前缀后仍在 `MAX_PATH` 以内时这么做。
+///
+/// `std::fs::canonicalize` 在 Windows 上会返回 `\\?\D:\...`（UNC 为
+/// `\\?\UNC\server\share\...`）。该前缀是内核长路径语义的一部分，直接丢掉会
+/// 破坏真正需要长路径的文件；但把它原样塞进导出路径输入框，会让用户看到
+/// `\\?\D:\yeban-nightly\...` 并被迫手工替换整段路径。
+///
+/// 规则：
+/// - `\\?\D:\...`（盘符 + 分隔符）⇒ `D:\...`；
+/// - `\\?\UNC\server\share\...` ⇒ `\\server\share\...`；
+/// - 去前缀后的路径长度（按字符计）≥ 260 ⇒ **保留**扩展前缀；
+/// - `\\?\Volume{...}`、相对路径或其它形态 ⇒ 原样返回（不猜语义）。
+///
+/// 该函数只用于**显示/填框**。写出层拿到的仍是输入框里的路径；普通盘符与 UNC
+/// 去前缀后写出等价，长路径保留前缀故长路径语义不被破坏。
+#[must_use]
+pub fn user_visible_path(path: &std::path::Path) -> std::path::PathBuf {
+    const MAX_PATH_CHARS: usize = 260;
+    let text = path.to_string_lossy();
+    let stripped = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        (!rest.is_empty()).then(|| format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let bytes = rest.as_bytes();
+        let is_drive = bytes.len() >= 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes.len() == 2 || bytes[2] == b'\\' || bytes[2] == b'/');
+        is_drive.then(|| rest.to_owned())
+    } else {
+        None
+    };
+    match stripped {
+        // 按字符数（不是字节数）对齐 Windows 的 MAX_PATH 口径；含非 ASCII 的
+        // 普通路径不能在显示层被误判成长路径。
+        Some(visible) if visible.chars().count() < MAX_PATH_CHARS => {
+            std::path::PathBuf::from(visible)
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+/// ⭐ T-FIX-919：导出 WAV 弹窗打开时播默认路径/归一化已填路径。
+///
+/// 空 ⇒ 写 `default` 的**用户可见形式**；非空 ⇒ 只把当前文本的 Windows
+/// 扩展前缀按 [`user_visible_path`] 还原，不覆盖用户真正填过的文件名/目录。
+pub fn seed_export_wav_path(ui: &MainWindow, default: &std::path::Path) {
+    let current_path = ui.get_export_wav_path().to_string();
+    if current_path.trim().is_empty() {
+        let visible = user_visible_path(default);
+        ui.set_export_wav_path(visible.to_string_lossy().to_string().into());
+    } else {
+        let visible = user_visible_path(std::path::Path::new(current_path.trim()));
+        if visible.to_string_lossy() != current_path.trim() {
+            ui.set_export_wav_path(visible.to_string_lossy().to_string().into());
+        }
+    }
+}
+
 impl ModulePaths {
     /// 从环境变量读覆盖值；未设的项用 [`ModulePaths::default`]。
     ///
@@ -20001,9 +20063,9 @@ pub fn wire_module_actions_with_shared(
                 return;
             };
             let default_target = paths.borrow().export_wav.clone();
-            if ui.get_export_wav_path().trim().is_empty() {
-                ui.set_export_wav_path(default_target.to_string_lossy().to_string().into());
-            }
+            // T-FIX-919：缺省路径与已填路径都在这里归一化显示；长路径保留扩展
+            // 前缀，普通盘符/UNC 还原成用户可读形式。
+            seed_export_wav_path(&ui, &default_target);
             // 「空 = 从没填过」与「等于宿主上一次播的值 = 用户没动」都算**没人动过** ⇒ 按
             // 当前工程刷新；其余（用户自己敲的数）重开时逐字符保留（与路径那一格同一口径）。
             let current = ui.get_export_wav_seconds().to_string();
