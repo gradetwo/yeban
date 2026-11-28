@@ -1629,6 +1629,10 @@ fn plan_cc_lanes(
 ) -> (Vec<Op>, usize) {
     // ① 折成 (目标 → tick → 值)：`BTreeMap` 的键序给出确定顺序，后到者覆盖同 tick。
     let mut curves: BTreeMap<AutomationTarget, BTreeMap<u64, f32>> = BTreeMap::new();
+    // T-FIX-924：内部 `AutomationLane` 没有通道字段；同一目标（同轨同控制器）
+    // 出现多个通道时，明确定义“首通道胜出”，其余通道的事件不落泳道，交给
+    // `read - attached` 的损失分桶披露。⛔ 不再静默合并、⛔ 不再报 0 丢失。
+    let mut lane_channels: BTreeMap<AutomationTarget, u8> = BTreeMap::new();
     let mut attached = 0usize;
     for cc in &parsed.control_changes {
         let track_id = track_destinations
@@ -1654,6 +1658,13 @@ fn plan_cc_lanes(
                 f32::from(cc.value),
             ),
         };
+        if let Some(&lane_channel) = lane_channels.get(&target) {
+            if lane_channel != cc.channel {
+                continue;
+            }
+        } else {
+            lane_channels.insert(target, cc.channel);
+        }
         curves
             .entry(target)
             .or_default()
@@ -2418,7 +2429,8 @@ fn is_placed_on_any_track(project: &YebanProjectV1, clip_id: EntityId) -> bool {
 pub mod tests {
     use super::*;
     use crate::midi::{
-        MidiAuxEventCounts, MidiAuxEventKind, MidiFormat, MidiTempo, ParsedLyric, ParsedNote,
+        MidiAuxEventCounts, MidiAuxEventKind, MidiFormat, MidiTempo, ParsedControlChange,
+        ParsedLyric, ParsedNote,
     };
 
     /// 一段**最小合法 SMF**（格式 0、960 PPQ、一个 C4 音符）。
@@ -4157,6 +4169,78 @@ pub mod tests {
         assert!(
             matches!(&error, MidiImportError::NoDestination(reason) if reason.contains("不是 MIDI 片段")),
             "实际: {error:?}"
+        );
+    }
+
+    /// T-FIX-924：同一轨同一控制器出现多个 MIDI 通道时，内部泳道没有通道字段；
+    /// 口径是“首通道胜出”，其余通道的事件必须计入 `ControlChange` 丢失，
+    /// ⛔ 不能静默合并后仍报 0 丢失。
+    #[test]
+    fn same_controller_on_two_channels_is_reported_as_channel_loss() {
+        let mut parsed = parsed(
+            960,
+            vec![ParsedNote {
+                track: 0,
+                channel: 9,
+                key: 60,
+                velocity: 100,
+                start_tick: 0,
+                end_tick: 960,
+            }],
+        );
+        parsed.control_changes = vec![
+            ParsedControlChange {
+                track: 0,
+                channel: 9,
+                tick: 0,
+                controller: 7,
+                value: 100,
+            },
+            ParsedControlChange {
+                track: 0,
+                channel: 10,
+                tick: 480,
+                controller: 7,
+                value: 64,
+            },
+        ];
+        parsed = recording(parsed, MidiAuxEventKind::ControlChange, 2);
+        let project = yeban_model::samples::filled_project();
+        let plan =
+            plan_midi_import(&project, &parsed, &MidiImportOptions::default()).expect("计划");
+        assert_eq!(
+            plan.losses.aux_events[&MidiAuxEventKind::ControlChange],
+            MidiLossCount {
+                read: 2,
+                dropped: 1
+            },
+            "ch10 的 CC7 被首通道 ch9 顶掉 ⇒ 必须计 1 条通道丢失"
+        );
+        let lanes = lane_ops(&plan);
+        let volume = lanes
+            .iter()
+            .find(|(target, ..)| matches!(target, AutomationTarget::TrackVolume { .. }))
+            .expect("CC7 进音量泳道");
+        let old_count = volume.2.as_ref().map_or(0, |lane| lane.points.len());
+        assert_eq!(
+            volume.1.points.len(),
+            old_count,
+            "ch9 的 CC7 落在已有 tick 0 上 ⇒ 只覆盖不增点；ch10 的点不写入"
+        );
+        let at_zero = volume
+            .1
+            .points
+            .values()
+            .find(|point| point.tick == 0)
+            .expect("tick 0 必须存在");
+        assert!(
+            (at_zero.value - cc7_to_decibels(100)).abs() < 1e-4,
+            "tick 0 必须是首通道 ch9 的 CC7 值，实际 {}",
+            at_zero.value
+        );
+        assert!(
+            !volume.1.points.values().any(|point| point.tick == 480),
+            "ch10 的 tick 480 点不得落进泳道"
         );
     }
 }

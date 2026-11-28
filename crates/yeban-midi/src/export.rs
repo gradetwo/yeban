@@ -589,8 +589,27 @@ pub fn export_from_project(project: &YebanProjectV1) -> Result<MidiExport, MidiE
                 bend_range_semitones = bend_range_semitones.max(needed);
             }
         }
-        let lane = tracks.len() % usize::from(MIDI_CHANNEL_COUNT);
-        let channel = u8::try_from(lane).expect("lane < MIDI_CHANNEL_COUNT <= u8::MAX");
+        // T-FIX-924：导出轨的通道优先取本轨音符的原通道。导入侧 CC 被折进
+        // 自动化泳道时丢失了通道；若仍按轨道序号分配，ch9 的 CC7 会回读成 ch0。
+        // 音符本身逐条带 channel（编码器用 `note.channel.unwrap_or(track.channel)`）；
+        // CC 事件只有轨道级通道，因此这里用首颗带通道的音符钉住它。多通道同轨时
+        // 音符各自保留，CC 只能落一个通道——导入侧按“同目标首通道胜出”计数，
+        // 其余通道的 CC 计入 `ControlChange` 损失，不再报 0 丢失。
+        //
+        // ⛔ 不改变“无 channel 音符”的旧行为：它们原本回退到轨道序号通道；
+        // 这里先把它们钉成该序号，再让导出轨通道取音符通道，避免把 None 音符
+        // 一起抬到 ch9（T-FIX-924 的回归判据 `note_channels_are_preserved…`）。
+        let fallback_channel = u8::try_from(tracks.len() % usize::from(MIDI_CHANNEL_COUNT))
+            .expect("lane < MIDI_CHANNEL_COUNT <= u8::MAX");
+        for note in &mut notes {
+            if note.channel.is_none() {
+                note.channel = Some(fallback_channel);
+            }
+        }
+        let channel = notes
+            .iter()
+            .find_map(|note| note.channel)
+            .unwrap_or(fallback_channel);
         tracks.push(MidiExportTrack {
             name: track.name.clone(),
             channel,
@@ -623,7 +642,10 @@ mod tests {
     use super::*;
     use crate::midi::{MidiError, parse_smf, track_chunks};
     use yeban_model::samples::filled_project;
-    use yeban_model::{AutomationPoint, AutomationWriteMode, CurveType};
+    use yeban_model::{
+        AutomationLane, AutomationPoint, AutomationTarget, AutomationWriteMode, ClipContent,
+        CurveType, EntityId,
+    };
 
     /// 演示夹具（`bridge::demo_project()`）的 MIDI 事实。
     ///
@@ -2801,5 +2823,68 @@ mod tests {
         let sixteen: Vec<_> = (0..16).map(track).collect();
         assert_eq!(channel_reuse_report(&sixteen), (0, 1), "16 轨无复用");
         assert_eq!(channel_reuse_report(&[]), (0, 0), "空导出无复用");
+    }
+    /// T-FIX-924：导入时被折进 `TrackVolume` 泳道的 CC7 不保留通道字段；
+    /// 导出必须用本轨音符的原通道（ch9）而不是轨道序号（ch0）。
+    #[test]
+    fn exported_cc_uses_the_tracks_note_channel_not_its_ordinal() {
+        let mut project = yeban_model::samples::demo_project();
+        let track_id = project
+            .tracks
+            .values()
+            .find(|track| !track.clips.is_empty())
+            .expect("一条带 MIDI 摆放的轨")
+            .id;
+        let clip_id = project.tracks[&track_id]
+            .clips
+            .values()
+            .next()
+            .expect("一个摆放")
+            .clip_id;
+        let ClipContent::Midi { notes } = &mut project
+            .clip_pool
+            .get_mut(&clip_id)
+            .expect("片段存在")
+            .content
+        else {
+            panic!("filled 夹具的首个片段必须是 MIDI")
+        };
+        for note in notes.values_mut() {
+            note.channel = Some(9);
+        }
+        let target = AutomationTarget::TrackVolume { track_id };
+        let mut lane = AutomationLane::implicit(target);
+        lane.read_enabled = true;
+        let point_id = EntityId::default();
+        lane.points.insert(
+            point_id,
+            AutomationPoint {
+                id: point_id,
+                tick: 0,
+                value: 0.0,
+                curve: CurveType::Linear,
+            },
+        );
+        project
+            .tracks
+            .get_mut(&track_id)
+            .expect("轨存在")
+            .automation_lanes
+            .insert(target, lane);
+
+        let export = export_from_project(&project).expect("导出");
+        assert_eq!(export.tracks.len(), 1, "demo 只有一条 MIDI 轨");
+        assert_eq!(export.tracks[0].channel, 9, "CC 必须落在音符原通道 ch9");
+        let parsed = parse_smf(&export.to_smf_bytes().expect("编码")).expect("回读");
+        assert!(!parsed.control_changes.is_empty(), "音量泳道必须产生 CC7");
+        assert!(
+            parsed.control_changes.iter().all(|cc| cc.channel == 9),
+            "回读的 CC7 必须仍是 ch9，实际：{:?}",
+            parsed
+                .control_changes
+                .iter()
+                .map(|cc| (cc.channel, cc.controller, cc.value))
+                .collect::<Vec<_>>()
+        );
     }
 }
