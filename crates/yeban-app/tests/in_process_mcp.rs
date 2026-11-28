@@ -320,13 +320,31 @@ fn the_round_trip_stops_leaving_nothing_listening() {
     assert_eq!(reply.status, 200, "带令牌必须 200; 体={}", reply.body);
     let value = reply.json();
     assert_eq!(value["id"], 7, "JSON-RPC 的 id 必须原样回显");
-    assert_eq!(
-        value["result"]["tools"]
+    // `tools/list` 分页返回：跟随 nextCursor 收齐全部页，合计必须与注册表对得上。
+    let mut tool_total = value["result"]["tools"]
+        .as_array()
+        .expect("tools 是数组")
+        .len();
+    let mut cursor = value["result"]["nextCursor"].as_str().map(str::to_owned);
+    while let Some(current) = cursor {
+        let reply = call(
+            address,
+            Some(&bearer),
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":8,"method":"tools/list","params":{{"cursor":"{current}"}}}}"#
+            ),
+        );
+        assert_eq!(reply.status, 200, "翻页必须 200; 体={}", reply.body);
+        let page = reply.json();
+        tool_total += page["result"]["tools"]
             .as_array()
             .expect("tools 是数组")
-            .len(),
-        TOOL_COUNT,
-        "`tools/list` 必须与注册表逐项对得上"
+            .len();
+        cursor = page["result"]["nextCursor"].as_str().map(str::to_owned);
+    }
+    assert_eq!(
+        tool_total, TOOL_COUNT,
+        "`tools/list` 翻页收齐必须与注册表逐项对得上"
     );
 
     // ---- 4. 真调用：控制面服务的就是 app 注入的那份工程 ----
