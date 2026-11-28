@@ -653,6 +653,16 @@ impl ElementRegistry {
             "关闭提示",
             false,
         );
+        // ⭐ T-FIX-970：越界粘贴失败横幅上的「定位到片段起点」入口（T-FIX-235
+        // 同型）。`.slint` 的 accessible-label 是随宿主文案变的动态值，这一格
+        // 只作静态语义登记；缺它会让方向 2 对账变红、读屏/自动化看不到入口。
+        registry.add(
+            "toast-locate-playhead-button",
+            ElementKind::Button,
+            "app.slint",
+            "定位到片段起点",
+            false,
+        );
 
         // ------------------------------------------------------------ AI 协作栏
         registry.add(

@@ -238,6 +238,10 @@ export component MainWindow inherits Window {
     // ⭐ 审计 P1-4：提示条分级。`true` = 这条是**错误**（不自动消失）；`false` = 信息类
     // （4 秒后自己收走，见下面的 `toast-timer`）。
     in-out property <bool> toast-is-error: false;
+    // ⭐ T-FIX-970：越界粘贴失败横幅上的一键定位动作 —— label 由宿主写入，
+    // 空 label / visible=false 时不显示，⛔ 不在 Slint 侧另存播放头镜像。
+    in-out property <string> toast-action-label: "";
+    in-out property <bool> toast-action-visible: false;
 
     // Zone Visibility State (Default: clean arrangement workspace with side/dock panels folded)
     in-out property <bool> show-left-inspector: true;
@@ -323,6 +327,8 @@ export component MainWindow inherits Window {
     callback transport-toggle-loop();
     // ⭐ T-FIX-889：「按选区设循环」—— 走带栏按钮 → 宿主按选中剪辑写区间。
     callback set-loop-from-selection();
+    // ⭐ T-FIX-970：音符粘贴失败（播放头越界）时，横幅上的「定位到片段起点」入口。
+    callback toast-locate-playhead();
     callback transport-rewind();
     callback transport-set-bpm(int);
     callback transport-set-scale(string);
@@ -1695,6 +1701,8 @@ export component MainWindow inherits Window {
             triggered => {
                 root.toast-message = "";
                 root.show-floating-toast = false;
+                root.toast-action-visible = false;
+                root.toast-action-label = "";
             }
         }
 
@@ -2560,9 +2568,9 @@ export component MainWindow inherits Window {
         // 这里保留内联覆盖层写法（比原来的 ToastBanner 少一层 in-out 转发），⛔ 不再叠第三层。
         if root.show-floating-toast || root.toast-message != "" : Rectangle {
             z: 9400;
-            x: root.width - 324px;
+            x: root.width - (root.toast-action-visible ? 404px : 324px);
             y: 54px;
-            width: 310px;
+            width: root.toast-action-visible ? 390px : 310px;
             height: 34px;
             // 底色必须**不透明**（2026-11-19 实测）：原先 `bg-void.with-alpha(0.96)`
             // 有 4% 透明，浮在标尺上方时底下的「2 / 3」与缩放胶囊 `H− H+ V− V+`
@@ -2603,6 +2611,34 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                // ⭐ T-FIX-970：越界粘贴的一键定位入口 —— 仅当宿主给出动作时显示。
+                // 点它只发 `toast-locate-playhead`，由宿主走 commit_seek 到选中片段
+                // 起点并重试粘贴；⛔ Slint 侧不自己算 tick、不另存播放头镜像。
+                if root.toast-action-visible : Rectangle {
+                    width: 104px;
+                    height: 18px;
+                    y: 8px;
+                    border-radius: 9px;
+                    background: Theme.accent;
+                    accessible-role: button;
+                    accessible-id: "toast-locate-playhead-button";
+                    accessible-label: root.toast-action-label;
+                    accessible-action-default => { root.toast-locate-playhead(); }
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.toast-action-label;
+                        font-family: Tokens.font-ui;
+                        font-size: 10px;
+                        color: Tokens.skin-text-strong;
+                        horizontal-alignment: center;
+                        vertical-alignment: TextVerticalAlignment.center;
+                    }
+                    TouchArea {
+                        clicked => { root.toast-locate-playhead(); }
+                    }
+                }
+
                 // 手动收起：清文案与常显位（⛔ 不另设"已关闭"布尔 —— 两个状态会互相打脸）。
                 // 收起键要**看得出是个按钮**（2026-11-19 实测）：原先底色是
                 // `skin-hairline`（白 7% alpha）压在深色浮层上几乎等于没有，实机里
@@ -2624,6 +2660,8 @@ export component MainWindow inherits Window {
                     accessible-action-default => {
                         root.toast-message = "";
                         root.show-floating-toast = false;
+                        root.toast-action-visible = false;
+                        root.toast-action-label = "";
                     }
                     Text {
                         width: parent.width;
@@ -2639,6 +2677,8 @@ export component MainWindow inherits Window {
                         clicked => {
                             root.toast-message = "";
                             root.show-floating-toast = false;
+                            root.toast-action-visible = false;
+                            root.toast-action-label = "";
                         }
                     }
                 }

@@ -8268,6 +8268,40 @@ fn wire_transport_with_wiring(
     // **清掉**它（停止按钮 = 明确的回起点动作 ⇒ 下一下 `Space` 必须是"新的第一次"，
     // ⛔ 不让一个陈旧的停住时刻把用户的下一次起播变成 `SeekTicks(0)`）。
     let head_stop = Rc::new(std::cell::Cell::new(None::<std::time::Instant>));
+
+    // ⭐ T-FIX-970：越界粘贴失败横幅上的「定位到片段起点」一键入口。
+    // 与标尺定位同用 `commit_seek`（唯一的 SeekTicks 入口），与粘贴同用活
+    // `UndoPort` 现读工程；⛔ 不在这里另存播放头 / 工程镜像。
+    {
+        let weak = slint::ComponentHandle::as_weak(ui);
+        let locate_engine = Rc::clone(&engine);
+        let locate_undo = undo.clone();
+        ui.on_toast_locate_playhead(move || {
+            let Some(ui) = weak.upgrade() else {
+                debug_assert!(false, "MainWindow 在回调执行期间被销毁");
+                return;
+            };
+            let Some(port) = locate_undo.as_ref() else {
+                report_notice(&ui, "工程未就绪，无法定位播放头", true);
+                return;
+            };
+            let Some(project) = port.try_project() else {
+                report_notice(&ui, "工程未就绪，无法定位播放头", true);
+                return;
+            };
+            let Some(start) = note_paste_locate_tick(&project, &ui) else {
+                report_note_paste_failure(&ui, NotePasteFailure::NoTargetClip);
+                return;
+            };
+            commit_seek(&ui, &locate_engine, start, "note-paste-locate");
+            let count = clipboard_paste_notes(&ui, port, &project);
+            if count > 0 {
+                report_note_clipboard(&ui, NoteClipboardVerb::Paste, count);
+            } else {
+                report_note_paste_failure(&ui, note_paste_failure_reason(&project, &ui));
+            }
+        });
+    }
     // ⭐ T-FIX-348：录音器由本函数末尾的 [`install_record_control`] 装进来。停止 / 空格
     // 回调在点击发生前先读这一格；它为空只可能是装配尚未走到底（不会发生）⇒ 不假装停过。
     let record_control: Rc<RefCell<Option<Rc<RecordControl>>>> = Rc::new(RefCell::new(None));
@@ -14585,6 +14619,10 @@ pub fn report_notice(ui: &MainWindow, text: &str, error: bool) {
     ui.set_module_status(text.into());
     ui.set_module_status_text(text.into());
     ui.set_module_status_succeeded(!error);
+    // ⭐ T-FIX-970 管理侧复验修正：新回执覆盖横幅时收起上一条的动作键，
+    // ⛔ 不把「定位到片段起点」留到无关提示上。
+    ui.set_toast_action_visible(false);
+    ui.set_toast_action_label("".into());
     ui.set_toast_message(text.into());
     ui.set_toast_is_error(error);
     ui.set_show_floating_toast(true);
@@ -22360,7 +22398,13 @@ fn apply_action(
             // 空 ⇒ 片段粘贴。目标不合法时给音符回执，⛔ 不静默改成粘片段。
             if note_clipboard_has_content() {
                 let count = clipboard_paste_notes(ui, port, &project);
-                report_note_clipboard(ui, NoteClipboardVerb::Paste, count);
+                if count > 0 {
+                    report_note_clipboard(ui, NoteClipboardVerb::Paste, count);
+                } else {
+                    // ⭐ T-FIX-970：失败必须分岔报出**具体**原因（剪贴板空 / 无片段 /
+                    // 播放头越界），⛔ 不再把两种原因合并成一句让人猜。
+                    report_note_paste_failure(ui, note_paste_failure_reason(&project, ui));
+                }
                 return count > 0;
             }
             let ok = clipboard_paste(ui, port, &project);
@@ -27793,9 +27837,16 @@ pub enum NoteClipboardVerb {
 
 /// 写一条**音符**剪贴板回执：成功带数量，失败给可执行的下一步。
 pub fn report_note_clipboard(ui: &MainWindow, verb: NoteClipboardVerb, count: usize) {
+    // ⭐ T-FIX-970：任何新回执都先收起上一条的动作键 —— ⛔ 不把上一条
+    // 「定位到片段起点」按钮留到无关提示上，避免用户点到过期动作。
+    ui.set_toast_action_visible(false);
+    ui.set_toast_action_label("".into());
     let (verb_word, hint) = match verb {
         NoteClipboardVerb::Copy => ("复制", "先在卷帘里选中音符再按 Ctrl+C"),
-        NoteClipboardVerb::Paste => ("粘贴", "音符剪贴板为空，或播放头不在选中的 MIDI 片段内"),
+        NoteClipboardVerb::Paste => (
+            "粘贴",
+            "播放头不在选中的 MIDI 片段内，先在片段内定位播放头后重试",
+        ),
         NoteClipboardVerb::Cut => ("剪切", "先在卷帘里选中音符再按 Ctrl+X"),
     };
     let text = if count == 0 {
@@ -27807,6 +27858,88 @@ pub fn report_note_clipboard(ui: &MainWindow, verb: NoteClipboardVerb, count: us
     ui.set_toast_message(text.into());
     ui.set_toast_is_error(false);
     ui.set_show_floating_toast(true);
+}
+
+/// ⭐ T-FIX-970：音符粘贴失败的可诊断原因（⛔ 不再把两件事合并成一句）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotePasteFailure {
+    /// 音符剪贴板为空（没有可粘的音符）。
+    ClipboardEmpty,
+    /// 没有选中可粘贴的 MIDI 片段。
+    NoTargetClip,
+    /// 播放头不在选中片段的 `[start, end)` 内 —— 给一键定位入口。
+    PlayheadOutsideClip,
+    /// 剪贴板与目标都合法但模型拒绝 —— ⛔ 不误报成"剪贴板为空"。
+    Rejected,
+}
+
+/// 失败原因 → 面向用户的提示（纯函数，判据钉两分支文案不同且可诊断）。
+#[must_use]
+pub fn note_paste_failure_text(reason: NotePasteFailure) -> &'static str {
+    match reason {
+        NotePasteFailure::ClipboardEmpty => "剪贴板为空：先在卷帘里选中音符再按 Ctrl+C 复制",
+        NotePasteFailure::NoTargetClip => "未选中 MIDI 片段：先在卷帘里选中一个 MIDI 片段再粘贴",
+        NotePasteFailure::PlayheadOutsideClip => {
+            "播放头不在选中的 MIDI 片段内：点「定位到片段起点」后即可粘贴"
+        }
+        NotePasteFailure::Rejected => "模型拒绝粘贴：请检查片段长度或音符位置后重试",
+    }
+}
+
+/// 从工程与界面现读出粘贴失败原因（唯一事实源：选中摆放 + 播放头）。
+#[must_use]
+pub fn note_paste_failure_reason(
+    project: &yeban_model::YebanProjectV1,
+    ui: &MainWindow,
+) -> NotePasteFailure {
+    let target = ui.get_selected_clip_ulid().to_string();
+    let Some((_, _, placement)) = clip_placement_for(project, target.trim()) else {
+        return NotePasteFailure::NoTargetClip;
+    };
+    let Some(entry) = project.clip_pool.get(&placement.clip_id) else {
+        return NotePasteFailure::NoTargetClip;
+    };
+    if !matches!(
+        &entry.content,
+        yeban_model::project::ClipContent::Midi { .. }
+    ) {
+        return NotePasteFailure::NoTargetClip;
+    }
+    let clip_start = placement.start_tick;
+    let clip_end = clip_start.saturating_add(placement.duration_ticks);
+    let playhead = playhead_tick(ui);
+    if playhead < clip_start || playhead >= clip_end {
+        return NotePasteFailure::PlayheadOutsideClip;
+    }
+    // 非空剪贴板 + 合法目标却没粘成 ⇒ 模型拒绝（不是"剪贴板空"，⛔ 不误报）。
+    NotePasteFailure::Rejected
+}
+
+/// 失败回执：按原因分岔 + 越界时挂一键定位入口。错误级 ⇒ 不自动消失，动作键留得住。
+pub fn report_note_paste_failure(ui: &MainWindow, reason: NotePasteFailure) {
+    let text = format!("[剪贴板] 粘贴未生效：{}", note_paste_failure_text(reason));
+    eprintln!("[yeban-app] toast: {text}");
+    ui.set_toast_message(text.into());
+    ui.set_toast_is_error(true);
+    ui.set_show_floating_toast(true);
+    let locate = reason == NotePasteFailure::PlayheadOutsideClip;
+    ui.set_toast_action_visible(locate);
+    ui.set_toast_action_label(if locate {
+        "定位到片段起点".into()
+    } else {
+        "".into()
+    });
+}
+
+/// 选中片段起点 tick —— 「定位到片段起点」动作的唯一落点（纯函数宿主侧现读）。
+#[must_use]
+pub fn note_paste_locate_tick(
+    project: &yeban_model::YebanProjectV1,
+    ui: &MainWindow,
+) -> Option<u64> {
+    let target = ui.get_selected_clip_ulid().to_string();
+    let (_, _, placement) = clip_placement_for(project, target.trim())?;
+    Some(placement.start_tick)
 }
 
 /// 音符剪贴板是否非空（派发时决定 Paste 走音符还是片段）。
@@ -29812,6 +29945,22 @@ mod tests {
     use super::resolve_demo_cover_states;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// ⭐ T-FIX-970 红对照（纯文案）：修前只有一句合并文案
+    /// 「音符剪贴板为空，或播放头不在选中的 MIDI 片段内」，两原因不可分辨；
+    /// 修后两分支文案必须不同、各自点名原因与下一步。
+    #[test]
+    fn note_paste_failure_messages_are_distinct_and_name_the_cause() {
+        use super::{NotePasteFailure, note_paste_failure_text};
+        let empty = note_paste_failure_text(NotePasteFailure::ClipboardEmpty);
+        let outside = note_paste_failure_text(NotePasteFailure::PlayheadOutsideClip);
+        assert_ne!(empty, outside, "两失败分支不得共用一句文案");
+        assert!(empty.contains("剪贴板为空"), "空剪贴板必须点名原因");
+        assert!(empty.contains("Ctrl+C"), "空剪贴板必须给出下一步");
+        assert!(outside.contains("播放头"), "越界必须点名播放头");
+        assert!(outside.contains("定位到片段起点"), "越界必须给出定位入口");
+        assert!(!format!("{empty}{outside}").contains("或播放头不在选中的 MIDI 片段内"));
+    }
 
     /// ⭐ T-FIX-426：录音器正被可变借用（停录 / 落地窗口）时必须按"正在录音"
     /// 处理 —— 守卫保守拦截，⛔ 不把借用失败吞成可切换。
@@ -32334,6 +32483,9 @@ fn update_toast(ui: &MainWindow, msg: impl Into<SharedString>) {
     ui.set_show_floating_toast(true);
     // 常规提示 = 信息级：几秒后自动收走（错误级的常驻见 `report_notice`）。
     ui.set_toast_is_error(false);
+    // ⭐ T-FIX-970 管理侧复验修正：同 `report_notice`，新提示收起上一条的动作键。
+    ui.set_toast_action_visible(false);
+    ui.set_toast_action_label("".into());
     ui.set_toast_message(s);
 }
 
