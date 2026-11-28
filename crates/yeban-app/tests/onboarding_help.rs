@@ -690,3 +690,63 @@ fn help_system_end_to_end_in_a_live_window() {
     let _ = std::fs::remove_file(&state_path);
     let _ = std::fs::remove_file(&legacy_path);
 }
+
+/// T-FIX-814：重开引导时清掉上一次的终态，保证「界面停在 1/7」时
+/// settings 不会再写着 finished/dismissed；跳过只关层，不伪造终态。
+#[test]
+fn reopening_onboarding_clears_stale_terminal_flags() {
+    let _lock = ENV_LOCK.lock().expect("env 锁");
+    let state_path = temp_state_path("reopen");
+    let legacy_path = temp_legacy_path("reopen");
+    let _ = std::fs::remove_file(&state_path);
+    let _ = std::fs::remove_file(&legacy_path);
+    let _guard = StatePathEnv::set(&state_path, &legacy_path);
+
+    help_state::save_to(
+        &state_path,
+        &HelpState {
+            onboarding_dismissed: true,
+            onboarding_finished: true,
+            ..HelpState::default()
+        },
+    )
+    .expect("种下上一次的终态");
+
+    let project = yeban_model::samples::filled_project();
+    let undo = Rc::new(UndoPort::new(
+        UndoSession::open("<onboarding-reopen>", "yeban-app", project.clone(), NOW_MS)
+            .expect("撤销会话必须能打开"),
+    ));
+    let (live, _production) = build_live_window(&project, &undo);
+    let ui = live.ui();
+
+    ui.invoke_command_execute("help-onboarding".into());
+    assert!(ui.get_onboarding_open(), "帮助菜单必须能重开引导");
+    assert_eq!(ui.get_onboarding_step_index(), 0, "重开必须回到 1/7");
+    let opened = help_state::load_from(&state_path);
+    assert!(
+        !opened.onboarding_finished,
+        "引导可见时不得仍留 onboarding_finished=true"
+    );
+    assert!(
+        !opened.onboarding_dismissed,
+        "引导可见时不得仍留 onboarding_dismissed=true"
+    );
+
+    // 跳过只是本次关层：界面与两个终态标志都回到 false，下次启动仍会弹。
+    ui.invoke_onboarding_skip();
+    assert!(!ui.get_onboarding_open());
+    let skipped = help_state::load_from(&state_path);
+    assert!(!skipped.onboarding_finished && !skipped.onboarding_dismissed);
+    assert!(yeban_app::help::show_onboarding_if_first_launch(ui));
+
+    // 明确「不再显示」才落 dismissed，finished 不得被顺手写成 true。
+    ui.invoke_onboarding_dismiss_forever();
+    let dismissed = help_state::load_from(&state_path);
+    assert!(dismissed.onboarding_dismissed);
+    assert!(!dismissed.onboarding_finished);
+    assert!(!yeban_app::help::show_onboarding_if_first_launch(ui));
+
+    let _ = std::fs::remove_file(&state_path);
+    let _ = std::fs::remove_file(&legacy_path);
+}

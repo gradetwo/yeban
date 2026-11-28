@@ -367,10 +367,27 @@ fn tour_steps() -> Vec<TourStep> {
     ]
 }
 
-/// 打开新手引导（从第一步开始；不改动落盘状态）。
+/// 打开新手引导（从第一步开始）。
+///
+/// T-FIX-814：重开时先清掉上一次的终态（finished / dismissed）。否则用户从
+/// 「帮助 → 新手引导」重开、界面明明停在 1/7，settings 里却仍写着
+/// `onboarding_finished=true`；之后点「跳过导览」只关层，状态与可见性继续
+/// 相反。清态只在确有终态时落盘，首次启动不会多写一次设置。
 pub fn open_onboarding(ui: &MainWindow) {
+    clear_terminal_state_for_open(ui);
     apply_onboarding_step(ui, 0);
     ui.set_onboarding_open(true);
+}
+
+fn clear_terminal_state_for_open(ui: &MainWindow) {
+    let state = load_session_state();
+    if !state.onboarding_finished && !state.onboarding_dismissed {
+        return;
+    }
+    update_state(ui, |state| {
+        state.onboarding_finished = false;
+        state.onboarding_dismissed = false;
+    });
 }
 
 /// 首次启动自动打开引导的唯一入口（仅 `main.rs` 的真实装配调用）：
@@ -406,7 +423,10 @@ pub fn apply_onboarding_step(ui: &MainWindow, index: usize) {
 pub fn onboarding_next(ui: &MainWindow) {
     let index = usize::try_from(ui.get_onboarding_step_index()).unwrap_or(0);
     if index + 1 >= tour_steps().len() {
-        update_state(ui, |state| state.onboarding_finished = true);
+        update_state(ui, |state| {
+            state.onboarding_finished = true;
+            state.onboarding_dismissed = false;
+        });
         ui.set_onboarding_open(false);
     } else {
         apply_onboarding_step(ui, index + 1);
@@ -428,7 +448,10 @@ pub fn onboarding_skip(ui: &MainWindow) {
 
 /// 「不再显示」：落盘 dismissed 并关层。
 pub fn onboarding_dismiss_forever(ui: &MainWindow) {
-    update_state(ui, |state| state.onboarding_dismissed = true);
+    update_state(ui, |state| {
+        state.onboarding_finished = false;
+        state.onboarding_dismissed = true;
+    });
     ui.set_onboarding_open(false);
 }
 
