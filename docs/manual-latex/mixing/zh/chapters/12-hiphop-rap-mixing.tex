@@ -1,0 +1,115 @@
+\chapter{说唱与嘻哈混音}
+\label{chap:hiphop-rap-mixing}
+
+\classquote{鼓舞而节之，以尽其意。}{《淮南子·原道训》}{说唱与嘻哈的张力不在配器多满，而在鼓点、808 与人声三者彼此让位、节制有度，把态度直接送到听众面前。}
+
+\section{为什么说唱与嘻哈混音单独成章}
+
+流行与摇滚混音常常围绕满编乐器做减法平衡，而现代说唱与嘻哈（Boom-bap、Trap、Melodic Rap）的声部往往极简：主唱吐字、底鼓与 808 低频、踩镲与军鼓、再加上一两层主旋律或采样。正因为元素少，\textbf{每一个低频碰撞、每一次人声发闷或齿音刺耳都会被无限放大}。这一章把说唱混音最关键的四件事——808 与底鼓关系、贴脸人声链、ad-lib 空间层次与主总线削波——直接落到夜半的操作步骤上。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.55cm, every node/.style={font=\small}]
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=3.4cm,minimum height=0.95cm,align=center] (sub) {极低频 30--90 Hz\\808 Sub 居中单声道};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=3.4cm,minimum height=0.95cm,align=center,right=0.6cm of sub] (kick) {低中频 60--150 Hz\\底鼓瞬态敲击};
+  \node[draw,rounded corners,fill=yebanwarnbg,minimum width=3.4cm,minimum height=0.95cm,align=center,right=0.6cm of kick] (vox) {中高频 1--5 kHz\\主唱贴脸居中偏干};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=5.2cm,minimum height=0.85cm,align=center,below=0.65cm of kick] (adlib) {两侧与后景：Ad-lib 带通滤波 + 乒乓延迟 / 短混响};
+  \draw[->,thick,yebanblue] (kick.west) -- node[above,font=\scriptsize]{让位/侧链} (sub.east);
+  \draw[->,thick,yebanblue] (vox.south) -- (adlib.north east);
+\end{tikzpicture}
+\caption{说唱与嘻哈混音的核心频段与前后景分工}
+\label{fig:hiphop-mix-map}
+\end{figure}
+
+\section{808 低频与底鼓的两种主流做法}
+
+说唱混音里最常见的翻车点是底鼓与 808 在 50--90 Hz 同时撞车，导致电平表爆红、听感却软弱无力。业界主要有两种并列做法：
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{p{0.18\textwidth}p{0.26\textwidth}p{0.24\textwidth}p{0.24\textwidth}}
+\toprule
+做法 & 优点 & 代价与风险 & 业界偏好 \\
+\midrule
+\textbf{做法一：底鼓触发 808 侧链压缩} & 底鼓敲击瞬间压低 808 3--5 dB，瞬态干净有力、不改音色 & 释放时间过长会产生明显“抽吸感” & Trap 与现代俱乐部说唱最常用 \\
+\textbf{做法二：频段分工 + 起始包络错开} & 给底鼓留 60--100 Hz 敲击、808 主守 35--65 Hz，或略微拉慢 808 起音 & 需要仔细核对相位，换调时低频能量可能波动 & Boom-bap 与偏重浑厚长尾 808 的作品常用 \\
+\bottomrule
+\end{tabular}
+\caption{底鼓与 808 低频处理的两种并列做法对比}
+\end{table}
+
+\textbf{夜半实操步骤}：
+\begin{enumerate}
+  \item 在 808 轨道打开通道条，先开启 \textbf{mono-maker} 将 120 Hz 以下收成单声道，保证低频相位集中。
+  \item 若选做法一：在 808 轨挂压缩器，调整快速起音（约 2--5 ms）与短释放（约 40--80 ms），让底鼓敲击头先穿出来再放回 808 延音。
+  \item 若需要让手机或小音箱也能听见 808：在 808 轨轻挂\textbf{磁带饱和}或\textbf{软削波}，补出 150--400 Hz 泛音，再配合三段塑形 EQ 略收中低频避免发浑。
+\end{enumerate}
+
+\section{贴脸说唱人声链与 Ad-lib 空间分层}
+
+说唱主唱的核心是\textbf{词句清晰、态度贴脸、节奏咬拍}，不能被厚重混响淹没：
+\begin{enumerate}
+  \item \textbf{清理与塑形}：用夜半三段塑形 EQ 切掉 80--100 Hz 以下无用低频隆隆声；若人声偏闷，在 250--350 Hz 温和衰减 2--3 dB；若唇齿音刺耳，在 5--8 kHz 适度收窄。
+  \item \textbf{动态控制}：说唱语速快、重音起伏大，用夜半压缩器设较快起音（5--15 ms）与中短释放（50--100 ms），将增益衰减控制在 4--6 dB，让轻重音节都稳稳贴在伴奏前沿。
+  \item \textbf{Ad-lib 与叠唱让位}：主唱保持居中偏干，仅少量发送短混响或短延迟；把 ad-lib 轨道左右声像拉开，挂高通/低通收窄成“电话感”频段，再发送到夜半\textbf{乒乓延迟}或\textbf{Freeverb}，形成前景直白、背景宽广的层次。
+\end{enumerate}
+
+\section{主总线软削波与平台响度}
+
+嘻哈鼓组瞬态尖锐，单靠限制器硬压容易把底鼓压扁。在夜半主总线链末端，可先以轻微的\textbf{软削波}削平最尖锐的 1--2 dB 孤立瞬态峰值，再对照导出响度读数检查整体响度与单声道兼容性，做到既有力道又不失真。
+
+\section{名曲拆解与知名混音师实战 Tips}
+
+\begin{itemize}
+  \item \textbf{Kendrick Lamar《HUMBLE.》}：主唱几乎完全贴脸居中，用极短的房间反射代替大混响，把全部情绪集中在咬字和重拍推进上；底鼓与低频之间留出清晰空隙，听起来拳拳到肉。
+  \item \textbf{Travis Scott《SICKO MODE》}：多段切换里 808 低频始终稳居中轴，而 ad-lib 与氛围和声通过明显延迟与滤波甩向两侧和远处，让稀疏编排听起来极其立体。
+  \item \textbf{Dr.\ Dre《Still D.R.E.》}：军鼓干脆利落、低频线条干净无拖尾，示范了极简说唱伴奏怎样靠精准电平与频段留白做到耐听。
+\end{itemize}
+
+\begin{tipbox}
+\textbf{MixedByAli（Derek Ali）实战思路}（出处：\emph{Sound On Sound} 与 \emph{Mix With The Masters} 公开访谈）：在处理 Kendrick Lamar 等说唱作品时，先把人声和鼓组摆到最前面当成整首歌的脊梁，再让伴奏围绕人声让位；若人声感觉被压住，优先检查 200--400 Hz 与 2--4 kHz 是否有伴奏冲突，而不是一味推高人声推子。\\
+\textbf{夜半落地}：先只独奏主唱 + 鼓 + 808 调出稳固粗平衡，再逐轨打开旋律层并用三段塑形 EQ 在冲突频段减法让位。
+\end{tipbox}
+
+\begin{tipbox}
+\textbf{Alex Tumay 实战思路}（出处：\emph{Pensado's Place} 与 \emph{Tape Op} 公开访谈）：Trap 里的 808 不能只靠 40 Hz 基频，否则在手机扬声器上会“消失”；通过适量饱和产生中低频谐波，既能让小音箱听见低音轮廓，又能让低频听起来更扎实；同时把 ad-lib 做滤波与延迟处理，和主唱拉开景深。\\
+\textbf{夜半落地}：在 808 轨插入夜半磁带饱和微调驱动量，再建一条辅助轨挂乒乓延迟专门接收 ad-lib 发送。
+\end{tipbox}
+
+\begin{tipbox}
+\textbf{Jaycen Joshua 实战思路}（出处：\emph{Pensado's Place} 与 \emph{Mix With The Masters} 公开访谈）：现代嘻哈与 R\&B 想要大声又不丢冲击力，关键在鼓组与主总线前端先用柔和削波温和磨平尖峰，再交给末级响度控制，避免限制器被单一下底鼓瞬间触发过度抽吸。\\
+\textbf{夜半落地}：在鼓组或主总线挂夜半软削波轻削 1--2 dB 瞬态毛刺，并用导出响度读数复核峰值不削顶。
+\end{tipbox}
+
+\section{练习}
+
+\begin{exercise}
+在夜半中新建一段 90--140 BPM 的 8 小节说唱循环（含底鼓、军鼓、踩镲、808、主唱与一条 ad-lib）：
+\begin{enumerate}
+  \item 开启 808 轨的 mono-maker（120 Hz 以下收单声道），对比“侧链让位”与“频段分工”两种低频处理，记录哪种更贴合你的鼓组。
+  \item 给主唱做高通清理 + 4--6 dB 压缩保持贴脸，给 ad-lib 拉开声像并发送到乒乓延迟。
+  \item 切换单声道监听检查底鼓、808 与主唱是否依然清晰不塌陷，最后导出 WAV 复听。
+\end{enumerate}
+\end{exercise}
+
+\section*{扩展阅读}
+\addcontentsline{toc}{section}{扩展阅读}
+\begin{itemize}
+  \item \textbf{Wikipedia: Roland TR-808}：\url{https://en.wikipedia.org/wiki/Roland_TR-808}。了解 808 鼓机低频特征与在嘻哈史中的声学地位。
+  \item \textbf{Wikipedia: Audio mixing (recorded music)}：\url{https://en.wikipedia.org/wiki/Audio_mixing_(recorded_music)}。补充多轨混音信号流与母线处理的通用背景。
+  \item \textbf{Wikipedia: Dynamic range compression}：\url{https://en.wikipedia.org/wiki/Dynamic_range_compression}。深入理解起音、释放与侧链压缩对鼓与人声瞬态的影响。
+\end{itemize}
+
+\section{本章与帮助主题的映射}
+
+\begin{helpmapping}
+\begin{tabular}{ll}
+\toprule
+小节 & 帮助锚点 \\
+\midrule
+808 低频与底鼓的两种主流做法 & \texttt{mixing-hiphop-808-kick} \\
+贴脸说唱人声链与 Ad-lib 空间分层 & \texttt{mixing-hiphop-vocal-adlib} \\
+主总线软削波与平台响度 & \texttt{mixing-hiphop-clipping-loudness} \\
+\bottomrule
+\end{tabular}
+\end{helpmapping}

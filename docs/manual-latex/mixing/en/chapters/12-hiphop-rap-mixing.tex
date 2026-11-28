@@ -1,0 +1,115 @@
+\chapter{Hip-Hop and Rap Mixing}
+\label{chap:hiphop-rap-mixing}
+
+\classquote{鼓舞而节之，以尽其意。}{Huainanzi, ``Originating in the Way'' (《淮南子·原道训》)}{Translation: ``Rouse the rhythm and measure it with restraint, so the intent is carried in full.'' Hip-hop impact comes not from dense orchestration, but from letting drums, 808 sub and vocal each command their own space.}
+
+\section{Why hip-hop and rap deserve a dedicated chapter}
+
+Unlike dense pop or rock arrangements where mixing is often about thinning a crowd of instruments, modern hip-hop and rap (boom-bap, trap, melodic rap) rely on sparse, exposed elements: lead vocal delivery, kick and 808 low end, snare/hi-hat snap, and one or two melodic loops. Because the canvas is bare, \textbf{every low-end clash, muddy vocal phrase or harsh sibilant stands out immediately}. This chapter translates the four pillars of rap mixing—kick/808 separation, up-front vocals, ad-lib depth and soft-clipping loudness—into concrete Yeban steps.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=0.55cm, every node/.style={font=\small}]
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=3.4cm,minimum height=0.95cm,align=center] (sub) {Sub 30--90 Hz\\Mono 808 centre};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=3.4cm,minimum height=0.95cm,align=center,right=0.6cm of sub] (kick) {Low-mid 60--150 Hz\\Kick transient punch};
+  \node[draw,rounded corners,fill=yebanwarnbg,minimum width=3.4cm,minimum height=0.95cm,align=center,right=0.6cm of kick] (vox) {Mid-high 1--5 kHz\\Dry up-front lead vocal};
+  \node[draw,rounded corners,fill=yebanboxbg,minimum width=5.4cm,minimum height=0.85cm,align=center,below=0.65cm of kick] (adlib) {Sides and depth: band-limited ad-libs + ping-pong delay / short reverb};
+  \draw[->,thick,yebanblue] (kick.west) -- node[above,font=\scriptsize]{duck / carve} (sub.east);
+  \draw[->,thick,yebanblue] (vox.south) -- (adlib.north east);
+\end{tikzpicture}
+\caption{Core frequency and depth layout for hip-hop and rap mixes}
+\label{fig:hiphop-mix-map}
+\end{figure}
+
+\section{Two mainstream ways to separate kick and 808}
+
+The most common failure in rap mixing is letting the kick and 808 collide between 50 and 90 Hz, pushing meters into the red while sounding hollow. Two approaches dominate studio practice:
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{p{0.20\textwidth}p{0.25\textwidth}p{0.24\textwidth}p{0.23\textwidth}}
+\toprule
+Approach & Advantage & Trade-off & Industry preference \\
+\midrule
+\textbf{Option A: Sidechain ducking 808 from kick} & Ducks the 808 by 3--5 dB only on the kick hit, keeping transient punch intact & Overly slow release causes obvious pumping & Default in modern trap and club rap \\
+\textbf{Option B: Band carving + envelope offset} & Gives kick the 60--100 Hz punch and 808 the 35--65 Hz floor, or nudges 808 attack slightly & Requires phase check and careful tuning across notes & Favoured in boom-bap and sustained sub grooves \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of kick and 808 low-end separation methods}
+\end{table}
+
+\textbf{Steps in Yeban}:
+\begin{enumerate}
+  \item Enable \textbf{mono-maker} on the 808 channel strip below 120 Hz so sub energy stays phase-coherent in the centre.
+  \item For Option A, insert Yeban's compressor on the 808 with a fast attack (2--5 ms) and short release (40--80 ms) so the kick transient clears before the 808 tail blooms.
+  \item To help the 808 translate on phone speakers, add subtle \textbf{tape saturation} or \textbf{soft clipping} to generate 150--400 Hz harmonics, then trim mud with the 3-band sculpting EQ.
+\end{enumerate}
+
+\section{Up-front rap vocals and ad-lib space}
+
+A rap lead vocal must stay intelligible, rhythmic and close to the listener without drowning in reverb:
+\begin{enumerate}
+  \item \textbf{Clean and sculpt}: High-pass rumble below 80--100 Hz with Yeban's 3-band EQ, attenuate 2--3 dB around 250--350 Hz if boxy, and tame sharp 5--8 kHz sibilance.
+  \item \textbf{Tight dynamics}: Use fast attack (5--15 ms) and brisk release (50--100 ms) on Yeban's compressor targeting 4--6 dB of gain reduction so rapid syllables stay locked at the front.
+  \item \textbf{Ad-lib contrast}: Keep the lead vocal centred and mostly dry; pan ad-libs left/right, narrow their bandwidth, and send them to Yeban's \textbf{ping-pong delay} or \textbf{Freeverb} for wide call-and-response depth.
+\end{enumerate}
+
+\section{Bus soft clipping and loudness translation}
+
+Sharp hip-hop drum transients can trigger heavy limiter pumping if left unchecked. Placing light \textbf{soft clipping} (trimming 1--2 dB of stray peaks) before final loudness verification on Yeban's master bus preserves punch while keeping export loudness competitive and mono-safe.
+
+\section{Reference tracks and mixing-engineer tips}
+
+\begin{itemize}
+  \item \textbf{Kendrick Lamar, ``HUMBLE.''}: Keeps the vocal dry and dead-centre with minimal ambience so every consonant hits hard, while leaving clean air between kick impact and low-end decay.
+  \item \textbf{Travis Scott, ``SICKO MODE''}: Anchors the 808 solidly in mono through dramatic beat switches while throwing filtered ad-libs wide via rhythmic delays.
+  \item \textbf{Dr.\ Dre, ``Still D.R.E.''}: Crisp snare snap and tightly controlled low end show how sparse West Coast production achieves massive clarity through balance rather than clutter.
+\end{itemize}
+
+\begin{tipbox}
+\textbf{MixedByAli (Derek Ali) approach} (source: \emph{Sound On Sound} and \emph{Mix With The Masters} interviews): Build the vocal and drums first as the spine of the record, then carve space in the beat around the vocal. When a rap vocal feels buried, inspect masking in the 200--400 Hz and 2--4 kHz zones before simply pushing the vocal fader louder.\\
+\textbf{In Yeban}: Balance lead vocal + kick + 808 in solo first, then unmute melodic layers and carve conflicting bands with the 3-band EQ.
+\end{tipbox}
+
+\begin{tipbox}
+\textbf{Alex Tumay approach} (source: \emph{Pensado's Place} and \emph{Tape Op} interviews): Do not rely solely on 40 Hz fundamental energy for trap 808s, or the bass disappears on small speakers. Subtle harmonic saturation brings out upper-bass definition, while filtered, delayed ad-libs frame the dry lead.\\
+\textbf{In Yeban}: Add gentle tape saturation to the 808 track and route ad-lib tracks to a dedicated ping-pong delay auxiliary bus.
+\end{tipbox}
+
+\begin{tipbox}
+\textbf{Jaycen Joshua approach} (source: \emph{Pensado's Place} and \emph{Mix With The Masters} interviews): Competitive modern hip-hop loudness relies on shaving narrow drum peaks gently with soft clipping before final limiting so the kick retains its snap without pumping the entire mix.\\
+\textbf{In Yeban}: Trim 1--2 dB of isolated peaks with Yeban's soft clipper on the drum or master bus, then verify export loudness and mono compatibility.
+\end{tipbox}
+
+\section{Exercises}
+
+\begin{exercise}
+Build an 8-bar hip-hop loop in Yeban (90--140 BPM) with kick, snare, hi-hat, 808, lead rap vocal and an ad-lib track:
+\begin{enumerate}
+  \item Enable mono-maker below 120 Hz on the 808 and A/B test sidechain ducking versus band carving.
+  \item High-pass and compress the lead vocal (4--6 dB GR) for an up-front pocket; pan and send the ad-lib to ping-pong delay.
+  \item Check mono compatibility to verify the kick, 808 and lead remain solid, then export WAV and audition.
+\end{enumerate}
+\end{exercise}
+
+\section*{Further reading}
+\addcontentsline{toc}{section}{Further reading}
+\begin{itemize}
+  \item \textbf{Wikipedia: Roland TR-808}: \url{https://en.wikipedia.org/wiki/Roland_TR-808}. Background on the 808 bass timbre and its foundational role in hip-hop.
+  \item \textbf{Wikipedia: Audio mixing (recorded music)}: \url{https://en.wikipedia.org/wiki/Audio_mixing_(recorded_music)}. Overview of multitrack signal flow and bus processing.
+  \item \textbf{Wikipedia: Dynamic range compression}: \url{https://en.wikipedia.org/wiki/Dynamic_range_compression}. Explains attack, release and sidechain behaviour on drum and vocal transients.
+\end{itemize}
+
+\section{Help-topic mapping}
+
+\begin{helpmapping}
+\begin{tabular}{ll}
+\toprule
+Section & Help anchor \\
+\midrule
+Two mainstream ways to separate kick and 808 & \texttt{mixing-hiphop-808-kick} \\
+Up-front rap vocals and ad-lib space & \texttt{mixing-hiphop-vocal-adlib} \\
+Bus soft clipping and loudness translation & \texttt{mixing-hiphop-clipping-loudness} \\
+\bottomrule
+\end{tabular}
+\end{helpmapping}
